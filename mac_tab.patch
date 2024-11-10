@@ -1,0 +1,33 @@
+diff --git a/glfw/cocoa_window.m b/glfw/cocoa_window.m
+index e73bf0a17..ed57070cc 100644
+--- a/glfw/cocoa_window.m
++++ b/glfw/cocoa_window.m
+@@ -1627,7 +1627,7 @@ - (instancetype)initWithGlfwWindow:(NSRect)contentRect
+     self = [super initWithContentRect:contentRect styleMask:style backing:backingStoreType defer:NO];
+     if (self != nil) {
+         glfw_window = initWindow;
+-        self.tabbingMode = NSWindowTabbingModeDisallowed;
++        self.tabbingMode = NSWindowTabbingModePreferred;
+     }
+     return self;
+ }
+diff --git a/kitty/cocoa_window.m b/kitty/cocoa_window.m
+index e0286df06..f8b1e1358 100644
+--- a/kitty/cocoa_window.m
++++ b/kitty/cocoa_window.m
+@@ -790,6 +790,12 @@ - (BOOL)openFileURLs:(NSPasteboard*)pasteboard
+                    keyEquivalent:@""];
+ 
+     [windowMenu addItem:[NSMenuItem separatorItem]];
++    [windowMenu addItemWithTitle:@"Select Next Tab"
++                          action:@selector(selectNextTab:)
++                   keyEquivalent:@""];
++    [windowMenu addItemWithTitle:@"Select Previous Tab"
++                          action:@selector(selectPreviousTab:)
++                   keyEquivalent:@""];
+     MENU_ITEM(windowMenu, @"Show Previous Tab", previous_tab);
+     MENU_ITEM(windowMenu, @"Show Next Tab", next_tab);
+     [[windowMenu addItemWithTitle:@"Move Tab to New Window"
+diff --git a/mac_tab.patch b/mac_tab.patch
+new file mode 100644
+index 000000000..e69de29bb

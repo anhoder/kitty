@@ -1627,7 +1627,7 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
     self = [super initWithContentRect:contentRect styleMask:style backing:backingStoreType defer:NO];
     if (self != nil) {
         glfw_window = initWindow;
-        self.tabbingMode = NSWindowTabbingModeDisallowed;
+        self.tabbingMode = NSWindowTabbingModePreferred;
     }
     return self;
 }

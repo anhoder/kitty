@@ -790,6 +790,12 @@ cocoa_create_global_menu(void) {
                    keyEquivalent:@""];
 
     [windowMenu addItem:[NSMenuItem separatorItem]];
+    [windowMenu addItemWithTitle:@"Select Next Tab"
+                          action:@selector(selectNextTab:)
+                   keyEquivalent:@""];
+    [windowMenu addItemWithTitle:@"Select Previous Tab"
+                          action:@selector(selectPreviousTab:)
+                   keyEquivalent:@""];
     MENU_ITEM(windowMenu, @"Show Previous Tab", previous_tab);
     MENU_ITEM(windowMenu, @"Show Next Tab", next_tab);
     [[windowMenu addItemWithTitle:@"Move Tab to New Window"
