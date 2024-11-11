@@ -916,6 +916,18 @@ cocoa_minimize(void *w) {
 }
 
 void
+cocoa_previous_tab(void *w) {
+    NSWindow *window = (NSWindow*)w;
+    [window selectPreviousTab:nil];
+}
+
+void
+cocoa_next_tab(void *w) {
+    NSWindow *window = (NSWindow*)w;
+    [window selectNextTab:nil];
+}
+
+void
 cocoa_focus_window(void *w) {
     NSWindow *window = (NSWindow*)w;
     [window makeKeyWindow];

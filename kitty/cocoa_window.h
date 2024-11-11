@@ -51,6 +51,8 @@ void cocoa_hide(void);
 void cocoa_clear_global_shortcuts(void);
 void cocoa_hide_others(void);
 void cocoa_minimize(void *w);
+void cocoa_previous_tab(void *w);
+void cocoa_next_tab(void *w);
 void cocoa_set_uncaught_exception_handler(void);
 void cocoa_update_menu_bar_title(PyObject*);
 size_t cocoa_get_workspace_ids(void *w, size_t *workspace_ids, size_t array_sz);

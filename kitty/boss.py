@@ -75,6 +75,8 @@ from .fast_data_types import (
     cocoa_hide_app,
     cocoa_hide_other_apps,
     cocoa_minimize_os_window,
+    cocoa_native_previous_tab,
+    cocoa_native_next_tab,
     cocoa_set_menubar_title,
     create_os_window,
     current_application_quit_request,
@@ -2300,15 +2302,25 @@ class Boss:
 
     @ac('tab', 'Make the next tab active')
     def next_tab(self) -> None:
-        tm = self.active_tab_manager_with_dispatch
-        if tm is not None:
-            tm.next_tab()
+        if is_macos:
+            osw_id = current_os_window()
+            if osw_id is not None:
+                cocoa_native_next_tab(osw_id)
+        else:
+            tm = self.active_tab_manager_with_dispatch
+            if tm is not None:
+                tm.next_tab()
 
     @ac('tab', 'Make the previous tab active')
     def previous_tab(self) -> None:
-        tm = self.active_tab_manager_with_dispatch
-        if tm is not None:
-            tm.next_tab(-1)
+        if is_macos:
+            osw_id = current_os_window()
+            if osw_id is not None:
+                cocoa_native_previous_tab(osw_id)
+        else:
+            tm = self.active_tab_manager_with_dispatch
+            if tm is not None:
+                tm.next_tab(-1)
 
     prev_tab = previous_tab
 

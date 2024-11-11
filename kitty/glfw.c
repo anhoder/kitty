@@ -1788,6 +1788,58 @@ cocoa_minimize_os_window(PyObject UNUSED *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static PyObject *
+cocoa_native_previous_tab(PyObject UNUSED *self, PyObject *args)
+{
+    id_type os_window_id = 0;
+    if (!PyArg_ParseTuple(args, "|K", &os_window_id))
+        return NULL;
+#ifdef __APPLE__
+    OSWindow *w = os_window_id ? os_window_for_id(os_window_id) : current_os_window();
+    if (!w || !w->handle)
+        Py_RETURN_NONE;
+    if (!glfwGetCocoaWindow)
+    {
+        PyErr_SetString(PyExc_RuntimeError, "Failed to load glfwGetCocoaWindow");
+        return NULL;
+    }
+    void *window = glfwGetCocoaWindow(w->handle);
+    if (!window)
+        Py_RETURN_NONE;
+    cocoa_previous_tab(window);
+#else
+    PyErr_SetString(PyExc_RuntimeError, "cocoa_native_previous_tab() is only supported on macOS");
+    return NULL;
+#endif
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+cocoa_native_next_tab(PyObject UNUSED *self, PyObject *args)
+{
+    id_type os_window_id = 0;
+    if (!PyArg_ParseTuple(args, "|K", &os_window_id))
+        return NULL;
+#ifdef __APPLE__
+    OSWindow *w = os_window_id ? os_window_for_id(os_window_id) : current_os_window();
+    if (!w || !w->handle)
+        Py_RETURN_NONE;
+    if (!glfwGetCocoaWindow)
+    {
+        PyErr_SetString(PyExc_RuntimeError, "Failed to load glfwGetCocoaWindow");
+        return NULL;
+    }
+    void *window = glfwGetCocoaWindow(w->handle);
+    if (!window)
+        Py_RETURN_NONE;
+    cocoa_next_tab(window);
+#else
+    PyErr_SetString(PyExc_RuntimeError, "cocoa_native_next_tab() is only supported on macOS");
+    return NULL;
+#endif
+    Py_RETURN_NONE;
+}
+
 static PyObject*
 change_os_window_state(PyObject *self UNUSED, PyObject *args) {
     int state;
@@ -2318,6 +2370,8 @@ static PyMethodDef module_methods[] = {
     METHODB(cocoa_hide_app, METH_NOARGS),
     METHODB(cocoa_hide_other_apps, METH_NOARGS),
     METHODB(cocoa_minimize_os_window, METH_VARARGS),
+    METHODB(cocoa_native_previous_tab, METH_VARARGS),
+    METHODB(cocoa_native_next_tab, METH_VARARGS),
     {"glfw_init", (PyCFunction)glfw_init, METH_VARARGS, ""},
     METHODB(opengl_version_string, METH_NOARGS),
     {"glfw_terminate", (PyCFunction)glfw_terminate, METH_NOARGS, ""},

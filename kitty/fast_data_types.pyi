@@ -886,6 +886,11 @@ def cocoa_hide_other_apps() -> None:
 def cocoa_minimize_os_window(os_window_id: Optional[int] = None) -> None:
     pass
 
+def cocoa_native_previous_tab(os_window_id: Optional[int] = None) -> None:
+    pass
+
+def cocoa_native_next_tab(os_window_id: Optional[int] = None) -> None:
+    pass
 
 def locale_is_valid(name: str) -> bool:
     pass
