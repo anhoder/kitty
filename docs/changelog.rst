@@ -84,12 +84,28 @@ consumption to do the same tasks.
 Detailed list of changes
 -------------------------------------
 
-0.37.1 [future]
+0.38.0 [future]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - Allow :ref:`specifying individual color themes <auto_color_scheme>` to use so that kitty changes colors automatically following the OS dark/light mode
 
 - Discard OSC 9 notifications that start with :code:`4;` because some misguided software is using it for "progress reporting" (:iss:`8011`)
+
+- Wayland GNOME: Workaround bug in mutter causing double tap on titlebar to not always work (:iss:`8054`)
+
+- clipboard kitten: Fix a bug causing kitten to hang in filter mode when input data size is not divisible by 3 and larger than 8KB (:iss:`8059`)
+
+- Wayland: Fix an abort when a client program tries to set an invalid title containing interleaved escape codes and UTF-8 multi-byte characters (:iss:`8067`)
+
+- Graphics protocol: Fix delete by number not deleting newest image with the specified number (:iss:`8071`)
+
+- Fix dashed and dotted underlines not being drawn at the same y position as straight underlines at all font sizes (:iss:`8074`)
+
+- panel kitten: Allow creating floating and on-top panels with arbitrary placement and size on Wayland (:pull:`8068`)
+
+- :opt:`remote_control_password`: Fix using a password without any actions not working (:iss:`8082`)
+
+- Fix enlarging window when a long line is wrapped between the first line of the scrollback buffer and the screen inserting a spurious newline (:iss:`7033`)
 
 0.37.0 [2024-10-30]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
