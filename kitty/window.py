@@ -68,6 +68,7 @@ from .fast_data_types import (
     get_mouse_data_for_window,
     get_options,
     is_css_pointer_name_valid,
+    is_modifier_key,
     last_focused_os_window_id,
     mark_os_window_dirty,
     monotonic,
@@ -116,6 +117,7 @@ if TYPE_CHECKING:
 
     from .fast_data_types import MousePosition
     from .file_transmission import FileTransmission
+    from .notifications import OnlyWhen
 
 
 class CwdRequestType(Enum):
@@ -629,6 +631,7 @@ class Window:
         self.current_mouse_event_button = 0
         self.current_clipboard_read_ask: Optional[bool] = None
         self.last_cmd_output_start_time = 0.
+        self.last_cmd_end_notification: Optional[tuple[int, 'OnlyWhen']] = None
         self.open_url_handler: 'OpenUrlHandler' = None
         self.last_cmd_cmdline = ''
         self.last_cmd_exit_status = 0
@@ -987,11 +990,16 @@ class Window:
             sk = sk.resolve_kitty_mod(km)
             events.append(KeyEvent(key=sk.key, mods=sk.mods, action=GLFW_REPEAT if human_key == prev else GLFW_PRESS))
             prev = human_key
+        scroll_needed = False
         for ev in events + [KeyEvent(key=x.key, mods=x.mods, action=GLFW_RELEASE) for x in reversed(events)]:
             enc = self.encoded_key(ev)
             if enc:
                 self.write_to_child(enc)
+                if ev.action != GLFW_RELEASE and not is_modifier_key(ev.key):
+                    scroll_needed = True
                 passthrough = False
+        if scroll_needed:
+            self.scroll_end()
         return passthrough
 
     def send_key_sequence(self, *keys: KeyEvent, synthesize_release_events: bool = True) -> None:
@@ -1207,6 +1215,12 @@ class Window:
                 tab = self.tabref()
                 if tab is not None:
                     tab.relayout_borders()
+            if self.last_cmd_end_notification is not None:
+                from .notifications import OnlyWhen
+                opts = get_options()
+                if self.last_cmd_end_notification[1] in (OnlyWhen.unfocused, OnlyWhen.invisible) and 'focus' in opts.notify_on_cmd_finish.clear_on:
+                    get_boss().notification_manager.close_notification(self.last_cmd_end_notification[0])
+                    self.last_cmd_end_notification = None
         elif self.os_window_id == current_focused_os_window_id():
             # Cancel IME composition after loses focus
             update_ime_position_for_window(self.id, False, -1)
@@ -1504,7 +1518,7 @@ class Window:
             "is_start": False, "time": end_time, 'cmdline': self.last_cmd_cmdline, 'exit_status': self.last_cmd_exit_status})
 
         opts = get_options()
-        when, duration, action, notify_cmdline = opts.notify_on_cmd_finish
+        when, duration, action, notify_cmdline, _ = opts.notify_on_cmd_finish
 
         if last_cmd_output_duration >= duration and when != 'never':
             from .notifications import OnlyWhen
@@ -1517,7 +1531,13 @@ class Window:
             if not nm.is_notification_allowed(cmd, self.id):
                 return
             if action == 'notify':
-                nm.notify_with_command(cmd, self.id)
+                if self.last_cmd_end_notification is not None:
+                    if 'next' in opts.notify_on_cmd_finish.clear_on:
+                        nm.close_notification(self.last_cmd_end_notification[0])
+                    self.last_cmd_end_notification = None
+                notification_id = nm.notify_with_command(cmd, self.id)
+                if notification_id is not None:
+                    self.last_cmd_end_notification = notification_id, cmd.only_when
             elif action == 'bell':
                 self.screen.bell()
             elif action == 'command':

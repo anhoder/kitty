@@ -89,6 +89,8 @@ Detailed list of changes
 
 - Allow :ref:`specifying individual color themes <auto_color_scheme>` to use so that kitty changes colors automatically following the OS dark/light mode
 
+- :opt:`notify_on_cmd_finish`: Automatically remove notifications when the window gains focus or the next notification is shown. Clearing behavior can be configured (:pull:`8100`)
+
 - Discard OSC 9 notifications that start with :code:`4;` because some misguided software is using it for "progress reporting" (:iss:`8011`)
 
 - Wayland GNOME: Workaround bug in mutter causing double tap on titlebar to not always work (:iss:`8054`)
@@ -106,6 +108,8 @@ Detailed list of changes
 - :opt:`remote_control_password`: Fix using a password without any actions not working (:iss:`8082`)
 
 - Fix enlarging window when a long line is wrapped between the first line of the scrollback buffer and the screen inserting a spurious newline (:iss:`7033`)
+
+- When re-attaching a detached tab preserve internal layout state such as biases and orientations (:iss:`8106`)
 
 0.37.0 [2024-10-30]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
