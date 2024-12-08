@@ -192,6 +192,13 @@ jobs:
           - name: Run benchmarks
             run: ./benchmark.py
 
+          - name: Upload artifact
+            uses: actions/upload-artifact@v4
+            with:
+              name: dist_files
+              path: |
+                /Users/runner/work/kitty/kitty/*
+
     linux-dev:
         name: Test ./dev.sh and benchmark
         runs-on: ubuntu-latest
