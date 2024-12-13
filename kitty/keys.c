@@ -106,8 +106,13 @@ static Window*
 active_window(void) {
     Tab *t = global_state.callback_os_window->tabs + global_state.callback_os_window->active_tab;
     Window *w = t->windows + t->active_window;
-    if (w->render_data.screen) return w;
-    return NULL;
+    if (!w->render_data.screen) return NULL;
+    if (w->redirect_keys_to_overlay) {
+        for (unsigned i = 0; i < t->num_windows; i++) {
+            if (t->windows[i].id == w->redirect_keys_to_overlay && w->render_data.screen) return t->windows + i;
+        }
+    }
+    return w;
 }
 
 void
@@ -162,8 +167,57 @@ format_mods(unsigned mods) {
     return buf;
 }
 
+static void
+send_key_to_child(id_type window_id, Screen *screen, const GLFWkeyevent *ev) {
+    const int action = ev->action;
+    const uint32_t key = ev->key, native_key = ev->native_key;
+    const char *text = ev->text ? ev->text : "";
+
+    if (action == GLFW_REPEAT && !screen->modes.mDECARM) {
+        debug("discarding repeat key event as DECARM is off\n");
+        return;
+    }
+    if (screen->scrolled_by && action == GLFW_PRESS && !is_no_action_key(key, native_key)) {
+        screen_history_scroll(screen, SCROLL_FULL, false);  // scroll back to bottom
+    }
+    char encoded_key[KEY_BUFFER_SIZE] = {0};
+    int size = encode_glfw_key_event(ev, screen->modes.mDECCKM, screen_current_key_encoding_flags(screen), encoded_key);
+    if (size == SEND_TEXT_TO_CHILD) {
+        schedule_write_to_child(window_id, 1, text, strlen(text));
+        debug("sent key as text to child (window_id: %llu): %s\n", window_id, text);
+    } else if (size > 0) {
+        if (size == 1 && screen->modes.mHANDLE_TERMIOS_SIGNALS) {
+            if (screen_send_signal_for_key(screen, *encoded_key)) return;
+        }
+        schedule_write_to_child(window_id, 1, encoded_key, size);
+        if (OPT(debug_keyboard)) {
+            debug("sent encoded key to child (window_id: %llu): ", window_id);
+            for (int ki = 0; ki < size; ki++) {
+                if (encoded_key[ki] == 27) { debug("^[ "); }
+                else if (encoded_key[ki] == ' ') { debug("SPC "); }
+                else if (isprint(encoded_key[ki])) { debug("%c ", encoded_key[ki]); }
+                else { debug("0x%x ", encoded_key[ki]); }
+            }
+            debug("\n");
+        }
+    } else {
+        debug("ignoring as keyboard mode does not support encoding this event\n");
+    }
+}
+
 void
-on_key_input(GLFWkeyevent *ev) {
+dispatch_buffered_keys(Window *w) {
+    if (!w->render_data.screen || !w->buffered_keys.count) return;
+    GLFWkeyevent *keys = w->buffered_keys.key_data;
+    for (size_t i = 0; i < w->buffered_keys.count; i++) {
+        debug("Sending previously buffered key ");
+        send_key_to_child(w->id, w->render_data.screen, keys + i);
+    }
+    free(w->buffered_keys.key_data); zero_at_ptr(&w->buffered_keys);
+}
+
+void
+on_key_input(const GLFWkeyevent *ev) {
     Window *w = active_window();
     const int action = ev->action, mods = ev->mods;
     const uint32_t key = ev->key, native_key = ev->native_key;
@@ -235,42 +289,25 @@ on_key_input(GLFWkeyevent *ev) {
             }
         }
         if (!w) return;
+        screen = w->render_data.screen;
     } else if (w->last_special_key_pressed == key) {
         w->last_special_key_pressed = 0;
         debug("ignoring release event for previous press that was handled as shortcut\n");
         return;
     }
+    if (w->buffered_keys.enabled) {
+        if (w->buffered_keys.capacity < w->buffered_keys.count + 1) {
+            w->buffered_keys.capacity = MAX(16, w->buffered_keys.capacity + 8);
+            GLFWkeyevent *new = malloc(w->buffered_keys.capacity * sizeof(GLFWkeyevent));
+            if (!new) fatal("Out of memory");
+            memcpy(new, w->buffered_keys.key_data, w->buffered_keys.count * sizeof(new[0]));
+            w->buffered_keys.key_data = new;
+        }
+        GLFWkeyevent *k = w->buffered_keys.key_data;
+        k[w->buffered_keys.count++] = *ev;
+        debug("bufferring key until child is ready\n");
+    } else send_key_to_child(w->id, screen, ev);
 #undef dispatch_key_event
-    if (action == GLFW_REPEAT && !screen->modes.mDECARM) {
-        debug("discarding repeat key event as DECARM is off\n");
-        return;
-    }
-    if (screen->scrolled_by && action == GLFW_PRESS && !is_no_action_key(key, native_key)) {
-        screen_history_scroll(screen, SCROLL_FULL, false);  // scroll back to bottom
-    }
-    char encoded_key[KEY_BUFFER_SIZE] = {0};
-    int size = encode_glfw_key_event(ev, screen->modes.mDECCKM, screen_current_key_encoding_flags(screen), encoded_key);
-    if (size == SEND_TEXT_TO_CHILD) {
-        schedule_write_to_child(w->id, 1, text, strlen(text));
-        debug("sent key as text to child: %s\n", text);
-    } else if (size > 0) {
-        if (size == 1 && screen->modes.mHANDLE_TERMIOS_SIGNALS) {
-            if (screen_send_signal_for_key(screen, *encoded_key)) return;
-        }
-        schedule_write_to_child(w->id, 1, encoded_key, size);
-        if (OPT(debug_keyboard)) {
-            debug("sent encoded key to child: ");
-            for (int ki = 0; ki < size; ki++) {
-                if (encoded_key[ki] == 27) { debug("^[ "); }
-                else if (encoded_key[ki] == ' ') { debug("SPC "); }
-                else if (isprint(encoded_key[ki])) { debug("%c ", encoded_key[ki]); }
-                else { debug("0x%x ", encoded_key[ki]); }
-            }
-            debug("\n");
-        }
-    } else {
-        debug("ignoring as keyboard mode does not support encoding this event\n");
-    }
 }
 
 void
@@ -323,6 +360,50 @@ pyencode_key_for_tty(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
 }
 
 static PyObject*
+pyinject_key(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
+    static char *kwds[] = {"key", "shifted_key", "alternate_key", "mods", "action", "text", "os_window_id", NULL};
+    unsigned int key = 0, shifted_key = 0, alternate_key = 0, mods = 0, action = GLFW_PRESS;
+    unsigned long long os_window_id = 0;
+    const char *text = NULL;
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "I|IIIIzK", kwds, &key, &shifted_key, &alternate_key, &mods, &action, &text, &os_window_id)) return NULL;
+    id_type orig = global_state.callback_os_window ? global_state.callback_os_window->id : 0;
+    bool found = false;
+    if (os_window_id) {
+        for (size_t i = 0; i < global_state.num_os_windows && !found; i++) {
+            if (global_state.os_windows[i].id == os_window_id) {
+                global_state.callback_os_window = global_state.os_windows + i;
+                found = true;
+            }
+        }
+        if (!found) { PyErr_Format(PyExc_IndexError, "Could not find OS Window with id: %llu", os_window_id); return NULL; }
+    } else {
+        if (!global_state.callback_os_window) {
+            for (size_t i = 0; i < global_state.num_os_windows && !found; i++) {
+                if (global_state.os_windows[i].is_focused) {
+                    global_state.callback_os_window = global_state.os_windows + i;
+                    found = true;
+                }
+            }
+            if (!found && ! global_state.num_os_windows) { PyErr_SetString(PyExc_Exception, "No OS Windows available to inject key presses into"); return NULL; }
+            global_state.callback_os_window = global_state.os_windows;
+            found = true;
+        }
+    }
+    GLFWkeyevent ev = { .key = key, .shifted_key = shifted_key, .alternate_key = alternate_key, .text = text, .action = action, .mods = mods };
+    on_key_input(&ev);
+    if (orig) {
+        found = false;
+        for (size_t i = 0; i < global_state.num_os_windows && !found; i++) {
+            if (global_state.os_windows[i].id == orig) {
+                global_state.callback_os_window = global_state.os_windows + i; found = true;
+            }
+        }
+        if (!found) global_state.callback_os_window = NULL;
+    } else global_state.callback_os_window = NULL;
+    Py_RETURN_NONE;
+}
+
+static PyObject*
 pyis_modifier_key(PyObject *self UNUSED, PyObject *a) {
     unsigned long key = PyLong_AsUnsignedLong(a);
     if (PyErr_Occurred()) return NULL;
@@ -333,6 +414,7 @@ pyis_modifier_key(PyObject *self UNUSED, PyObject *a) {
 static PyMethodDef module_methods[] = {
     M(key_for_native_key_name, METH_VARARGS),
     M(encode_key_for_tty, METH_VARARGS | METH_KEYWORDS),
+    M(inject_key, METH_VARARGS | METH_KEYWORDS),
     M(is_modifier_key, METH_O),
     {0}
 };
