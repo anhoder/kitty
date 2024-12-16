@@ -84,7 +84,7 @@ consumption to do the same tasks.
 Detailed list of changes
 -------------------------------------
 
-0.38.0 [future]
+0.38.0 [2024-12-15]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - Allow :ref:`specifying individual color themes <auto_color_scheme>` to use so that kitty changes colors automatically following the OS dark/light mode
@@ -112,6 +112,7 @@ Detailed list of changes
 - When re-attaching a detached tab preserve internal layout state such as biases and orientations (:iss:`8106`)
 
 - hints/unicode_input kittens: Do not lose keypresses that are sent very rapidly via an automation tool immediately after the kitten is launched (:iss:`7089`)
+
 
 0.37.0 [2024-10-30]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
