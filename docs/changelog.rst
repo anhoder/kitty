@@ -89,9 +89,13 @@ Detailed list of changes
 
 - macOS: Fix a regression in the previous release that broke rendering of Emoji using the VS16 variation selector (:iss:`8130`)
 
-- themes kitten: When using the *Default* theme as an auto switch theme include all the actual settings values (:iss:`8124`)
+- When automatically changing colors based on OS color preference, first reset
+  all colors to default before applying the new theme so that even colors not
+  specified in the theme are correct (:iss:`8124`)
 
 - Graphics: Fix deleted but not freed images without any references being incorrectly freed on a subsequent delete command (:disc:`8129`)
+
+- Add support for `escape code protocol <https://github.com/contour-terminal/contour/blob/master/docs/vt-extensions/color-palette-update-notifications.md>`__ for notifying applications on dark/light color scheme change
 
 0.38.0 [2024-12-15]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
