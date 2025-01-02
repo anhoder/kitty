@@ -69,5 +69,6 @@ prepare-for-cross-compile: clean all
 cross-compile:
 	python3 setup.py linux-package --skip-code-generation
 
-sign:
+build-mac:
+	./dev.sh build
 	codesign --force --deep --sign - ./kitty/launcher/kitty.app
