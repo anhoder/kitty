@@ -158,7 +158,43 @@ func ansi_formatter(w io.Writer, style *chroma.Style, it chroma.Iterator) (err e
 	return nil
 }
 
-func highlight_file(path string) (highlighted string, err error) {
+func resolved_chroma_style(use_light_colors bool) *chroma.Style {
+	name := utils.IfElse(use_light_colors, conf.Pygments_style, conf.Dark_pygments_style)
+	var style *chroma.Style
+	if name == "default" {
+		style = DefaultStyle()
+	} else {
+		style = styles.Get(name)
+	}
+	if style == nil {
+		if resolved_colors.Background.IsDark() && !resolved_colors.Foreground.IsDark() {
+			style = styles.Get("monokai")
+			if style == nil {
+				style = styles.Get("github-dark")
+			}
+		} else {
+			style = DefaultStyle()
+		}
+		if style == nil {
+			style = styles.Fallback
+		}
+	}
+	return style
+}
+
+var tokens_map map[string][]chroma.Token
+var mu sync.Mutex
+
+func highlight_file(path string, use_light_colors bool) (highlighted string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			e, ok := r.(error)
+			if !ok {
+				e = fmt.Errorf("%v", r)
+			}
+			err = e
+		}
+	}()
 	filename_for_detection := filepath.Base(path)
 	ext := filepath.Ext(filename_for_detection)
 	if ext != "" {
@@ -172,56 +208,51 @@ func highlight_file(path string) (highlighted string, err error) {
 	if err != nil {
 		return "", err
 	}
-	lexer := lexers.Match(filename_for_detection)
-	if lexer == nil {
-		if err == nil {
+	mu.Lock()
+	if tokens_map == nil {
+		tokens_map = make(map[string][]chroma.Token)
+	}
+	tokens := tokens_map[path]
+	mu.Unlock()
+	if tokens == nil {
+		lexer := lexers.Match(filename_for_detection)
+		if lexer == nil {
 			lexer = lexers.Analyse(text)
 		}
-	}
-	if lexer == nil {
-		return "", fmt.Errorf("Cannot highlight %#v: %w", path, ErrNoLexer)
-	}
-	lexer = chroma.Coalesce(lexer)
-	name := conf.Pygments_style
-	var style *chroma.Style
-	if name == "default" {
-		style = DefaultStyle()
-	} else {
-		style = styles.Get(name)
-	}
-	if style == nil {
-		if conf.Background.IsDark() && !conf.Foreground.IsDark() {
-			style = styles.Get("monokai")
-			if style == nil {
-				style = styles.Get("github-dark")
-			}
-		} else {
-			style = DefaultStyle()
+		if lexer == nil {
+			return "", fmt.Errorf("Cannot highlight %#v: %w", path, ErrNoLexer)
 		}
-		if style == nil {
-			style = styles.Fallback
+		lexer = chroma.Coalesce(lexer)
+		iterator, err := lexer.Tokenise(nil, text)
+		if err != nil {
+			return "", err
 		}
-	}
-	iterator, err := lexer.Tokenise(nil, text)
-	if err != nil {
-		return "", err
+		tokens = iterator.Tokens()
+		mu.Lock()
+		tokens_map[path] = tokens
+		mu.Unlock()
 	}
 	formatter := chroma.FormatterFunc(ansi_formatter)
 	w := strings.Builder{}
 	w.Grow(len(text) * 2)
-	err = formatter.Format(&w, style, iterator)
+	err = formatter.Format(&w, resolved_chroma_style(use_light_colors), chroma.Literator(tokens...))
 	// os.WriteFile(filepath.Base(path+".highlighted"), []byte(w.String()), 0o600)
 	return w.String(), err
 }
 
-func highlight_all(paths []string) {
+func highlight_all(paths []string, light bool) {
 	ctx := images.Context{}
 	ctx.Parallel(0, len(paths), func(nums <-chan int) {
 		for i := range nums {
 			path := paths[i]
-			raw, err := highlight_file(path)
-			if err == nil {
-				highlighted_lines_cache.Set(path, text_to_lines(raw))
+			raw, err := highlight_file(path, light)
+			if err != nil {
+				continue
+			}
+			if light {
+				light_highlighted_lines_cache.Set(path, text_to_lines(raw))
+			} else {
+				dark_highlighted_lines_cache.Set(path, text_to_lines(raw))
 			}
 		}
 	})

@@ -88,12 +88,14 @@ def create_shared_memory(data: Any, prefix: str) -> str:
     import atexit
     import json
 
+    from kitty.fast_data_types import get_boss
     from kitty.shm import SharedMemory
     db = json.dumps(data).encode('utf-8')
     with SharedMemory(size=len(db) + SharedMemory.num_bytes_for_size, prefix=prefix) as shm:
         shm.write_data_with_size(db)
         shm.flush()
-        atexit.register(shm.unlink)
+        atexit.register(shm.close)  # keeps shm alive till exit
+        get_boss().atexit.shm_unlink(shm.name)
     return shm.name
 
 

@@ -267,11 +267,10 @@ _ksi_deferred_init() {
         fi
 
         if [[ "$is_ssh_session" == "y" ]]; then
-            # show the hostname via %m for SSH sessions
             functions[_ksi_precmd]+="
-                builtin print -Prnu $_ksi_fd \$'\\e]2;'\"%m: \${(%):-%(4~|…/%3~|%~)}\"\$'\\a'"
+                builtin print -rnu $_ksi_fd \$'\\e]2;'\"\${(V)HOST-}: \${(%):-%(4~|…/%3~|%~)}\"\$'\\a'"
             functions[_ksi_preexec]+="
-                builtin print -Prnu $_ksi_fd \$'\\e]2;'\"%m: \${(V)1}\"\$'\\a'"
+                builtin print -rnu $_ksi_fd \$'\\e]2;'\"\${(V)HOST-}: \${(V)1}\"\$'\\a'"
         else
             functions[_ksi_precmd]+="
                 builtin print -rnu $_ksi_fd \$'\\e]2;'\"\${(%):-%(4~|…/%3~|%~)}\"\$'\\a'"

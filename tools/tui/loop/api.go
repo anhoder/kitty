@@ -57,6 +57,10 @@ type Loop struct {
 	style_ctx                              style.Context
 	atomic_update_active                   bool
 	pointer_shapes                         []PointerShape
+	waiting_for_capabilities_response      bool
+
+	// Queried capabilities from terminal
+	TerminalCapabilities TerminalCapabilities
 
 	// Suspend the loop restoring terminal state, and run the provided function. When it returns terminal state is
 	// put back to what it was before suspending unless the function returns an error or an error occurs saving/restoring state.
@@ -111,6 +115,12 @@ type Loop struct {
 
 	// Called on SIGTERM return true if you wish to handle it yourself
 	OnSIGTERM func() (bool, error)
+
+	// Called when capabilities response is received
+	OnCapabilitiesReceived func(TerminalCapabilities) error
+
+	// Called when the terminal's color scheme changes
+	OnColorSchemeChange func(ColorPreference) error
 }
 
 func New(options ...func(self *Loop)) (*Loop, error) {
@@ -194,6 +204,15 @@ func (self *Loop) NoRestoreColors() *Loop {
 
 func NoRestoreColors(self *Loop) {
 	self.terminal_options.restore_colors = false
+}
+
+func (self *Loop) ColorSchemeChangeNotifications() *Loop {
+	self.terminal_options.color_scheme_change_notification = true
+	return self
+}
+
+func ColorSchemeChangeNotifications(self *Loop) {
+	self.terminal_options.color_scheme_change_notification = true
 }
 
 func NoInBandResizeNotifications(self *Loop) {
@@ -537,4 +556,16 @@ func (self *Loop) CurrentPointerShape() (ans PointerShape, has_shape bool) {
 		ans = self.pointer_shapes[len(self.pointer_shapes)-1]
 	}
 	return
+}
+
+// Query the terminal for various capabilities, the OnCapabilitiesReceived
+// callback will be called once the query response is received. This
+// function should be called as early as possible ideally in OnInitialize.
+func (self *Loop) QueryCapabilities() {
+	if !self.waiting_for_capabilities_response {
+		self.waiting_for_capabilities_response = true
+		self.StartAtomicUpdate()
+		self.QueueWriteString("\x1b[?u\x1b[?996n\x1b[c")
+		self.EndAtomicUpdate()
+	}
 }

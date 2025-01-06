@@ -61,6 +61,7 @@ type Handler struct {
 	collection                                          *Collection
 	diff_map                                            map[string]*Patch
 	logical_lines                                       *LogicalLines
+	terminal_capabilities_received                      bool
 	lp                                                  *loop.Loop
 	current_context_count, original_context_count       int
 	added_count, removed_count                          int
@@ -111,9 +112,51 @@ func (self *Handler) finalize() {
 	image_collection.Finalize(self.lp)
 }
 
+func set_terminal_colors(lp *loop.Loop) {
+	create_formatters()
+	lp.SetDefaultColor(loop.FOREGROUND, resolved_colors.Foreground)
+	lp.SetDefaultColor(loop.CURSOR, resolved_colors.Foreground)
+	lp.SetDefaultColor(loop.BACKGROUND, resolved_colors.Background)
+	lp.SetDefaultColor(loop.SELECTION_BG, resolved_colors.Select_bg)
+	if resolved_colors.Select_fg.IsSet {
+		lp.SetDefaultColor(loop.SELECTION_FG, resolved_colors.Select_fg.Color)
+	}
+}
+
+func (self *Handler) on_capabilities_received(tc loop.TerminalCapabilities) {
+	var use_dark_colors bool
+	switch conf.Color_scheme {
+	case Color_scheme_auto:
+		use_dark_colors = tc.ColorPreference != loop.LIGHT_COLOR_PREFERENCE
+	case Color_scheme_light:
+		use_dark_colors = false
+	case Color_scheme_dark:
+		use_dark_colors = true
+	}
+	use_light_colors = !use_dark_colors
+	set_terminal_colors(self.lp)
+	self.terminal_capabilities_received = true
+	self.draw_screen()
+}
+
+func (self *Handler) on_color_scheme_change(cp loop.ColorPreference) error {
+	if conf.Color_scheme != Color_scheme_auto {
+		return nil
+	}
+	light := cp == loop.LIGHT_COLOR_PREFERENCE
+	if use_light_colors != light {
+		use_light_colors = light
+		set_terminal_colors(self.lp)
+		self.highlight_all()
+		self.draw_screen()
+	}
+	return nil
+}
+
 func (self *Handler) initialize() {
 	self.rl = readline.New(self.lp, readline.RlInit{DontMarkPrompts: true, Prompt: "/"})
 	self.lp.OnEscapeCode = self.on_escape_code
+	self.lp.OnColorSchemeChange = self.on_color_scheme_change
 	image_collection = graphics.NewImageCollection()
 	self.current_context_count = opts.Context
 	if self.current_context_count < 0 {
@@ -122,13 +165,6 @@ func (self *Handler) initialize() {
 	sz, _ := self.lp.ScreenSize()
 	self.update_screen_size(sz)
 	self.original_context_count = self.current_context_count
-	self.lp.SetDefaultColor(loop.FOREGROUND, conf.Foreground)
-	self.lp.SetDefaultColor(loop.CURSOR, conf.Foreground)
-	self.lp.SetDefaultColor(loop.BACKGROUND, conf.Background)
-	self.lp.SetDefaultColor(loop.SELECTION_BG, conf.Select_bg)
-	if conf.Select_fg.IsSet {
-		self.lp.SetDefaultColor(loop.SELECTION_FG, conf.Select_fg.Color)
-	}
 	self.async_results = make(chan AsyncResult, 32)
 	go func() {
 		r := AsyncResult{}
@@ -176,11 +212,22 @@ func (self *Handler) on_wakeup() error {
 	}
 }
 
+var dark_highlight_started bool
+var light_highlight_started bool
+
 func (self *Handler) highlight_all() {
+	if (use_light_colors && light_highlight_started) || (!use_light_colors && dark_highlight_started) {
+		return
+	}
+	if use_light_colors {
+		light_highlight_started = true
+	} else {
+		dark_highlight_started = true
+	}
 	text_files := utils.Filter(self.collection.paths_to_highlight.AsSlice(), is_path_text)
 	go func() {
 		r := AsyncResult{rtype: HIGHLIGHT}
-		highlight_all(text_files)
+		highlight_all(text_files, use_light_colors)
 		self.async_results <- r
 		self.lp.WakeupMainThread()
 	}()
@@ -315,7 +362,7 @@ func (self *Handler) render_diff() (err error) {
 	return nil
 }
 
-func (self *Handler) draw_image(key string, num_rows, starting_row int) {
+func (self *Handler) draw_image(key string, _, starting_row int) {
 	image_collection.PlaceImageSubRect(self.lp, key, self.images_resized_to, 0, self.screen_size.cell_height*starting_row, -1, -1)
 }
 
@@ -345,7 +392,7 @@ func (self *Handler) draw_screen() {
 	}
 	lp.MoveCursorTo(1, 1)
 	lp.ClearToEndOfScreen()
-	if self.logical_lines == nil || self.diff_map == nil || self.collection == nil {
+	if self.logical_lines == nil || self.diff_map == nil || self.collection == nil || !self.terminal_capabilities_received {
 		lp.Println(`Calculating diff, please wait...`)
 		return
 	}

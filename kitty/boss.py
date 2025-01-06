@@ -2,12 +2,12 @@
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 # Imports {{{
-import atexit
 import base64
 import json
 import os
 import re
 import socket
+import subprocess
 import sys
 from collections.abc import Container, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
@@ -37,7 +37,7 @@ from .clipboard import (
 )
 from .colors import ColorSchemes, theme_colors
 from .conf.utils import BadLine, KeyAction, to_cmdline
-from .config import common_opts_as_dict, prepare_config_file_for_editing
+from .config import common_opts_as_dict, prepare_config_file_for_editing, store_effective_config
 from .constants import (
     RC_ENCRYPTION_PROTOCOL_VERSION,
     appname,
@@ -139,7 +139,6 @@ from .utils import (
     parse_os_window_state,
     parse_uri_list,
     platform_window_id,
-    remove_socket_file,
     safe_print,
     sanitize_url_for_dispay_to_user,
     startup_notification_handler,
@@ -149,6 +148,7 @@ from .utils import (
 from .window import CommandOutput, CwdRequest, Window
 
 if TYPE_CHECKING:
+
     from .rc.base import ResponseType
 # }}}
 
@@ -167,16 +167,46 @@ class OSWindowDict(TypedDict):
     background_opacity: float
 
 
-def listen_on(spec: str) -> tuple[int, str]:
+class Atexit:
+
+    def __init__(self) -> None:
+        self.worker: Optional[subprocess.Popen[bytes]] = None
+
+    def _write_line(self, line: str) -> None:
+        if '\n' in line:
+            raise ValueError('Newlines not allowed in atexit arguments: {path!r}')
+        w = self.worker
+        if w is None:
+            w = self.worker = subprocess.Popen([kitten_exe(), '__atexit__'], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, close_fds=True)
+            assert w.stdin is not None
+            os.set_inheritable(w.stdin.fileno(), False)
+        assert w.stdin is not None
+        w.stdin.write((line + '\n').encode())
+        w.stdin.flush()
+
+    def unlink(self, path: str) -> None:
+        self._write_line(f'unlink {path}')
+
+    def shm_unlink(self, path: str) -> None:
+        self._write_line(f'shm_unlink {path}')
+
+    def rmtree(self, path: str) -> None:
+        self._write_line(f'rmtree {path}')
+
+
+def listen_on(spec: str, robust_atexit: Atexit) -> tuple[int, str]:
     import socket
     family, address, socket_path = parse_address_spec(spec)
     s = socket.socket(family)
-    atexit.register(remove_socket_file, s, socket_path)
     s.bind(address)
+    if family == socket.AF_UNIX and socket_path:
+        robust_atexit.unlink(socket_path)
     s.listen()
     if isinstance(address, tuple):  # tcp socket
         h, resolved_port = s.getsockname()[:2]
         spec = spec.rpartition(':')[0] + f':{resolved_port}'
+    import atexit
+    atexit.register(s.close)  # prevents s from being garbage collected
     return s.fileno(), spec
 
 
@@ -322,6 +352,7 @@ class Boss:
         global_shortcuts: dict[str, SingleKey],
         talk_fd: int = -1,
     ):
+        self.atexit = Atexit()
         set_layout_options(opts)
         self.clipboard = Clipboard()
         self.window_for_dispatch: Optional[Window] = None
@@ -355,7 +386,7 @@ class Boss:
         listen_fd = -1
         if args.listen_on and self.allow_remote_control in ('y', 'socket', 'socket-only', 'password'):
             try:
-                listen_fd, self.listening_on = listen_on(args.listen_on)
+                listen_fd, self.listening_on = listen_on(args.listen_on, self.atexit)
             except Exception:
                 self.misc_config_errors.append(f'Invalid listen_on={args.listen_on}, ignoring')
                 log_error(self.misc_config_errors[-1])
@@ -369,6 +400,7 @@ class Boss:
         set_boss(self)
         self.mappings: Mappings = Mappings(global_shortcuts, self.refresh_active_tab_bar)
         self.notification_manager: NotificationManager = NotificationManager(debug=self.args.debug_keyboard or self.args.debug_rendering)
+        self.atexit.unlink(store_effective_config())
 
     def startup_first_child(self, os_window_id: Optional[int], startup_sessions: Iterable[Session] = ()) -> None:
         si = startup_sessions or create_sessions(get_options(), self.args, default_session=get_options().startup_session)
@@ -1235,7 +1267,7 @@ class Boss:
                 w.clear_screen(reset=True, scrollback=True)
         elif action == 'scrollback':
             for w in windows:
-                w.clear_screen(scrollback=True)
+                w.screen.clear_scrollback()
         elif action == 'clear':
             for w in windows:
                 w.clear_screen()
@@ -1549,10 +1581,10 @@ class Boss:
                 return tab
         return None
 
-    def default_bg_changed_for(self, window_id: int) -> None:
+    def default_bg_changed_for(self, window_id: int, via_escape_code: bool = False) -> None:
         w = self.window_id_map.get(window_id)
         if w is not None:
-            w.on_color_scheme_preference_change()
+            w.on_color_scheme_preference_change(via_escape_code=via_escape_code)
             tm = self.os_window_map.get(w.os_window_id)
             if tm is not None:
                 tm.update_tab_bar_data()
@@ -2405,7 +2437,6 @@ class Boss:
         notify_on_death: Optional[Callable[[int, Optional[Exception]], None]] = None,  # guaranteed to be called only after event loop tick
         stdout: Optional[int] = None, stderr: Optional[int] = None,
     ) -> None:
-        import subprocess
         env = env or None
         if env:
             env_ = default_env().copy()
@@ -2712,6 +2743,7 @@ class Boss:
         clear_caches()
         from .guess_mime_type import clear_mime_cache
         clear_mime_cache()
+        store_effective_config()
 
     def safe_delete_temp_file(self, path: str) -> None:
         if is_path_in_temp_dir(path):

@@ -400,3 +400,24 @@ func ReloadConfigInKitty(in_parent_only bool) error {
 	}
 	return nil
 }
+
+var OverrideEffectiveConfigPath string
+
+func ReadKittyConfig(line_handler func(key, val string) error, override_effective_config_path ...string) error {
+	kp := os.Getenv("KITTY_PID")
+	kitty_conf_path := ""
+	if len(override_effective_config_path) > 0 {
+		kitty_conf_path = override_effective_config_path[0]
+	}
+	if _, err := strconv.Atoi(kp); err == nil && kitty_conf_path == "" {
+		effective_config_path := filepath.Join(utils.CacheDir(), "effective-config", kp)
+		if unix.Access(effective_config_path, unix.R_OK) == nil {
+			kitty_conf_path = effective_config_path
+		}
+	}
+	if kitty_conf_path == "" {
+		kitty_conf_path = filepath.Join(utils.ConfigDir(), "kitty.conf")
+	}
+	cp := ConfigParser{LineHandler: line_handler}
+	return cp.ParseFiles(kitty_conf_path)
+}

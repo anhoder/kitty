@@ -112,7 +112,6 @@ func main(_ *cli.Command, opts_ *Options, args []string) (rc int, err error) {
 		return 1, err
 	}
 	init_caches()
-	create_formatters()
 	defer func() {
 		for tdir := range remote_dirs {
 			os.RemoveAll(tdir)
@@ -140,14 +139,23 @@ func main(_ *cli.Command, opts_ *Options, args []string) (rc int, err error) {
 	if err != nil {
 		return 1, err
 	}
+	lp.ColorSchemeChangeNotifications()
 	h := Handler{left: left, right: right, lp: lp}
 	lp.OnInitialize = func() (string, error) {
 		lp.SetCursorVisible(false)
 		lp.SetCursorShape(loop.BAR_CURSOR, true)
 		lp.AllowLineWrapping(false)
 		lp.SetWindowTitle(fmt.Sprintf("%s vs. %s", left, right))
+		lp.QueryCapabilities()
 		h.initialize()
 		return "", nil
+	}
+	lp.OnCapabilitiesReceived = func(tc loop.TerminalCapabilities) error {
+		if !tc.KeyboardProtocol {
+			return fmt.Errorf("This terminal does not support the kitty keyboard protocol, or you are running inside a terminal multiplexer that is blocking querying for kitty keyboard protocol support. The diff kitten cannot function without it.")
+		}
+		h.on_capabilities_received(tc)
+		return nil
 	}
 	lp.OnWakeup = h.on_wakeup
 	lp.OnFinalize = func() string {

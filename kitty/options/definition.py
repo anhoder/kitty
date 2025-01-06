@@ -1400,7 +1400,7 @@ A value of zero means that no limit is applied.
 '''
     )
 
-opt('tab_title_template', '"{fmt.fg.red}{bell_symbol}{activity_symbol}{fmt.fg.tab}{title}"',
+opt('tab_title_template', '"{fmt.fg.red}{bell_symbol}{activity_symbol}{fmt.fg.tab}{tab.last_focused_progress_percent}{title}"',
     option_type='tab_title_template',
     long_text='''
 A template to render the tab title. The default just renders the title with
@@ -1421,16 +1421,22 @@ use :code:`{sup.index}`. All data available is:
     The number of window groups (a window group is a window and all of its overlay windows) in the tab.
 :code:`tab.active_wd`
     The working directory of the currently active window in the tab
-    (expensive, requires syscall). Use :code:`active_oldest_wd` to get
+    (expensive, requires syscall). Use :code:`tab.active_oldest_wd` to get
     the directory of the oldest foreground process rather than the newest.
 :code:`tab.active_exe`
     The name of the executable running in the foreground of the currently
     active window in the tab (expensive, requires syscall). Use
-    :code:`active_oldest_exe` for the oldest foreground process.
+    :code:`tab.active_oldest_exe` for the oldest foreground process.
 :code:`max_title_length`
     The maximum title length available.
 :code:`keyboard_mode`
     The name of the current :ref:`keyboard mode <modal_mappings>` or the empty string if no keyboard mode is active.
+:code:`tab.last_focused_progress_percent`
+    If a command running in a window reports the progress for a task, show this progress as a percentage
+    from the most recently focused window in the tab. Empty string if no progress is reported.
+:code:`tab.progress_percent`
+    If a command running in a window reports the progress for a task, show this progress as a percentage
+    from all windows in the tab, averaged. Empty string is no progress is reported.
 
 Note that formatting is done by Python's string formatting machinery, so you can
 use, for instance, :code:`{layout_name[:2].upper()}` to show only the first two
@@ -2996,7 +3002,7 @@ their stdout/stderr/stdin no longer work.
 
 opt('+remote_control_password', '',
     option_type='remote_control_password',
-    add_to_default=False,
+    add_to_default=False, has_secret=True,
     long_text='''
 Allow other programs to control kitty using passwords. This option can be
 specified multiple times to add multiple passwords. If no passwords are present
@@ -3204,8 +3210,7 @@ is applied. See also :opt:`clipboard_control`.
 '''
     )
 
-opt('file_transfer_confirmation_bypass', '',
-    long_text='''
+opt('file_transfer_confirmation_bypass', '', has_secret=True, long_text='''
 The password that can be supplied to the :doc:`file transfer kitten
 </kittens/transfer>` to skip the transfer confirmation prompt. This should only
 be used when initiating transfers from trusted computers, over trusted networks
@@ -4325,10 +4330,22 @@ map('Reset the terminal',
     only='macos',
     )
 
-map('Clear up to cursor line',
+map('Clear to start',
     'clear_terminal_and_scrollback cmd+k clear_terminal to_cursor active',
     only='macos',
     )
+
+map('Clear scrollback',
+    'clear_scrollback option+cmd+k clear_terminal scrollback active',
+    only='macos',
+    )
+
+map('Clear screen',
+    'clear_screen cmd+ctrl+l clear_terminal to_cursor_scroll active',
+    only='macos',
+    )
+
+
 
 map('Reload kitty.conf',
     'reload_config_file kitty_mod+f5 load_config_file',

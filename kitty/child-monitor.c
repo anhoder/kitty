@@ -1222,6 +1222,8 @@ process_cocoa_pending_actions(void) {
     if (cocoa_pending_actions[CLOSE_WINDOW]) { call_boss(close_window, NULL); }
     if (cocoa_pending_actions[RESET_TERMINAL]) { call_boss(clear_terminal, "sO", "reset", Py_True ); }
     if (cocoa_pending_actions[CLEAR_TERMINAL_AND_SCROLLBACK]) { call_boss(clear_terminal, "sO", "to_cursor", Py_True ); }
+    if (cocoa_pending_actions[CLEAR_SCROLLBACK]) { call_boss(clear_terminal, "sO", "scrollback", Py_True ); }
+    if (cocoa_pending_actions[CLEAR_SCREEN]) { call_boss(clear_terminal, "sO", "to_cursor_scroll", Py_True ); }
     if (cocoa_pending_actions[RELOAD_CONFIG]) { call_boss(load_config_file, NULL); }
     if (cocoa_pending_actions[TOGGLE_MACOS_SECURE_KEYBOARD_ENTRY]) { call_boss(toggle_macos_secure_keyboard_entry, NULL); }
     if (cocoa_pending_actions[TOGGLE_FULLSCREEN]) { call_boss(toggle_fullscreen, NULL); }
@@ -2042,28 +2044,8 @@ send_data_to_peer(PyObject *self UNUSED, PyObject *args) {
     Py_RETURN_NONE;
 }
 
-static PyObject *
-random_unix_socket(PyObject *self UNUSED, PyObject *args UNUSED) {
-#ifndef SO_PASSCRED
-    errno = ENOTSUP;
-    return PyErr_SetFromErrno(PyExc_OSError);
-#else
-    int fd, optval = 1;
-    struct sockaddr_un bind_addr = {.sun_family=AF_UNIX};
-    fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) return PyErr_SetFromErrno(PyExc_OSError);
-    if (setsockopt(fd, SOL_SOCKET, SO_PASSCRED, &optval, sizeof optval) != 0) goto fail;
-    if (bind(fd, (struct sockaddr *)&bind_addr, sizeof(sa_family_t)) != 0) goto fail;
-    return PyLong_FromLong((long)fd);
-fail:
-    safe_close(fd, __FILE__, __LINE__);
-    return PyErr_SetFromErrno(PyExc_OSError);
-#endif
-}
-
 static PyMethodDef module_methods[] = {
     METHODB(safe_pipe, METH_VARARGS),
-    METHODB(random_unix_socket, METH_NOARGS),
     {"add_timer", (PyCFunction)add_python_timer, METH_VARARGS, ""},
     {"remove_timer", (PyCFunction)remove_python_timer, METH_VARARGS, ""},
     METHODB(monitor_pid, METH_VARARGS),
