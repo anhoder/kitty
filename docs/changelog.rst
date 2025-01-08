@@ -87,7 +87,9 @@ Detailed list of changes
 0.39.0 [future]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- diff kitten: Automatically use dark/light color scheme based on the color scheme of the parent terminal. Can be controlled via the new :opt:`kitten-diff.color_scheme` option. Note that this is a **default behavior change** (:iss:`8170`)
+- :doc:`diff kitten <kittens/diff>`: Automatically use dark/light color scheme based on the color scheme of the parent terminal. Can be controlled via the new :opt:`kitten-diff.color_scheme` option. Note that this is a **default behavior change** (:iss:`8170`)
+
+- Allow dynamically generating configuration by running an arbitrary program using the new :code:`geninclude` directive in :file:`kitty.conf`
 
 - When a program running in kitty reports progress of a task display it as a percentage in the tab title. Controlled by the :opt:`tab_title_template` option
 
@@ -99,11 +101,13 @@ Detailed list of changes
 
 - diff kitten: Abort when run inside a terminal that does not support the kitty keyboard protocol (:iss:`8185`)
 
+- :doc:`query kitten <kittens/query_terminal>`: Add support for reporting name of the OS the terminal emulator is running on (:iss:`8201`)
+
 - macOS: Allow using the Passwords app to autofill passwords via the Edit->Autofill menu mimicking other macOS applications (:pull:`8195`)
 
 - macOS: Add menu items to the Edit menu to clear the screen and scrollback
 
-- Fix the :ac:`clear_terminal` scrollback action also clearing screen, not just scrollback
+- Fix the :ac:`clear_terminal scrollback <clear_terminal>` action also clearing screen, not just the scrollback
 
 0.38.1 [2024-12-26]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

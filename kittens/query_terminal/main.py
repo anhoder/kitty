@@ -5,8 +5,9 @@ import re
 import sys
 from binascii import hexlify, unhexlify
 from contextlib import suppress
-from typing import Dict, Optional, Type
+from typing import Dict, Optional, Type, get_args
 
+from kitty.conf.utils import OSNames, os_name
 from kitty.constants import appname, str_version
 from kitty.options.types import Options
 from kitty.terminfo import names
@@ -224,6 +225,16 @@ class ClipboardControl(Query):
     @staticmethod
     def get_result(opts: Options, window_id: int, os_window_id: int) -> str:
         return ' '.join(opts.clipboard_control)
+
+
+@query
+class OSName(Query):
+    name: str = 'os_name'
+    help_text: str = f'The name of the OS the terminal is running on. kitty returns values: {", ".join(sorted(get_args(OSNames)))}'
+
+    @staticmethod
+    def get_result(opts: Options, window_id: int, os_window_id: int) -> OSNames:
+        return os_name()
 
 
 def get_result(name: str, window_id: int, os_window_id: int) -> Optional[str]:
