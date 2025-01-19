@@ -1299,11 +1299,7 @@ dispatch_csi(PS *self) {
                 break;
             }
             if (start_modifier == '>' && !end_modifier) {
-                REPORT_ERROR(
-                    "The application is trying to use xterm's modifyOtherKeys."
-                    " This is superseded by the kitty keyboard protocol: https://sw.kovidgoyal.net/kitty/keyboard-protocol/"
-                    " the application should be updated to use that"
-                );
+                CALL_CSI_HANDLER1(screen_modify_other_keys, 0);
                 break;
             }
             /* fallthrough */
@@ -1421,6 +1417,7 @@ static void
 run_worker(void *p, ParseData *pd, bool flush) {
     Screen *screen = (Screen*)p;
     PS *self = (PS*)screen->vt_parser->state;
+    screen->parsing_at = pd->now;
     with_lock {
         self->read.sz += self->write.pending; self->write.pending = 0;
         pd->has_pending_input = self->read.pos < self->read.sz;

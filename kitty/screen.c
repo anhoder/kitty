@@ -1207,6 +1207,16 @@ screen_reset_mode(Screen *self, unsigned int mode) {
     set_mode_from_const(self, mode, false);
 }
 
+void
+screen_modify_other_keys(Screen *self, unsigned int val) {
+    // Only report an error about modifyOtherKeys if the kitty keyboard
+    // protocol is not in effect and the application is trying to turn it on. There are some applications that try to enable both.
+    debug_input("modifyOtherKeys: %u\n", val);
+    if (!screen_current_key_encoding_flags(self) && val) {
+        log_error("The application is trying to use xterm's modifyOtherKeys. This is superseded by the kitty keyboard protocol https://sw.kovidgoyal.net/kitty/keyboard-protocol. The application should be updated to use that.");
+    }
+}
+
 uint8_t
 screen_current_key_encoding_flags(Screen *self) {
     for (unsigned i = arraysz(self->main_key_encoding_flags); i-- > 0; ) {
@@ -1795,7 +1805,7 @@ screen_cursor_position(Screen *self, unsigned int line, unsigned int column) {
         line += self->margin_top;
         line = MAX(self->margin_top, MIN(line, self->margin_bottom));
     }
-    self->cursor->position_changed_by_client_at = monotonic();
+    self->cursor->position_changed_by_client_at = self->parsing_at;
     self->cursor->x = column; self->cursor->y = line;
     screen_ensure_bounds(self, false, in_margins);
 }
