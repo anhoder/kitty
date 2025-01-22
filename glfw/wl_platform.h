@@ -178,7 +178,8 @@ typedef struct _GLFWwindowWayland
     struct org_kde_kwin_blur *org_kde_kwin_blur;
     bool has_blur, expect_scale_from_compositor, window_fully_created;
     struct {
-        bool surface_configured, fractional_scale_received, preferred_scale_received;
+        bool surface_configured, preferred_scale_received;
+        unsigned fractional_scale_event_count;
     } once;
     struct wl_buffer *temp_buffer_used_during_window_creation;
     struct {
@@ -389,6 +390,7 @@ typedef struct _GLFWlibraryWayland
     size_t dataOffersCounter;
     _GLFWWaylandDataOffer dataOffers[8];
     bool has_preferred_buffer_scale;
+    char *compositor_name;
 } _GLFWlibraryWayland;
 
 // Wayland-specific per-monitor data
@@ -432,6 +434,7 @@ int _glfwWaylandIntegerWindowScale(_GLFWwindow*);
 void animateCursorImage(id_type timer_id, void *data);
 struct wl_cursor* _glfwLoadCursor(GLFWCursorShape, struct wl_cursor_theme*);
 void destroy_data_offer(_GLFWWaylandDataOffer*);
+const char* _glfwWaylandCompositorName(void);
 
 typedef struct wayland_cursor_shape {
     int which; const char *name;
