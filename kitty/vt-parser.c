@@ -61,8 +61,8 @@ static void
 _report_params(PyObject *dump_callback, id_type window_id, const char *name, int *params, unsigned int count, bool is_group, Region *r) {
     static char buf[MAX_CSI_PARAMS*3] = {0};
     unsigned int i, p=0;
-    if (r) p += snprintf(buf + p, sizeof(buf) - 2, "%u %u %u %u ", r->top, r->left, r->bottom, r->right);
-    const char *fmt = is_group ? "%i:" : "%i ";
+    if (r) p += snprintf(buf + p, sizeof(buf) - 2, "%u;%u;%u;%u;", r->top, r->left, r->bottom, r->right);
+    const char *fmt = is_group ? "%i:" : "%i;";
     for(i = 0; i < count && p < arraysz(buf)-20; i++) {
         int n = snprintf(buf + p, arraysz(buf) - p, fmt, params[i]);
         if (n < 0) break;
@@ -377,6 +377,8 @@ find_st_terminator(PS *self, size_t *end_pos) {
 
 // OSC {{{
 
+#include "parse-multicell-command.h"
+
 static bool
 is_osc_52(PS *self) {
     return memcmp(self->buf + self->read.consumed, "52;", 3) == 0;
@@ -537,6 +539,9 @@ dispatch_osc(PS *self, uint8_t *buf, size_t limit, bool is_extended_osc) {
             if (is_extended_osc && code == 52) code = -52;
             DISPATCH_OSC_WITH_CODE(clipboard_control);
             END_DISPATCH
+        case 66:
+            parse_multicell_code(self, buf + i, limit - i);
+            break;
         case 133:
 #ifdef DUMP_COMMANDS
             START_DISPATCH

@@ -15,11 +15,10 @@ import time
 from contextlib import contextmanager, suppress
 from functools import wraps
 from pty import CHILD, STDIN_FILENO, STDOUT_FILENO, fork
-from typing import Optional
 from unittest import TestCase
 
 from kitty.config import finalize_keys, finalize_mouse_mappings
-from kitty.fast_data_types import Cursor, HistoryBuf, LineBuf, Screen, get_options, monotonic, set_options
+from kitty.fast_data_types import TEXT_SIZE_CODE, Cursor, HistoryBuf, LineBuf, Screen, get_options, monotonic, set_options
 from kitty.options.parse import merge_result_dicts
 from kitty.options.types import Options, defaults
 from kitty.rgb import to_color
@@ -35,6 +34,11 @@ def parse_bytes(screen, data, dump_callback=None):
         s = screen.test_commit_write_buffer(data, dest)
         data = data[s:]
         screen.test_parse_written_data(dump_callback)
+
+
+def draw_multicell(screen: Screen, text: str, width: int = 0, scale: int = 1, subscale_n: int = 0, subscale_d: int = 0, vertical_align: int = 0) -> None:
+    cmd = f'\x1b]{TEXT_SIZE_CODE};w={width}:s={scale}:n={subscale_n}:d={subscale_d}:v={vertical_align};{text}\a'
+    parse_bytes(screen, cmd.encode())
 
 
 class Callbacks:
@@ -86,7 +90,7 @@ class Callbacks:
     def color_profile_popped(self, x) -> None:
         pass
 
-    def cmd_output_marking(self, is_start: Optional[bool], data: str = '') -> None:
+    def cmd_output_marking(self, is_start: bool | None, data: str = '') -> None:
         if is_start:
             self.last_cmd_at = monotonic()
             self.last_cmd_cmdline = decode_cmdline(data) if data else data

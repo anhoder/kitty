@@ -56,10 +56,6 @@ static inline void cleanup_free(void *p) { free(*(void**)p); }
 static inline void cleanup_decref(PyObject **p) { Py_CLEAR(*p); }
 #define RAII_PyObject(name, initializer) __attribute__((cleanup(cleanup_decref))) PyObject *name = initializer
 #define RAII_PY_BUFFER(name) __attribute__((cleanup(PyBuffer_Release))) Py_buffer name = {0}
-#if PY_VERSION_HEX < 0x030a0000
-static inline PyObject* Py_NewRef(PyObject *o) { Py_INCREF(o); return o; }
-static inline PyObject* Py_XNewRef(PyObject *o) { Py_XINCREF(o); return o; }
-#endif
 
 typedef unsigned long long id_type;
 typedef uint32_t char_type;
@@ -73,7 +69,7 @@ typedef uint16_t combining_type;
 typedef uint16_t glyph_index;
 typedef uint32_t pixel;
 typedef unsigned int index_type;
-typedef uint16_t sprite_index;
+typedef uint32_t sprite_index;
 typedef enum CursorShapes { NO_CURSOR_SHAPE, CURSOR_BLOCK, CURSOR_BEAM, CURSOR_UNDERLINE, CURSOR_HOLLOW, NUM_OF_CURSOR_SHAPES } CursorShape;
 typedef enum { DISABLE_LIGATURES_NEVER, DISABLE_LIGATURES_CURSOR, DISABLE_LIGATURES_ALWAYS } DisableLigature;
 
@@ -183,7 +179,7 @@ typedef struct ImageAnchorPosition {
 
 #define IGNORE_PEDANTIC_WARNINGS START_IGNORE_DIAGNOSTIC("-Wpedantic")
 #define END_IGNORE_PEDANTIC_WARNINGS END_IGNORE_DIAGNOSTIC
-#define ALLOW_UNUSED_RESULT IGNORE_DIAGNOSTIC("-Wunused-result")
+#define ALLOW_UNUSED_RESULT START_IGNORE_DIAGNOSTIC("-Wunused-result")
 #define END_ALLOW_UNUSED_RESULT END_IGNORE_DIAGNOSTIC
 #define START_ALLOW_CASE_RANGE IGNORE_PEDANTIC_WARNINGS
 #define END_ALLOW_CASE_RANGE END_IGNORE_PEDANTIC_WARNINGS
@@ -269,10 +265,14 @@ typedef struct {
 } CellPixelSize;
 
 typedef struct {int x;} *SPRITE_MAP_HANDLE;
-#define FONTS_DATA_HEAD SPRITE_MAP_HANDLE sprite_map; double logical_dpi_x, logical_dpi_y, font_sz_in_pts; unsigned int cell_width, cell_height;
+
+typedef struct FontCellMetrics {
+    unsigned int cell_width, cell_height, baseline, underline_position, underline_thickness, strikethrough_position, strikethrough_thickness;
+} FontCellMetrics;
+#define FONTS_DATA_HEAD SPRITE_MAP_HANDLE sprite_map; double logical_dpi_x, logical_dpi_y, font_sz_in_pts; FontCellMetrics fcm;
 typedef struct {FONTS_DATA_HEAD} *FONTS_DATA_HANDLE;
 
-#define clear_sprite_position(cell) (cell).sprite_x = 0; (cell).sprite_y = 0; (cell).sprite_z = 0;
+#define clear_sprite_position(cell) (cell).sprite_idx = 0;
 
 #define ensure_space_for(base, array, type, num, capacity, initial_cap, zero_mem) \
     if ((base)->capacity < num) { \
@@ -326,8 +326,8 @@ void request_window_attention(id_type, bool);
 #ifndef __APPLE__
 void play_canberra_sound(const char *which_sound, const char *event_id, bool is_path, const char *role, const char *theme_name);
 #endif
-SPRITE_MAP_HANDLE alloc_sprite_map(unsigned int, unsigned int);
-SPRITE_MAP_HANDLE free_sprite_map(SPRITE_MAP_HANDLE);
+SPRITE_MAP_HANDLE alloc_sprite_map(void);
+void free_sprite_data(FONTS_DATA_HANDLE);
 const char* get_hyperlink_for_id(const HYPERLINK_POOL_HANDLE, hyperlink_id_type id, bool only_url);
 
 #define memset_array(array, val, count) if ((count) > 0) { \

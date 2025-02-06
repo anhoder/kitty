@@ -7,7 +7,7 @@ from kitty.marks import marker_from_function, marker_from_regex
 from kitty.rgb import color_names
 from kitty.window import pagerhist
 
-from . import BaseTest, parse_bytes
+from . import BaseTest, draw_multicell, parse_bytes
 
 
 class TestScreen(BaseTest):
@@ -302,9 +302,8 @@ class TestScreen(BaseTest):
         self.assertTrue(s.historybuf.endswith_wrap())
         self.ae(str(s.historybuf), '111122')
         self.ae(at(), text + '\n')
-        # for some reason rewrap_inner moves the cursor by one cell to the right
-        self.ae((s.cursor.x, s.cursor.y), (4, 0))
-        self.ae(ac(), 'c')
+        self.ae((s.cursor.x, s.cursor.y), (3, 0))
+        self.ae(ac(), 'b')
         s = self.create_screen(cols=4, lines=4, scrollback=4)
         s.draw('1111222'), s.linefeed(), s.carriage_return()
         s.draw('333344445555')
@@ -324,10 +323,10 @@ class TestScreen(BaseTest):
         s.cursor.x, s.cursor.y = 1, 1
         self.ae(ac(), 'b')
         s.resize(s.lines, s.columns * 2)
-        self.ae(ac(), 'c')
+        self.ae(ac(), 'b')
         self.ae(str(s.historybuf), '11112222')
         self.ae(at(), text + '\n\n')
-        self.ae((s.cursor.x, s.cursor.y), (2, 0))
+        self.ae((s.cursor.x, s.cursor.y), (1, 0))
 
         # test that trailing blank line is preserved on resize
         s = self.create_screen(cols=5, lines=5, scrollback=15)
@@ -357,8 +356,10 @@ class TestScreen(BaseTest):
         s = self.create_screen(scrollback=20)
         s.draw(''.join(str(i) * s.columns for i in range(s.lines*2)))
         self.ae(str(s.linebuf), '55555\n66666\n77777\n88888\n99999')
+        before = at()
         s.resize(5, 2)
-        self.ae(str(s.linebuf), '88\n88\n99\n99\n9')
+        self.ae(before, at())
+        self.ae(str(s.linebuf), '88\n88\n89\n99\n99')
         s = self.create_screen()
         s.draw('a' * s.columns)
         s.linefeed(), s.carriage_return()
@@ -1111,37 +1112,8 @@ class TestScreen(BaseTest):
         ac(9, 10)
 
     def test_detect_url(self):
-        s = self.create_screen(cols=30)
-
-        def ae(expected, x=3, y=0):
-            s.detect_url(x, y)
-            url = ''.join(s.text_for_marked_url())
-            self.assertEqual(expected, url)
-
-        def t(url, x=0, y=0, before='', after='', expected=''):
-            s.reset()
-            s.cursor.x = x
-            s.cursor.y = y
-            s.draw(before + url + after)
-            ae(expected or url, x=x + 1 + len(before), y=y)
-
-
-        t('http://moo.com')
-        t('http://moo.com/something?else=+&what-')
-        t('http://moo.com#fragme')
-        for (st, e) in '() {} [] <>'.split():
-            t('http://moo.com', before=st, after=e)
-        for trailer in ')-=':
-            t('http://moo.com' + trailer)
-        for trailer in '{}([<>':   # )]>
-            t('http://moo.com', after=trailer)
-        t('http://moo.com', x=s.columns - 9)
-        t('https://wraps-by-one-char.com', before='[', after=']')
-        t('http://[::1]:8080')
-        t('https://wr[aps-by-one-ch]ar.com')
-        t('http://[::1]:8080/x', after='[')  # ]
-        t('http://[::1]:8080/x]y34', expected='http://[::1]:8080/x')
-        t('https://wraps-by-one-char.com[]/x', after='[')  # ]
+        detect_url(self)
+        detect_url(self, scale=2)
 
     def test_prompt_marking(self):
         # ]]]]]]]]]]]]]]]]}}}}}}}}}}}}}}}}))))))))))))))))))))))
@@ -1375,3 +1347,42 @@ class TestScreen(BaseTest):
         q({'transparent_background_color2': '?'}, {'transparent_background_color2': (Color(255, 0, 0), 126)})
         q({'transparent_background_color2': '#ffffff@-1'})
         q({'transparent_background_color2': '?'}, {'transparent_background_color2': (Color(255, 255, 255), 255)})
+
+
+def detect_url(self, scale=1):
+    s = self.create_screen(cols=30 * scale)
+
+    def ae(expected, x=3, y=0):
+        s.detect_url(x * scale, y * scale)
+        url = ''.join(s.text_for_marked_url())
+        self.assertEqual(expected, url)
+
+    def t(url, x=0, y=0, before='', after='', expected=''):
+        s.reset()
+        s.cursor.x = x
+        s.cursor.y = y
+        text = before + url + after
+        if scale == 1:
+            s.draw(text)
+        else:
+            draw_multicell(s, text, scale=scale)
+        ae(expected or url, x=x + 1 + len(before), y=y)
+
+
+    t('http://moo.com')
+    t('http://moo.com/something?else=+&what-')
+    t('http://moo.com#fragme')
+    for (st, e) in '() {} [] <>'.split():
+        t('http://moo.com', before=st, after=e)
+    for trailer in ')-=':
+        t('http://moo.com' + trailer)
+    for trailer in '{}([<>':   # )]>
+        t('http://moo.com', after=trailer)
+    if scale == 1:
+        t('http://moo.com', x=s.columns - 9)
+    t('https://wraps-by-one-char.com', before='[', after=']')
+    t('http://[::1]:8080')
+    t('https://wr[aps-by-one-ch]ar.com')
+    t('http://[::1]:8080/x', after='[')  # ]
+    t('http://[::1]:8080/x]y34', expected='http://[::1]:8080/x')
+    t('https://wraps-by-one-char.com[]/x', after='[')  # ]

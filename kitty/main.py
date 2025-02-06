@@ -7,7 +7,6 @@ import shutil
 import sys
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager, suppress
-from typing import Optional
 
 from .borders import load_borders_program
 from .boss import Boss
@@ -45,7 +44,6 @@ from .fast_data_types import (
     set_default_window_icon,
     set_options,
 )
-from .fonts.box_drawing import set_scale
 from .fonts.render import dump_font_debug, set_font_family
 from .options.types import Options
 from .options.utils import DELETE_ENV_VAR
@@ -102,7 +100,7 @@ def init_glfw(opts: Options, debug_keyboard: bool = False, debug_rendering: bool
 
 def get_macos_shortcut_for(
     func_map: dict[tuple[str, ...], list[SingleKey]], defn: str = 'new_os_window', lookup_name: str = ''
-) -> Optional[SingleKey]:
+) -> SingleKey | None:
     # for maximum robustness we should use opts.alias_map to resolve
     # aliases however this requires parsing everything on startup which could
     # be potentially slow. Lets just hope the user doesn't alias these
@@ -249,11 +247,10 @@ class AppRunner:
     def __init__(self) -> None:
         self.cached_values_name = 'main'
         self.first_window_callback = lambda window_handle: None
-        self.layer_shell_config: Optional[LayerShellConfig] = None
+        self.layer_shell_config: LayerShellConfig | None = None
         self.initial_window_size_func = initial_window_size_func
 
     def __call__(self, opts: Options, args: CLIOptions, bad_lines: Sequence[BadLine] = (), talk_fd: int = -1) -> None:
-        set_scale(opts.box_drawing_scale)
         set_options(opts, is_wayland(), args.debug_rendering, args.debug_font_fallback)
         if theme_colors.refresh():
             theme_colors.patch_opts(opts, args.debug_rendering)
@@ -473,9 +470,9 @@ def _main() -> None:
     if not cwd_ok:
         os.chdir(os.path.expanduser('~'))
     if getattr(sys, 'cmdline_args_for_open', False):
-        usage: Optional[str] = 'file_or_url ...'
-        appname: Optional[str] = 'kitty +open'
-        msg: Optional[str] = (
+        usage: str | None = 'file_or_url ...'
+        appname: str | None = 'kitty +open'
+        msg: str | None = (
             'Run kitty and open the specified files or URLs in it, using launch-actions.conf. For details'
             ' see https://sw.kovidgoyal.net/kitty/open_actions/#scripting-the-opening-of-files-with-kitty-on-macos'
             '\n\nAll the normal kitty options can be used.')

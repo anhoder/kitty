@@ -4,24 +4,14 @@
 import os
 import re
 import sys
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from typing import (
     Any,
-    Callable,
-    Dict,
-    Generator,
     Generic,
-    Iterable,
-    Iterator,
-    List,
     Literal,
     NamedTuple,
-    Optional,
-    Sequence,
-    Set,
-    Tuple,
     TypeVar,
-    Union,
 )
 
 from ..constants import _plat, is_macos
@@ -32,13 +22,13 @@ from ..typing import Protocol
 from ..utils import expandvars, log_error, shlex_split
 
 key_pat = re.compile(r'([a-zA-Z][a-zA-Z0-9_-]*)\s+(.+)$')
-ItemParser = Callable[[str, str, Dict[str, Any]], bool]
+ItemParser = Callable[[str, str, dict[str, Any]], bool]
 T = TypeVar('T')
 
 
 class OptionsProtocol(Protocol):
 
-    def _asdict(self) -> Dict[str, Any]:
+    def _asdict(self) -> dict[str, Any]:
         pass
 
 
@@ -68,7 +58,7 @@ def to_color(x: str) -> Color:
     return ans
 
 
-def to_color_or_none(x: str) -> Optional[Color]:
+def to_color_or_none(x: str) -> Color | None:
     return None if x.lower() == 'none' else to_color(x)
 
 
@@ -83,7 +73,7 @@ def to_bool(x: str) -> bool:
 class ToCmdline:
 
     def __init__(self) -> None:
-        self.override_env: Optional[Dict[str, str]] = None
+        self.override_env: dict[str, str] | None = None
 
     def __enter__(self) -> 'ToCmdline':
         return self
@@ -97,7 +87,7 @@ class ToCmdline:
         self.override_env.update(override)
         return self
 
-    def __call__(self, x: str, expand: bool = True) -> List[str]:
+    def __call__(self, x: str, expand: bool = True) -> list[str]:
         if expand:
             ans = list(
                 map(
@@ -117,7 +107,7 @@ class ToCmdline:
 to_cmdline_implementation = ToCmdline()
 
 
-def to_cmdline(x: str, expand: bool = True) -> List[str]:
+def to_cmdline(x: str, expand: bool = True) -> list[str]:
     return to_cmdline_implementation(x, expand)
 
 
@@ -199,6 +189,9 @@ class NamedLineIterator:
         return self.lines
 
 
+class GenincludeError(Exception): ...
+
+
 def pygeninclude(path: str) -> list[str]:
     import io
     import runpy
@@ -206,6 +199,12 @@ def pygeninclude(path: str) -> list[str]:
     buf = sys.stdout = io.StringIO()
     try:
         runpy.run_path(path, run_name='__main__')
+    except FileNotFoundError:
+        raise
+    except Exception:
+        import traceback
+        tb = traceback.format_exc()
+        raise GenincludeError(f'Running the geninclude program: {path} failed with the error:\n{tb}')
     finally:
         sys.stdout = before
     return buf.getvalue().splitlines()
@@ -218,7 +217,9 @@ def geninclude(path: str) -> list[str]:
         if path.endswith('.py'):
             return pygeninclude(path)
         import subprocess
-        cp = subprocess.run([path], stdout=subprocess.PIPE, text=True)
+        cp = subprocess.run([path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if cp.returncode != 0:
+            raise GenincludeError(f'Running the geninclude program: {path} failed with exit code: {cp.returncode} and STDERR:\n{cp.stderr}')
         return cp.stdout.splitlines()
     finally:
         if old is None:
@@ -237,7 +238,7 @@ class RecursiveInclude(Exception):
 
 class Memory:
 
-    def __init__(self, accumulate_bad_lines: Optional[List[BadLine]]) -> None:
+    def __init__(self, accumulate_bad_lines: list[BadLine] | None) -> None:
         self.s: set[str] = set()
         if accumulate_bad_lines is None:
             accumulate_bad_lines = []
@@ -256,11 +257,11 @@ class Memory:
 def parse_line(
     line: str,
     parse_conf_item: ItemParser,
-    ans: Dict[str, Any],
+    ans: dict[str, Any],
     base_path_for_includes: str,
     effective_config_lines: Callable[[str, str], None],
     memory: Memory,
-    accumulate_bad_lines: Optional[List[BadLine]] = None,
+    accumulate_bad_lines: list[BadLine] | None = None,
 ) -> None:
     line = line.strip()
     if not line or line.startswith('#'):
@@ -291,8 +292,11 @@ def parse_line(
             if not memory.seen(val):
                 try:
                     lines = geninclude(val)
-                except Exception:
-                    log_error(f'Could not process geninclude {val}, ignoring')
+                except FileNotFoundError as e:
+                    if e.filename == val:
+                        log_error(f'Could not find the geninclude file: {val}, ignoring')
+                    else:
+                        raise
                 else:
                     with currently_parsing.set_file(f'<get: {val}>'):
                         _parse(
@@ -329,10 +333,10 @@ def parse_line(
 def _parse(
     lines: Iterable[str],
     parse_conf_item: ItemParser,
-    ans: Dict[str, Any],
+    ans: dict[str, Any],
     memory: Memory,
-    accumulate_bad_lines: Optional[List[BadLine]] = None,
-    effective_config_lines: Optional[Callable[[str, str], None]] = None,
+    accumulate_bad_lines: list[BadLine] | None = None,
+    effective_config_lines: Callable[[str, str], None] | None = None,
 ) -> None:
     name = getattr(lines, 'name', None)
     effective_config_lines = effective_config_lines or (lambda a, b: None)
@@ -384,14 +388,14 @@ def _parse(
 def parse_config_base(
     lines: Iterable[str],
     parse_conf_item: ItemParser,
-    ans: Dict[str, Any],
-    accumulate_bad_lines: Optional[List[BadLine]] = None,
-    effective_config_lines: Optional[Callable[[str, str], None]] = None,
+    ans: dict[str, Any],
+    accumulate_bad_lines: list[BadLine] | None = None,
+    effective_config_lines: Callable[[str, str], None] | None = None,
 ) -> None:
     _parse(lines, parse_conf_item, ans, Memory(accumulate_bad_lines), accumulate_bad_lines, effective_config_lines)
 
 
-def merge_dicts(defaults: Dict[str, Any], newvals: Dict[str, Any]) -> Dict[str, Any]:
+def merge_dicts(defaults: dict[str, Any], newvals: dict[str, Any]) -> dict[str, Any]:
     ans = defaults.copy()
     ans.update(newvals)
     return ans
@@ -409,12 +413,12 @@ def resolve_config(SYSTEM_CONF: str, defconf: str, config_files_on_cmd_line: Seq
 
 def load_config(
     defaults: OptionsProtocol,
-    parse_config: Callable[[Iterable[str]], Dict[str, Any]],
-    merge_configs: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]],
+    parse_config: Callable[[Iterable[str]], dict[str, Any]],
+    merge_configs: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]],
     *paths: str,
-    overrides: Optional[Iterable[str]] = None,
-    initialize_defaults: Callable[[Dict[str, Any]], Dict[str, Any]] = lambda x: x,
-) -> Tuple[Dict[str, Any], Tuple[str, ...]]:
+    overrides: Iterable[str] | None = None,
+    initialize_defaults: Callable[[dict[str, Any]], dict[str, Any]] = lambda x: x,
+) -> tuple[dict[str, Any], tuple[str, ...]]:
     ans = initialize_defaults(defaults._asdict())
     found_paths = []
     for path in paths:
@@ -446,7 +450,7 @@ KeyFunc = Callable[[str, str], ReturnType]
 
 class KeyFuncWrapper(Generic[ReturnType]):
     def __init__(self) -> None:
-        self.args_funcs: Dict[str, KeyFunc[ReturnType]] = {}
+        self.args_funcs: dict[str, KeyFunc[ReturnType]] = {}
 
     def __call__(self, *names: str) -> Callable[[KeyFunc[ReturnType]], KeyFunc[ReturnType]]:
 
@@ -457,13 +461,13 @@ class KeyFuncWrapper(Generic[ReturnType]):
             return f
         return w
 
-    def get(self, name: str) -> Optional[KeyFunc[ReturnType]]:
+    def get(self, name: str) -> KeyFunc[ReturnType] | None:
         return self.args_funcs.get(name)
 
 
 class KeyAction(NamedTuple):
     func: str
-    args: Tuple[Union[str, float, bool, int, None], ...] = ()
+    args: tuple[str | float | bool | int | None, ...] = ()
 
     def __repr__(self) -> str:
         if self.args:
@@ -477,7 +481,7 @@ class KeyAction(NamedTuple):
         return ans
 
 
-def parse_kittens_func_args(action: str, args_funcs: Dict[str, KeyFunc[Tuple[str, Any]]]) -> KeyAction:
+def parse_kittens_func_args(action: str, args_funcs: dict[str, KeyFunc[tuple[str, Any]]]) -> KeyAction:
     parts = action.strip().split(' ', 1)
     func = parts[0]
     if len(parts) == 1:
@@ -502,13 +506,13 @@ def parse_kittens_func_args(action: str, args_funcs: Dict[str, KeyFunc[Tuple[str
     return KeyAction(func, tuple(args))
 
 
-KittensKeyDefinition = Tuple[ParsedShortcut, KeyAction]
-KittensKeyMap = Dict[ParsedShortcut, KeyAction]
+KittensKeyDefinition = tuple[ParsedShortcut, KeyAction]
+KittensKeyMap = dict[ParsedShortcut, KeyAction]
 
 
 def parse_kittens_key(
-    val: str, funcs_with_args: Dict[str, KeyFunc[Tuple[str, Any]]]
-) -> Optional[KittensKeyDefinition]:
+    val: str, funcs_with_args: dict[str, KeyFunc[tuple[str, Any]]]
+) -> KittensKeyDefinition | None:
     from ..key_encoding import parse_shortcut
     sc, action = val.partition(' ')[::2]
     if not sc or not action:
@@ -517,8 +521,8 @@ def parse_kittens_key(
     return parse_shortcut(sc), ans
 
 
-def uniq(vals: Iterable[T]) -> List[T]:
-    seen: Set[T] = set()
+def uniq(vals: Iterable[T]) -> list[T]:
+    seen: set[T] = set()
     seen_add = seen.add
     return [x for x in vals if x not in seen and not seen_add(x)]
 

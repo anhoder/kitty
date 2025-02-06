@@ -2,10 +2,10 @@
 # License: GPLv3 Copyright: 2023, Kovid Goyal <kovid at kovidgoyal.net>
 
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from functools import lru_cache, partial
 from itertools import count
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from .constants import read_kitty_resource
 from .fast_data_types import (
@@ -23,7 +23,6 @@ from .fast_data_types import (
     GRAPHICS_PROGRAM,
     MARK,
     MARK_MASK,
-    NUM_UNDERLINE_STYLES,
     REVERSE,
     STRIKETHROUGH,
     TINT_PROGRAM,
@@ -162,7 +161,6 @@ class LoadShaderPrograms:
                 MARK_SHIFT=MARK,
                 MARK_MASK=MARK_MASK,
                 DECORATION_MASK=DECORATION_MASK,
-                STRIKE_SPRITE_INDEX=NUM_UNDERLINE_STYLES + 1,
             )
 
         def resolve_cell_defines(which: str, src: str) -> str:

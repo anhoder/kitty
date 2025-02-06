@@ -710,11 +710,6 @@ shift_to_first_set_bit(CellAttrs x) {
 EXPORTED PyMODINIT_FUNC
 PyInit_fast_data_types(void) {
     PyObject *m;
-    if (sizeof(CellAttrs) != 2u) {
-        PyErr_SetString(PyExc_RuntimeError, "Size of CellAttrs is not 2 on this platform");
-        return NULL;
-    }
-
     m = PyModule_Create(&module);
     if (m == NULL) return NULL;
     init_monotonic();
@@ -763,7 +758,6 @@ PyInit_fast_data_types(void) {
 #undef s
     PyModule_AddIntConstant(m, "MARK_MASK", MARK_MASK);
     PyModule_AddIntConstant(m, "DECORATION_MASK", DECORATION_MASK);
-    PyModule_AddIntConstant(m, "NUM_UNDERLINE_STYLES", NUM_UNDERLINE_STYLES);
     PyModule_AddStringMacro(m, ERROR_PREFIX);
 #ifdef KITTY_VCS_REV
     PyModule_AddStringMacro(m, KITTY_VCS_REV);
@@ -783,6 +777,7 @@ PyInit_fast_data_types(void) {
     PyModule_AddIntMacro(m, ESC_APC);
     PyModule_AddIntMacro(m, ESC_DCS);
     PyModule_AddIntMacro(m, ESC_PM);
+    PyModule_AddIntMacro(m, TEXT_SIZE_CODE);
 #ifdef __APPLE__
     // Apple says its SHM_NAME_MAX but SHM_NAME_MAX is not actually declared in typical CrApple style.
     // This value is based on experimentation and from qsharedmemory.cpp in Qt

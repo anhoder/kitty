@@ -199,7 +199,7 @@ might cause rendering artifacts, so use with care.
 ''')
 
 opt('box_drawing_scale', '0.001, 1, 1.5, 2',
-    option_type='box_drawing_scale',
+    option_type='box_drawing_scale', ctype='!box_drawing_scale',
     long_text='''
 The sizes of the lines used for the box drawing Unicode characters. These values
 are in pts. They will be scaled by the monitor DPI to arrive at a pixel value.
@@ -208,15 +208,28 @@ lines.
 '''
     )
 
-opt('undercurl_style', 'thin-sparse',
+opt('undercurl_style', 'thin-sparse', ctype='undercurl_style',
     choices=('thin-sparse', 'thin-dense', 'thick-sparse', 'thick-dense'),
     long_text='''
 The style with which undercurls are rendered. This option takes the form
 :code:`(thin|thick)-(sparse|dense)`. Thin and thick control the thickness of the
 undercurl. Sparse and dense control how often the curl oscillates. With sparse
-the curl will peak once per character, with dense twice.
+the curl will peak once per character, with dense twice. Changing this
+option dynamically via reloading the config or remote control is undefined.
 '''
     )
+
+
+opt('underline_exclusion', '1', option_type='underline_exclusion', ctype='!underline_exclusion', long_text='''
+By default kitty renders gaps in underlines when they overlap with descenders
+(the parts of letters below the baseline, such as for y, q, p etc.). This option
+controls the thickness of the gaps. It can be either a unitless number in which
+case it is a fraction of the underline thickness as specified in the font or
+it can have a suffix of :code:`px` for pixels or :code:`pt` for points. Set to zero
+to disable the gaps. Changing this option dynamically via reloading the config or remote
+control is undefined.
+''')
+
 
 opt('text_composition_strategy', 'platform',
     ctype='!text_composition_strategy',
@@ -4321,7 +4334,7 @@ the screen, instead of just clearing the screen. For ZSH, in :file:`~/.zshrc`, a
     bindkey '^l' ctrl_l
 
 Alternatively, you can just add :code:`map ctrl+l clear_terminal to_cursor_scroll active` to :file:`kitty.conf` which
-works with no changes to the shell rc files, but only clears up to the prompt, it does not clear anytext at the prompt itself.
+works with no changes to the shell rc files, but only clears up to the prompt, it does not clear any text at the prompt itself.
 '''
     )
 

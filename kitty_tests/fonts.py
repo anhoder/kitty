@@ -1,33 +1,43 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
+import array
 import os
 import tempfile
 import unittest
-from functools import partial
+from collections.abc import Iterable
+from functools import lru_cache, partial
+from itertools import repeat
+from math import ceil
 
 from kitty.constants import is_macos, read_kitty_resource
 from kitty.fast_data_types import (
     DECAWM,
     ParsedFontFeature,
     get_fallback_font,
+    set_allow_use_of_box_fonts,
+    sprite_idx_to_pos,
     sprite_map_set_layout,
     sprite_map_set_limits,
     test_render_line,
-    test_sprite_position_for,
+    test_sprite_position_increment,
     wcwidth,
 )
 from kitty.fonts import family_name_to_key
-from kitty.fonts.box_drawing import box_chars
 from kitty.fonts.common import FontSpec, all_fonts_map, face_from_descriptor, get_font_files, get_named_style, spec_for_face
-from kitty.fonts.render import coalesce_symbol_maps, render_string, setup_for_testing, shape_string
+from kitty.fonts.render import coalesce_symbol_maps, create_face, render_string, setup_for_testing, shape_string
 from kitty.options.types import Options
 
-from . import BaseTest
+from . import BaseTest, draw_multicell
 
 
 def parse_font_spec(spec):
     return FontSpec.from_setting(spec)
+
+
+@lru_cache(maxsize=64)
+def testing_font_data(name):
+    return read_kitty_resource(name, __name__.rpartition('.')[0])
 
 
 class Selection(BaseTest):
@@ -163,49 +173,159 @@ class Selection(BaseTest):
             self.ae(face_from_descriptor(ff['medium']).applied_features(), {'dlig': 'dlig', 'test': 'test=3'})
             self.ae(face_from_descriptor(ff['bold']).applied_features(), {'dlig': 'dlig', 'test': 'test=3'})
 
+def block_helpers(s, sprites, cell_width, cell_height):
+    block_size = cell_width * cell_height * 4
 
-class Rendering(BaseTest):
+    def full_block():
+        return b'\xff' * block_size
+
+    def empty_block():
+        return b'\0' * block_size
+
+    def half_block(first=b'\xff', second=b'\0', swap=False):
+        frac = 0.5
+        height = ceil(frac * cell_height)
+        rest = cell_height - height
+        if swap:
+            height, rest = rest, height
+            first, second = second, first
+        return (first * (height * cell_width * 4)) + (second * rest * cell_width * 4)
+
+    def quarter_block():
+        frac = 0.5
+        height = ceil(frac * cell_height)
+        width = ceil(frac * cell_width)
+        ans = array.array('I', b'\0' * block_size)
+        for y in range(height):
+            pos = cell_width * y
+            for x in range(width):
+                ans[pos + x] = 0xffffffff
+        return ans.tobytes()
+
+    def upper_half_block():
+        return half_block()
+
+    def lower_half_block():
+        return half_block(swap=True)
+
+    def block_as_str(a):
+        pixels = array.array('I', a)
+        def row(y):
+            pos = y * cell_width
+            return ' '.join(f'{int(pixels[pos + x] != 0)}' for x in range(cell_width))
+        return '\n'.join(row(y) for y in range(cell_height))
+
+    def assert_blocks(a, b, msg=''):
+        if a != b:
+            msg = msg or 'block not equal'
+            if len(a) != len(b):
+                assert_blocks.__msg = msg + f' block lengths not equal: {len(a)/4} != {len(b)/4}'
+            else:
+                assert_blocks.__msg = msg + '\n' + block_as_str(a) + '\n\n' + block_as_str(b)
+            del a, b
+            raise AssertionError(assert_blocks.__msg)
+
+    def multiline_render(text, scale=1, width=1, **kw):
+        s.reset()
+        draw_multicell(s, text, scale=scale, width=width, **kw)
+        ans = []
+        for y in range(scale):
+            line = s.line(y)
+            test_render_line(line)
+            for x in range(width * scale):
+                ans.append(sprites[sprite_idx_to_pos(line.sprite_at(x), setup_for_testing.xnum, setup_for_testing.ynum)])
+        return ans
+
+    def block_test(*expected, **kw):
+        mr = multiline_render(kw.pop('text', '█'), **kw)
+        try:
+            z = zip(expected, mr, strict=True)
+        except TypeError:
+            z = zip(expected, mr)
+        for i, (expected, actual) in enumerate(z):
+            assert_blocks(expected(), actual, f'Block {i} is not equal')
+
+
+    return full_block, empty_block, upper_half_block, lower_half_block, quarter_block, block_as_str, block_test
+
+
+class FontBaseTest(BaseTest):
+
+    font_size = 5.0
+    dpi = 72.
+    font_name = 'FiraCode-Medium.otf'
+
+    def path_for_font(self, name):
+        if name not in self.font_path_cache:
+            with open(os.path.join(self.tdir, name), 'wb') as f:
+                self.font_path_cache[name] = f.name
+                f.write(testing_font_data(name))
+        return self.font_path_cache[name]
 
     def setUp(self):
         super().setUp()
-        self.test_ctx = setup_for_testing()
-        self.test_ctx.__enter__()
-        self.sprites, self.cell_width, self.cell_height = self.test_ctx.__enter__()
-        try:
-            self.assertEqual([k[0] for k in self.sprites], [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
-        except Exception:
-            self.test_ctx.__exit__()
-            del self.test_ctx
-            raise
+        self.font_path_cache = {}
         self.tdir = tempfile.mkdtemp()
+        self.addCleanup(self.rmtree_ignoring_errors, self.tdir)
+        path = self.path_for_font(self.font_name) if self.font_name else ''
+        tc = setup_for_testing(size=self.font_size, dpi=self.dpi, main_face_path=path)
+        self.sprites, self.cell_width, self.cell_height = tc.__enter__()
+        self.addCleanup(tc.__exit__)
+        self.assertEqual([k[0] for k in self.sprites], list(range(11)))
 
     def tearDown(self):
-        self.test_ctx.__exit__()
-        del self.sprites, self.cell_width, self.cell_height, self.test_ctx
-        self.rmtree_ignoring_errors(self.tdir)
+        del self.sprites, self.cell_width, self.cell_height
+        self.font_path_cache = {}
         super().tearDown()
 
+
+
+class Rendering(FontBaseTest):
+
     def test_sprite_map(self):
-        sprite_map_set_limits(10, 2)
-        sprite_map_set_layout(5, 5)
-        self.ae(test_sprite_position_for(0), (0, 0, 0))
-        self.ae(test_sprite_position_for(1), (1, 0, 0))
-        self.ae(test_sprite_position_for(2), (0, 1, 0))
-        self.ae(test_sprite_position_for(3), (1, 1, 0))
-        self.ae(test_sprite_position_for(4), (0, 0, 1))
-        self.ae(test_sprite_position_for(5), (1, 0, 1))
-        self.ae(test_sprite_position_for(6), (0, 1, 1))
-        self.ae(test_sprite_position_for(7), (1, 1, 1))
-        self.ae(test_sprite_position_for(0, 1), (0, 0, 2))
-        self.ae(test_sprite_position_for(0, 2), (1, 0, 2))
+        sprite_map_set_limits(10, 3)
+        sprite_map_set_layout(5, 4)  # 4 because of underline_exclusion row
+        self.ae(test_sprite_position_increment(), (0, 0, 0))
+        self.ae(test_sprite_position_increment(), (1, 0, 0))
+        self.ae(test_sprite_position_increment(), (0, 1, 0))
+        self.ae(test_sprite_position_increment(), (1, 1, 0))
+        self.ae(test_sprite_position_increment(), (0, 0, 1))
+        self.ae(test_sprite_position_increment(), (1, 0, 1))
+        self.ae(test_sprite_position_increment(), (0, 1, 1))
+        self.ae(test_sprite_position_increment(), (1, 1, 1))
+        self.ae(test_sprite_position_increment(), (0, 0, 2))
+        self.ae(test_sprite_position_increment(), (1, 0, 2))
 
     def test_box_drawing(self):
-        prerendered = len(self.sprites)
         s = self.create_screen(cols=len(box_chars) + 1, lines=1, scrollback=0)
+        prerendered = len(self.sprites)
         s.draw(''.join(box_chars))
         line = s.line(0)
         test_render_line(line)
         self.assertEqual(len(self.sprites) - prerendered, len(box_chars))
+
+    def test_scaled_box_drawing(self):
+        self.scaled_drawing_test()
+
+    def test_scaled_font_drawing(self):
+        set_allow_use_of_box_fonts(False)
+        try:
+            self.scaled_drawing_test()
+        finally:
+            set_allow_use_of_box_fonts(True)
+
+    def scaled_drawing_test(self):
+        s = self.create_screen(cols=8, lines=8, scrollback=0)
+        full_block, empty_block, upper_half_block, lower_half_block, quarter_block, block_as_str, block_test = block_helpers(
+                s, self.sprites, self.cell_width, self.cell_height)
+        block_test(full_block)
+        block_test(full_block, full_block, full_block, full_block, scale=2)
+        block_test(full_block, empty_block, empty_block, empty_block, scale=2, subscale_n=1, subscale_d=2)
+        block_test(full_block, full_block, empty_block, empty_block, scale=2, subscale_n=1, subscale_d=2, text='██')
+        block_test(empty_block, empty_block, full_block, empty_block, scale=2, subscale_n=1, subscale_d=2, vertical_align=1)
+        block_test(quarter_block, scale=1, subscale_n=1, subscale_d=2)
+        block_test(upper_half_block, scale=1, subscale_n=1, subscale_d=2, text='██')
+        block_test(lower_half_block, scale=1, subscale_n=1, subscale_d=2, text='██', vertical_align=1)
 
     def test_font_rendering(self):
         render_string('ab\u0347\u0305你好|\U0001F601|\U0001F64f|\U0001F63a|')
@@ -220,20 +340,19 @@ class Rendering(BaseTest):
         cells = render_string(text)[-1]
         self.ae(len(cells), sz)
 
+    @unittest.skipIf(is_macos, 'COLRv1 is only supported on Linux')
+    def test_rendering_colrv1(self):
+        f = create_face(self.path_for_font('twemoji_smiley-cff2_colr_1.otf'))
+        f.set_size(64, 96, 96)
+        for char in '😁😇😈':
+            _, w, h = f.render_codepoint(ord(char))
+            self.assertGreater(w, 64)
+            self.assertGreater(h, 64)
+
     def test_shaping(self):
 
-        font_path_cache = {}
-
-        def path_for_font(name):
-            if name not in font_path_cache:
-                with open(os.path.join(self.tdir, name), 'wb') as f:
-                    font_path_cache[name] = f.name
-                    data = read_kitty_resource(name, __name__.rpartition('.')[0])
-                    f.write(data)
-            return font_path_cache[name]
-
         def ss(text, font=None):
-            path = path_for_font(font) if font else None
+            path = self.path_for_font(font) if font else None
             return shape_string(text, path=path)
 
         def groups(text, font=None):
@@ -321,3 +440,773 @@ class Rendering(BaseTest):
         q = {(0, 30): 'a', (10, 10): 'b', (11, 11): 'b', (2, 2): 'c', (1, 1): 'c'}
         self.ae(coalesce_symbol_maps(q), {
             (0, 0): 'a', (1, 2): 'c', (3, 9): 'a', (10, 11): 'b', (12, 30): 'a'})
+
+def test_chars(chars: str = '╌', sz: int = 128) -> None:
+    # kitty +runpy "from kitty.fonts.box_drawing import test_chars; test_chars('XXX')"
+    from kitty.fast_data_types import concat_cells, render_box_char, set_send_sprite_to_gpu
+    from kitty.fonts.render import display_bitmap, setup_for_testing
+    if not chars:
+        import sys
+        chars = sys.argv[-1]
+
+    def as_ord(x: str) -> int:
+        if x.lower().startswith('u+'):
+            return int(x[2:], 16)
+        return ord(x)
+
+    if '...' in chars:
+        start, end = chars.partition('...')[::2]
+        chars = ''.join(map(chr, range(as_ord(start), as_ord(end)+1)))
+
+    with setup_for_testing('monospace', sz) as (_, width, height):
+        try:
+            for ch in chars:
+                nb = render_box_char(as_ord(ch), width, height)
+                rgb_data = concat_cells(width, height, False, (nb,))
+                display_bitmap(rgb_data, width, height)
+                print()
+        finally:
+            set_send_sprite_to_gpu(None)
+
+
+def test_drawing(sz: int = 48, family: str = 'monospace', start: int = 0x2500, num_rows: int = 10, num_cols: int = 16) -> None:
+    from kitty.fast_data_types import concat_cells, render_box_char, set_send_sprite_to_gpu
+
+    from .render import display_bitmap, setup_for_testing
+
+    with setup_for_testing(family, sz) as (_, width, height):
+        space = bytearray(width * height)
+
+        def join_cells(cells: Iterable[bytes]) -> bytes:
+            cells = tuple(bytes(x) for x in cells)
+            return concat_cells(width, height, False, cells)
+
+        def render_chr(ch: str) -> bytearray:
+            if ch in box_chars:
+                return bytearray(render_box_char(ord(ch), width, height))
+            return space
+
+        pos = start
+        rows = []
+        space_row = join_cells(repeat(space, 32))
+
+        try:
+            for r in range(num_rows):
+                row = []
+                for i in range(num_cols):
+                    row.append(render_chr(chr(pos)))
+                    row.append(space)
+                    pos += 1
+                rows.append(join_cells(row))
+                rows.append(space_row)
+            rgb_data = b''.join(rows)
+            width *= 32
+            height *= len(rows)
+            assert len(rgb_data) == width * height * 4, f'{len(rgb_data)} != {width * height * 4}'
+            display_bitmap(rgb_data, width, height)
+        finally:
+            set_send_sprite_to_gpu(None)
+
+box_chars = {  # {{{
+'─',
+ '━',
+ '│',
+ '┃',
+ '┄',
+ '┅',
+ '┆',
+ '┇',
+ '┈',
+ '┉',
+ '┊',
+ '┋',
+ '┌',
+ '┍',
+ '┎',
+ '┏',
+ '┐',
+ '┑',
+ '┒',
+ '┓',
+ '└',
+ '┕',
+ '┖',
+ '┗',
+ '┘',
+ '┙',
+ '┚',
+ '┛',
+ '├',
+ '┝',
+ '┞',
+ '┟',
+ '┠',
+ '┡',
+ '┢',
+ '┣',
+ '┤',
+ '┥',
+ '┦',
+ '┧',
+ '┨',
+ '┩',
+ '┪',
+ '┫',
+ '┬',
+ '┭',
+ '┮',
+ '┯',
+ '┰',
+ '┱',
+ '┲',
+ '┳',
+ '┴',
+ '┵',
+ '┶',
+ '┷',
+ '┸',
+ '┹',
+ '┺',
+ '┻',
+ '┼',
+ '┽',
+ '┾',
+ '┿',
+ '╀',
+ '╁',
+ '╂',
+ '╃',
+ '╄',
+ '╅',
+ '╆',
+ '╇',
+ '╈',
+ '╉',
+ '╊',
+ '╋',
+ '╌',
+ '╍',
+ '╎',
+ '╏',
+ '═',
+ '║',
+ '╒',
+ '╓',
+ '╔',
+ '╕',
+ '╖',
+ '╗',
+ '╘',
+ '╙',
+ '╚',
+ '╛',
+ '╜',
+ '╝',
+ '╞',
+ '╟',
+ '╠',
+ '╡',
+ '╢',
+ '╣',
+ '╤',
+ '╥',
+ '╦',
+ '╧',
+ '╨',
+ '╩',
+ '╪',
+ '╫',
+ '╬',
+ '╭',
+ '╮',
+ '╯',
+ '╰',
+ '╱',
+ '╲',
+ '╳',
+ '╴',
+ '╵',
+ '╶',
+ '╷',
+ '╸',
+ '╹',
+ '╺',
+ '╻',
+ '╼',
+ '╽',
+ '╾',
+ '╿',
+ '▀',
+ '▁',
+ '▂',
+ '▃',
+ '▄',
+ '▅',
+ '▆',
+ '▇',
+ '█',
+ '▉',
+ '▊',
+ '▋',
+ '▌',
+ '▍',
+ '▎',
+ '▏',
+ '▐',
+ '░',
+ '▒',
+ '▓',
+ '▔',
+ '▕',
+ '▖',
+ '▗',
+ '▘',
+ '▙',
+ '▚',
+ '▛',
+ '▜',
+ '▝',
+ '▞',
+ '▟',
+ '◉',
+ '○',
+ '●',
+ '◖',
+ '◗',
+ '◜',
+ '◝',
+ '◞',
+ '◟',
+ '◠',
+ '◡',
+ '◢',
+ '◣',
+ '◤',
+ '◥',
+ '⠀',
+ '⠁',
+ '⠂',
+ '⠃',
+ '⠄',
+ '⠅',
+ '⠆',
+ '⠇',
+ '⠈',
+ '⠉',
+ '⠊',
+ '⠋',
+ '⠌',
+ '⠍',
+ '⠎',
+ '⠏',
+ '⠐',
+ '⠑',
+ '⠒',
+ '⠓',
+ '⠔',
+ '⠕',
+ '⠖',
+ '⠗',
+ '⠘',
+ '⠙',
+ '⠚',
+ '⠛',
+ '⠜',
+ '⠝',
+ '⠞',
+ '⠟',
+ '⠠',
+ '⠡',
+ '⠢',
+ '⠣',
+ '⠤',
+ '⠥',
+ '⠦',
+ '⠧',
+ '⠨',
+ '⠩',
+ '⠪',
+ '⠫',
+ '⠬',
+ '⠭',
+ '⠮',
+ '⠯',
+ '⠰',
+ '⠱',
+ '⠲',
+ '⠳',
+ '⠴',
+ '⠵',
+ '⠶',
+ '⠷',
+ '⠸',
+ '⠹',
+ '⠺',
+ '⠻',
+ '⠼',
+ '⠽',
+ '⠾',
+ '⠿',
+ '⡀',
+ '⡁',
+ '⡂',
+ '⡃',
+ '⡄',
+ '⡅',
+ '⡆',
+ '⡇',
+ '⡈',
+ '⡉',
+ '⡊',
+ '⡋',
+ '⡌',
+ '⡍',
+ '⡎',
+ '⡏',
+ '⡐',
+ '⡑',
+ '⡒',
+ '⡓',
+ '⡔',
+ '⡕',
+ '⡖',
+ '⡗',
+ '⡘',
+ '⡙',
+ '⡚',
+ '⡛',
+ '⡜',
+ '⡝',
+ '⡞',
+ '⡟',
+ '⡠',
+ '⡡',
+ '⡢',
+ '⡣',
+ '⡤',
+ '⡥',
+ '⡦',
+ '⡧',
+ '⡨',
+ '⡩',
+ '⡪',
+ '⡫',
+ '⡬',
+ '⡭',
+ '⡮',
+ '⡯',
+ '⡰',
+ '⡱',
+ '⡲',
+ '⡳',
+ '⡴',
+ '⡵',
+ '⡶',
+ '⡷',
+ '⡸',
+ '⡹',
+ '⡺',
+ '⡻',
+ '⡼',
+ '⡽',
+ '⡾',
+ '⡿',
+ '⢀',
+ '⢁',
+ '⢂',
+ '⢃',
+ '⢄',
+ '⢅',
+ '⢆',
+ '⢇',
+ '⢈',
+ '⢉',
+ '⢊',
+ '⢋',
+ '⢌',
+ '⢍',
+ '⢎',
+ '⢏',
+ '⢐',
+ '⢑',
+ '⢒',
+ '⢓',
+ '⢔',
+ '⢕',
+ '⢖',
+ '⢗',
+ '⢘',
+ '⢙',
+ '⢚',
+ '⢛',
+ '⢜',
+ '⢝',
+ '⢞',
+ '⢟',
+ '⢠',
+ '⢡',
+ '⢢',
+ '⢣',
+ '⢤',
+ '⢥',
+ '⢦',
+ '⢧',
+ '⢨',
+ '⢩',
+ '⢪',
+ '⢫',
+ '⢬',
+ '⢭',
+ '⢮',
+ '⢯',
+ '⢰',
+ '⢱',
+ '⢲',
+ '⢳',
+ '⢴',
+ '⢵',
+ '⢶',
+ '⢷',
+ '⢸',
+ '⢹',
+ '⢺',
+ '⢻',
+ '⢼',
+ '⢽',
+ '⢾',
+ '⢿',
+ '⣀',
+ '⣁',
+ '⣂',
+ '⣃',
+ '⣄',
+ '⣅',
+ '⣆',
+ '⣇',
+ '⣈',
+ '⣉',
+ '⣊',
+ '⣋',
+ '⣌',
+ '⣍',
+ '⣎',
+ '⣏',
+ '⣐',
+ '⣑',
+ '⣒',
+ '⣓',
+ '⣔',
+ '⣕',
+ '⣖',
+ '⣗',
+ '⣘',
+ '⣙',
+ '⣚',
+ '⣛',
+ '⣜',
+ '⣝',
+ '⣞',
+ '⣟',
+ '⣠',
+ '⣡',
+ '⣢',
+ '⣣',
+ '⣤',
+ '⣥',
+ '⣦',
+ '⣧',
+ '⣨',
+ '⣩',
+ '⣪',
+ '⣫',
+ '⣬',
+ '⣭',
+ '⣮',
+ '⣯',
+ '⣰',
+ '⣱',
+ '⣲',
+ '⣳',
+ '⣴',
+ '⣵',
+ '⣶',
+ '⣷',
+ '⣸',
+ '⣹',
+ '⣺',
+ '⣻',
+ '⣼',
+ '⣽',
+ '⣾',
+ '⣿',
+ '\ue0b0',
+ '\ue0b1',
+ '\ue0b2',
+ '\ue0b3',
+ '\ue0b4',
+ '\ue0b5',
+ '\ue0b6',
+ '\ue0b7',
+ '\ue0b8',
+ '\ue0b9',
+ '\ue0ba',
+ '\ue0bb',
+ '\ue0bc',
+ '\ue0bd',
+ '\ue0be',
+ '\ue0bf',
+ '\ue0d6',
+ '\ue0d7',
+ '\uee00',
+ '\uee01',
+ '\uee02',
+ '\uee03',
+ '\uee04',
+ '\uee05',
+ '\uee06',
+ '\uee07',
+ '\uee08',
+ '\uee09',
+ '\uee0a',
+ '\uee0b',
+ '\uf5d0',
+ '\uf5d1',
+ '\uf5d2',
+ '\uf5d3',
+ '\uf5d4',
+ '\uf5d5',
+ '\uf5d6',
+ '\uf5d7',
+ '\uf5d8',
+ '\uf5d9',
+ '\uf5da',
+ '\uf5db',
+ '\uf5dc',
+ '\uf5dd',
+ '\uf5de',
+ '\uf5df',
+ '\uf5e0',
+ '\uf5e1',
+ '\uf5e2',
+ '\uf5e3',
+ '\uf5e4',
+ '\uf5e5',
+ '\uf5e6',
+ '\uf5e7',
+ '\uf5e8',
+ '\uf5e9',
+ '\uf5ea',
+ '\uf5eb',
+ '\uf5ec',
+ '\uf5ed',
+ '\uf5ee',
+ '\uf5ef',
+ '\uf5f0',
+ '\uf5f1',
+ '\uf5f2',
+ '\uf5f3',
+ '\uf5f4',
+ '\uf5f5',
+ '\uf5f6',
+ '\uf5f7',
+ '\uf5f8',
+ '\uf5f9',
+ '\uf5fa',
+ '\uf5fb',
+ '\uf5fc',
+ '\uf5fd',
+ '\uf5fe',
+ '\uf5ff',
+ '\uf600',
+ '\uf601',
+ '\uf602',
+ '\uf603',
+ '\uf604',
+ '\uf605',
+ '\uf606',
+ '\uf607',
+ '\uf608',
+ '\uf609',
+ '\uf60a',
+ '\uf60b',
+ '\uf60c',
+ '\uf60d',
+ '🬀',
+ '🬁',
+ '🬂',
+ '🬃',
+ '🬄',
+ '🬅',
+ '🬆',
+ '🬇',
+ '🬈',
+ '🬉',
+ '🬊',
+ '🬋',
+ '🬌',
+ '🬍',
+ '🬎',
+ '🬏',
+ '🬐',
+ '🬑',
+ '🬒',
+ '🬓',
+ '🬔',
+ '🬕',
+ '🬖',
+ '🬗',
+ '🬘',
+ '🬙',
+ '🬚',
+ '🬛',
+ '🬜',
+ '🬝',
+ '🬞',
+ '🬟',
+ '🬠',
+ '🬡',
+ '🬢',
+ '🬣',
+ '🬤',
+ '🬥',
+ '🬦',
+ '🬧',
+ '🬨',
+ '🬩',
+ '🬪',
+ '🬫',
+ '🬬',
+ '🬭',
+ '🬮',
+ '🬯',
+ '🬰',
+ '🬱',
+ '🬲',
+ '🬳',
+ '🬴',
+ '🬵',
+ '🬶',
+ '🬷',
+ '🬸',
+ '🬹',
+ '🬺',
+ '🬻',
+ '🬼',
+ '🬽',
+ '🬾',
+ '🬿',
+ '🭀',
+ '🭁',
+ '🭂',
+ '🭃',
+ '🭄',
+ '🭅',
+ '🭆',
+ '🭇',
+ '🭈',
+ '🭉',
+ '🭊',
+ '🭋',
+ '🭌',
+ '🭍',
+ '🭎',
+ '🭏',
+ '🭐',
+ '🭑',
+ '🭒',
+ '🭓',
+ '🭔',
+ '🭕',
+ '🭖',
+ '🭗',
+ '🭘',
+ '🭙',
+ '🭚',
+ '🭛',
+ '🭜',
+ '🭝',
+ '🭞',
+ '🭟',
+ '🭠',
+ '🭡',
+ '🭢',
+ '🭣',
+ '🭤',
+ '🭥',
+ '🭦',
+ '🭧',
+ '🭨',
+ '🭩',
+ '🭪',
+ '🭫',
+ '🭬',
+ '🭭',
+ '🭮',
+ '🭯',
+ '🭰',
+ '🭱',
+ '🭲',
+ '🭳',
+ '🭴',
+ '🭵',
+ '🭶',
+ '🭷',
+ '🭸',
+ '🭹',
+ '🭺',
+ '🭻',
+ '🭼',
+ '🭽',
+ '🭾',
+ '🭿',
+ '🮀',
+ '🮁',
+ '🮂',
+ '🮃',
+ '🮄',
+ '🮅',
+ '🮆',
+ '🮇',
+ '🮈',
+ '🮉',
+ '🮊',
+ '🮋',
+ '🮌',
+ '🮍',
+ '🮎',
+ '🮏',
+ '🮐',
+ '🮑',
+ '🮒',
+ '\U0001fb93',
+ '🮔',
+ '🮕',
+ '🮖',
+ '🮗',
+ '🮘',
+ '🮙',
+ '🮚',
+ '🮛',
+ '🮜',
+ '🮝',
+ '🮞',
+ '🮟',
+ '🮠',
+ '🮡',
+ '🮢',
+ '🮣',
+ '🮤',
+ '🮥',
+ '🮦',
+ '🮧',
+ '🮨',
+ '🮩',
+ '🮪',
+ '🮫',
+ '🮬',
+ '🮭',
+ '🮮',
+ '\U0001fbe6', '\U0001fbe7',
+ }  # }}}
+for ch in range(0x1cd00, 0x1cde5+1):  # octants
+    box_chars.add(chr(ch))

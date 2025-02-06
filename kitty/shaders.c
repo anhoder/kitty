@@ -19,14 +19,18 @@
 #define BLEND_PREMULT glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);  // blending of pre-multiplied colors
 
 enum { CELL_PROGRAM, CELL_BG_PROGRAM, CELL_SPECIAL_PROGRAM, CELL_FG_PROGRAM, BORDERS_PROGRAM, GRAPHICS_PROGRAM, GRAPHICS_PREMULT_PROGRAM, GRAPHICS_ALPHA_MASK_PROGRAM, BGIMAGE_PROGRAM, TINT_PROGRAM, TRAIL_PROGRAM, NUM_PROGRAMS };
-enum { SPRITE_MAP_UNIT, GRAPHICS_UNIT, BGIMAGE_UNIT };
+enum { SPRITE_MAP_UNIT, GRAPHICS_UNIT, BGIMAGE_UNIT, SPRITE_DECORATIONS_MAP_UNIT };
 
 // Sprites {{{
 typedef struct {
-    unsigned int cell_width, cell_height;
     int xnum, ynum, x, y, z, last_num_of_layers, last_ynum;
     GLuint texture_id;
     GLint max_texture_size, max_array_texture_layers;
+    struct decorations_map {
+        GLuint texture_id;
+        unsigned width, height;
+        size_t count;
+    } decorations_map;
 } SpriteMap;
 
 static const SpriteMap NEW_SPRITE_MAP = { .xnum = 1, .ynum = 1, .last_num_of_layers = 1, .last_ynum = -1 };
@@ -49,7 +53,7 @@ color_vec4_premult(GLint location, color_type color, GLfloat alpha) {
 
 
 SPRITE_MAP_HANDLE
-alloc_sprite_map(unsigned int cell_width, unsigned int cell_height) {
+alloc_sprite_map(void) {
     if (!max_texture_size) {
         glGetIntegerv(GL_MAX_TEXTURE_SIZE, &(max_texture_size));
         glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &(max_array_texture_layers));
@@ -66,69 +70,118 @@ alloc_sprite_map(unsigned int cell_width, unsigned int cell_height) {
     *ans = NEW_SPRITE_MAP;
     ans->max_texture_size = max_texture_size;
     ans->max_array_texture_layers = max_array_texture_layers;
-    ans->cell_width = cell_width; ans->cell_height = cell_height;
     return (SPRITE_MAP_HANDLE)ans;
 }
 
-SPRITE_MAP_HANDLE
-free_sprite_map(SPRITE_MAP_HANDLE sm) {
-    SpriteMap *sprite_map = (SpriteMap*)sm;
+void
+free_sprite_data(FONTS_DATA_HANDLE fg) {
+    SpriteMap *sprite_map = (SpriteMap*)fg->sprite_map;
     if (sprite_map) {
         if (sprite_map->texture_id) free_texture(&sprite_map->texture_id);
+        if (sprite_map->decorations_map.texture_id) free_texture(&sprite_map->texture_id);
         free(sprite_map);
+        fg->sprite_map = NULL;
     }
-    return NULL;
 }
 
-static bool copy_image_warned = false;
 
 static void
-copy_image_sub_data(GLuint src_texture_id, GLuint dest_texture_id, unsigned int width, unsigned int height, unsigned int num_levels) {
-    if (!GLAD_GL_ARB_copy_image) {
-        // ARB_copy_image not available, do a slow roundtrip copy
-        if (!copy_image_warned) {
-            copy_image_warned = true;
-            log_error("WARNING: Your system's OpenGL implementation does not have glCopyImageSubData, falling back to a slower implementation");
-        }
-        size_t sz = (size_t)width * height * num_levels;
-        pixel *src = malloc(sz * sizeof(pixel));
-        if (src == NULL) { fatal("Out of memory."); }
-        glBindTexture(GL_TEXTURE_2D_ARRAY, src_texture_id);
-        glGetTexImage(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, GL_UNSIGNED_BYTE, src);
-        glBindTexture(GL_TEXTURE_2D_ARRAY, dest_texture_id);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, width, height, num_levels, GL_RGBA, GL_UNSIGNED_BYTE, src);
-        free(src);
-    } else {
-        glCopyImageSubData(src_texture_id, GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, dest_texture_id, GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, width, height, num_levels);
+copy_32bit_texture(GLuint old_texture, GLuint new_texture, GLenum texture_type) {
+    // requires new texture to be at least as big as old texture. Assumes textures are 32bits per pixel
+    GLint width, height, layers;
+    glBindTexture(texture_type, old_texture);
+    glGetTexLevelParameteriv(texture_type, 0, GL_TEXTURE_WIDTH, &width);
+    glGetTexLevelParameteriv(texture_type, 0, GL_TEXTURE_HEIGHT, &height);
+    glGetTexLevelParameteriv(texture_type, 0, GL_TEXTURE_DEPTH, &layers);
+    if (GLAD_GL_ARB_copy_image) { glCopyImageSubData(old_texture, texture_type, 0, 0, 0, 0, new_texture, texture_type, 0, 0, 0, 0, width, height, layers); return; }
+
+    static bool copy_image_warned = false;
+    // ARB_copy_image not available, do a slow roundtrip copy
+    if (!copy_image_warned) {
+        copy_image_warned = true;
+        log_error("WARNING: Your system's OpenGL implementation does not have glCopyImageSubData, falling back to a slower implementation");
     }
+
+    GLint internal_format;
+    glGetTexLevelParameteriv(texture_type, 0, GL_TEXTURE_INTERNAL_FORMAT, &internal_format);
+    GLenum format, type;
+    switch(internal_format) {
+        case GL_R8UI: case GL_R8I: case GL_R16UI: case GL_R16I: case GL_R32UI: case GL_R32I: case GL_RG8UI: case GL_RG8I:
+        case GL_RG16UI: case GL_RG16I: case GL_RG32UI: case GL_RG32I: case GL_RGB8UI: case GL_RGB8I: case GL_RGB16UI:
+        case GL_RGB16I: case GL_RGB32UI: case GL_RGB32I: case GL_RGBA8UI: case GL_RGBA8I: case GL_RGBA16UI: case GL_RGBA16I:
+        case GL_RGBA32UI: case GL_RGBA32I:
+            format = GL_RED_INTEGER;
+            type = GL_UNSIGNED_INT;
+            break;
+        default:
+            format = GL_RGBA;
+            type = GL_UNSIGNED_INT_8_8_8_8;
+            break;
+    }
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    RAII_ALLOC(uint8_t, pixels, malloc(width * height * layers * 4));
+    if (!pixels) fatal("Out of memory");
+    glGetTexImage(texture_type, 0, format, type, pixels);
+    glBindTexture(texture_type, new_texture);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    if (texture_type == GL_TEXTURE_2D_ARRAY) glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, width, height, layers, format, type, pixels);
+    else glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, format, type, pixels);
 }
 
+static GLuint
+setup_new_sprites_texture(GLenum texture_type) {
+    GLuint tex;
+    glGenTextures(1, &tex);
+    glBindTexture(texture_type, tex);
+    // We use GL_NEAREST otherwise glyphs that touch the edge of the cell
+    // often show a border between cells
+    glTexParameteri(texture_type, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(texture_type, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(texture_type, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(texture_type, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    return tex;
+}
+
+static void
+realloc_sprite_decorations_texture_if_needed(FONTS_DATA_HANDLE fg) {
+#define dm (sm->decorations_map)
+    SpriteMap *sm = (SpriteMap*)fg->sprite_map;
+    size_t current_capacity = dm.width * dm.height;
+    if (dm.count < current_capacity && dm.texture_id) return;
+    GLint new_capacity = dm.count + 256;
+    GLint width = new_capacity, height = 1;
+    if (new_capacity > sm->max_texture_size) {
+        width = sm->max_texture_size;
+        height = 1 + new_capacity / width;
+    }
+    if (height > sm->max_texture_size) fatal("Max texture size too small for sprite decorations map, maybe switch to using a GL_TEXTURE_2D_ARRAY");
+    const GLenum texture_type = GL_TEXTURE_2D;
+    GLuint tex = setup_new_sprites_texture(texture_type);
+    glTexImage2D(texture_type, 0, GL_R32UI, width, height, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, NULL);
+    if (dm.texture_id) {  // copy data from old texture
+        copy_32bit_texture(dm.texture_id, tex, texture_type);
+        glDeleteTextures(1, &dm.texture_id);
+    }
+    glBindTexture(texture_type, 0);
+    dm.texture_id = tex; dm.width = width; dm.height = height;
+#undef dm
+}
 
 static void
 realloc_sprite_texture(FONTS_DATA_HANDLE fg) {
-    GLuint tex;
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, tex);
-    // We use GL_NEAREST otherwise glyphs that touch the edge of the cell
-    // often show a border between cells
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    unsigned int xnum, ynum, z, znum, width, height, src_ynum;
+    unsigned int xnum, ynum, z, znum, width, height;
     sprite_tracker_current_layout(fg, &xnum, &ynum, &z);
     znum = z + 1;
     SpriteMap *sprite_map = (SpriteMap*)fg->sprite_map;
-    width = xnum * sprite_map->cell_width; height = ynum * sprite_map->cell_height;
-    glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_SRGB8_ALPHA8, width, height, znum);
-    if (sprite_map->texture_id) {
-        // need to re-alloc
-        src_ynum = MAX(1, sprite_map->last_ynum);
-        copy_image_sub_data(sprite_map->texture_id, tex, width, src_ynum * sprite_map->cell_height, sprite_map->last_num_of_layers);
+    width = xnum * fg->fcm.cell_width; height = ynum * (fg->fcm.cell_height + 1);
+    const GLenum texture_type = GL_TEXTURE_2D_ARRAY;
+    GLuint tex = setup_new_sprites_texture(texture_type);
+    glTexStorage3D(texture_type, 1, GL_SRGB8_ALPHA8, width, height, znum);
+    if (sprite_map->texture_id) { // copy old texture data into new texture
+        copy_32bit_texture(sprite_map->texture_id, tex, texture_type);
         glDeleteTextures(1, &sprite_map->texture_id);
     }
-    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+    glBindTexture(texture_type, 0);
     sprite_map->last_num_of_layers = znum;
     sprite_map->last_ynum = ynum;
     sprite_map->texture_id = tex;
@@ -138,22 +191,40 @@ static void
 ensure_sprite_map(FONTS_DATA_HANDLE fg) {
     SpriteMap *sprite_map = (SpriteMap*)fg->sprite_map;
     if (!sprite_map->texture_id) realloc_sprite_texture(fg);
+    if (!sprite_map->decorations_map.texture_id) realloc_sprite_decorations_texture_if_needed(fg);
     // We have to rebind since we don't know if the texture was ever bound
     // in the context of the current OSWindow
+    glActiveTexture(GL_TEXTURE0 + SPRITE_DECORATIONS_MAP_UNIT);
+    glBindTexture(GL_TEXTURE_2D, sprite_map->decorations_map.texture_id);
     glActiveTexture(GL_TEXTURE0 + SPRITE_MAP_UNIT);
     glBindTexture(GL_TEXTURE_2D_ARRAY, sprite_map->texture_id);
 }
 
 void
-send_sprite_to_gpu(FONTS_DATA_HANDLE fg, unsigned int x, unsigned int y, unsigned int z, pixel *buf) {
+send_sprite_to_gpu(FONTS_DATA_HANDLE fg, sprite_index idx, pixel *buf, sprite_index decoration_idx) {
     SpriteMap *sprite_map = (SpriteMap*)fg->sprite_map;
-    unsigned int xnum, ynum, znum;
+    unsigned int xnum, ynum, znum, x, y, z;
+#define dm (sprite_map->decorations_map)
+    if (idx >= dm.count) dm.count = idx + 1;
+    realloc_sprite_decorations_texture_if_needed(fg);
+    div_t d = div(idx, dm.width);
+    x = d.rem; y = d.quot;
+    glActiveTexture(GL_TEXTURE0 + SPRITE_DECORATIONS_MAP_UNIT);
+    glBindTexture(GL_TEXTURE_2D, dm.texture_id);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, 1, 1, GL_RED_INTEGER, GL_UNSIGNED_INT, &decoration_idx);
+#undef dm
     sprite_tracker_current_layout(fg, &xnum, &ynum, &znum);
-    if ((int)znum >= sprite_map->last_num_of_layers || (znum == 0 && (int)ynum > sprite_map->last_ynum)) realloc_sprite_texture(fg);
+    if ((int)znum >= sprite_map->last_num_of_layers || (znum == 0 && (int)ynum > sprite_map->last_ynum)) {
+        realloc_sprite_texture(fg);
+        sprite_tracker_current_layout(fg, &xnum, &ynum, &znum);
+    }
+    glActiveTexture(GL_TEXTURE0 + SPRITE_MAP_UNIT);
     glBindTexture(GL_TEXTURE_2D_ARRAY, sprite_map->texture_id);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    x *= sprite_map->cell_width; y *= sprite_map->cell_height;
-    glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, x, y, z, sprite_map->cell_width, sprite_map->cell_height, 1, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, buf);
+    sprite_index_to_pos(idx, xnum, ynum, &x, &y, &z);
+    x *= fg->fcm.cell_width; y *= (fg->fcm.cell_height + 1);
+    glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, x, y, z, fg->fcm.cell_width, fg->fcm.cell_height + 1, 1, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, buf);
 }
 
 void
@@ -230,7 +301,7 @@ init_cell_program(void) {
     // Sanity check to ensure the attribute location binding worked
 #define C(p, name, expected) { int aloc = attrib_location(p, #name); if (aloc != expected && aloc != -1) fatal("The attribute location for %s is %d != %d in program: %d", #name, aloc, expected, p); }
     for (int p = CELL_PROGRAM; p < BORDERS_PROGRAM; p++) {
-        C(p, colors, 0); C(p, sprite_coords, 1); C(p, is_selected, 2);
+        C(p, colors, 0); C(p, sprite_idx, 1); C(p, is_selected, 2); C(p, decorations_sprite_map, 3);
     }
 #undef C
     for (int i = GRAPHICS_PROGRAM; i <= GRAPHICS_ALPHA_MASK_PROGRAM; i++) {
@@ -251,7 +322,7 @@ create_cell_vao(void) {
 #define A1(name, size, dtype, offset) A(name, size, dtype, (void*)(offsetof(GPUCell, offset)), sizeof(GPUCell))
 
     add_buffer_to_vao(vao_idx, GL_ARRAY_BUFFER);
-    A1(sprite_coords, 4, GL_UNSIGNED_SHORT, sprite_x);
+    A1(sprite_idx, 2, GL_UNSIGNED_INT, sprite_idx);
     A1(colors, 3, GL_UNSIGNED_INT, fg);
 
     add_buffer_to_vao(vao_idx, GL_ARRAY_BUFFER);
@@ -293,12 +364,14 @@ pick_cursor_color(Line *line, const ColorProfile *color_profile, color_type cell
 static void
 cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, const CellRenderData *crd, CursorRenderInfo *cursor, OSWindow *os_window) {
     struct GPUCellRenderData {
-        GLfloat xstart, ystart, dx, dy, sprite_dx, sprite_dy, use_cell_bg_for_selection_fg, use_cell_fg_for_selection_color, use_cell_for_selection_bg;
+        GLfloat xstart, ystart, dx, dy, use_cell_bg_for_selection_fg, use_cell_fg_for_selection_color, use_cell_for_selection_bg;
 
         GLuint default_fg, highlight_fg, highlight_bg, cursor_fg, cursor_bg, url_color, url_style, inverted;
 
-        GLuint xnum, ynum, cursor_fg_sprite_idx;
-        GLfloat cursor_x, cursor_y, cursor_w, cursor_opacity;
+        GLuint xnum, ynum, sprites_xnum, sprites_ynum, cursor_fg_sprite_idx, cell_height;
+        GLuint cursor_x1, cursor_x2, cursor_y1, cursor_y2;
+        GLfloat cursor_opacity;
+
         GLuint bg_colors0, bg_colors1, bg_colors2, bg_colors3, bg_colors4, bg_colors5, bg_colors6, bg_colors7;
         GLfloat bg_opacities0, bg_opacities1, bg_opacities2, bg_opacities3, bg_opacities4, bg_opacities5, bg_opacities6, bg_opacities7;
     };
@@ -328,10 +401,11 @@ cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, c
     }
     rd->use_cell_for_selection_bg = IS_SPECIAL_COLOR(highlight_bg) ? 1. : 0.;
     // Cursor position
-    enum { BLOCK_IDX = 0, BEAM_IDX = NUM_UNDERLINE_STYLES + 3, UNDERLINE_IDX = NUM_UNDERLINE_STYLES + 4, UNFOCUSED_IDX = NUM_UNDERLINE_STYLES + 5 };
+    enum { BLOCK_IDX = 0, BEAM_IDX = 2, UNDERLINE_IDX = 3, UNFOCUSED_IDX = 4 };
     Line *line_for_cursor = NULL;
     if (cursor->opacity > 0) {
-        rd->cursor_x = cursor->x, rd->cursor_y = cursor->y;
+        rd->cursor_x1 = cursor->x, rd->cursor_y1 = cursor->y;
+        rd->cursor_x2 = cursor->x, rd->cursor_y2 = cursor->y;
         rd->cursor_opacity = cursor->opacity;
         CursorShape cs = (cursor->is_focused || OPT(cursor_shape_unfocused) == NO_CURSOR_SHAPE) ? cursor->shape : OPT(cursor_shape_unfocused);
         switch(cs) {
@@ -356,6 +430,24 @@ cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, c
         }
         if (line_for_cursor) {
             colors_for_cell(line_for_cursor, cp, &cell_color_x, &cell_fg, &cell_bg, &reversed);
+            const CPUCell *cursor_cell;
+            const bool large_cursor = ((cursor_cell = &line_for_cursor->cpu_cells[cursor->x])->is_multicell) && cursor_cell->x == 0 && cursor_cell->y == 0;
+            if (large_cursor) {
+                switch(cs) {
+                    case CURSOR_BEAM:
+                        rd->cursor_y2 += cursor_cell->scale - 1; break;
+                    case CURSOR_UNDERLINE:
+                        rd->cursor_y1 += cursor_cell->scale - 1;
+                        rd->cursor_y2 = rd->cursor_y1;
+                        rd->cursor_x2 += mcd_x_limit(cursor_cell) - 1;
+                        break;
+                    case CURSOR_BLOCK:
+                        rd->cursor_y2 += cursor_cell->scale - 1;
+                        rd->cursor_x2 += mcd_x_limit(cursor_cell) - 1;
+                        break;
+                    case CURSOR_HOLLOW: case NUM_OF_CURSOR_SHAPES: case NO_CURSOR_SHAPE: break;
+                };
+            }
         }
         if (IS_SPECIAL_COLOR(cursor_color)) {
             if (line_for_cursor) pick_cursor_color(line_for_cursor, cp, cell_fg, cell_bg, cell_color_x, &rd->cursor_fg, &rd->cursor_bg, rd->default_fg, rd->bg_colors0);
@@ -370,10 +462,9 @@ cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, c
         }
         // store last rendered cursor color for trail rendering
         screen->last_rendered.cursor_bg = rd->cursor_bg;
-    } else rd->cursor_x = screen->columns, rd->cursor_y = screen->lines;
-    rd->cursor_w = rd->cursor_x;
-    if ((rd->cursor_fg_sprite_idx == BLOCK_IDX || rd->cursor_fg_sprite_idx == UNDERLINE_IDX) && line_for_cursor && line_for_cursor->gpu_cells[cursor->x].attrs.width > 1) {
-        rd->cursor_w += 1;
+    } else {
+        rd->cursor_x1 = screen->columns + 1; rd->cursor_x2 = screen->columns;
+        rd->cursor_y1 = screen->lines + 1; rd->cursor_y2 = screen->lines;
     }
 
     rd->xnum = screen->columns; rd->ynum = screen->lines;
@@ -381,8 +472,9 @@ cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, c
     rd->xstart = crd->gl.xstart; rd->ystart = crd->gl.ystart; rd->dx = crd->gl.dx; rd->dy = crd->gl.dy;
     unsigned int x, y, z;
     sprite_tracker_current_layout(os_window->fonts_data, &x, &y, &z);
-    rd->sprite_dx = 1.0f / (float)x; rd->sprite_dy = 1.0f / (float)y;
+    rd->sprites_xnum = x; rd->sprites_ynum = y;
     rd->inverted = screen_invert_colors(screen) ? 1 : 0;
+    rd->cell_height = os_window->fonts_data->fcm.cell_height;
 
 #undef COLOR
     rd->url_color = OPT(url_color); rd->url_style = OPT(url_style);
@@ -448,6 +540,7 @@ cell_prepare_to_render(ssize_t vao_idx, Screen *screen, GLfloat xstart, GLfloat 
 #undef update_cell_data
     screen->last_rendered.columns = screen->columns;
     screen->last_rendered.lines = screen->lines;
+
     return changed;
 }
 
@@ -646,6 +739,7 @@ set_cell_uniforms(float current_inactive_text_alpha, bool force) {
             switch(i) {
                 case CELL_PROGRAM: case CELL_FG_PROGRAM:
                     glUniform1i(cu->sprites, SPRITE_MAP_UNIT);
+                    glUniform1i(cu->sprite_decorations_map, SPRITE_DECORATIONS_MAP_UNIT);
                     glUniform1f(cu->dim_opacity, OPT(dim_opacity));
                     glUniform1f(cu->text_contrast, text_contrast);
                     glUniform1f(cu->text_gamma_adjustment, text_gamma_adjustment);
@@ -669,7 +763,7 @@ static GLfloat
 render_a_bar(OSWindow *os_window, Screen *screen, const CellRenderData *crd, WindowBarData *bar, PyObject *title, bool along_bottom) {
     GLfloat left = os_window->viewport_width * (crd->gl.xstart + 1.f) / 2.f;
     GLfloat right = left + os_window->viewport_width * crd->gl.width / 2.f;
-    unsigned bar_height = os_window->fonts_data->cell_height + 2;
+    unsigned bar_height = os_window->fonts_data->fcm.cell_height + 2;
     if (!bar_height || right <= left) return 0;
     unsigned bar_width = (unsigned)ceilf(right - left);
     if (!bar->buf || bar->width != bar_width || bar->height != bar_height) {
@@ -796,7 +890,7 @@ draw_window_number(OSWindow *os_window, Screen *screen, const CellRenderData *cr
     GLfloat right = left + os_window->viewport_width * crd->gl.width / 2.f;
     GLfloat title_bar_height = 0;
     size_t requested_height = (size_t)(os_window->viewport_height * crd->gl.height / 2.f);
-    if (window->title && PyUnicode_Check(window->title) && (requested_height > (os_window->fonts_data->cell_height + 1) * 2)) {
+    if (window->title && PyUnicode_Check(window->title) && (requested_height > (os_window->fonts_data->fcm.cell_height + 1) * 2)) {
         title_bar_height = render_a_bar(os_window, screen, crd, &window->title_bar_data, window->title, false);
     }
     GLfloat ystart = crd->gl.ystart, height = crd->gl.height, xstart = crd->gl.xstart, width = crd->gl.width;

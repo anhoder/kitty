@@ -6,12 +6,14 @@
  */
 
 #include "fonts.h"
+#include "colors.h"
 #include "cleanup.h"
 #include "state.h"
 #include <math.h>
 #include <structmember.h>
 #include <ft2build.h>
 #include <hb-ft.h>
+#include <cairo-ft.h>
 
 #if FREETYPE_MAJOR == 2 && FREETYPE_MINOR < 7
 #define FT_Bitmap_Init FT_Bitmap_New
@@ -21,6 +23,7 @@
 #include FT_TRUETYPE_TABLES_H
 #include FT_MULTIPLE_MASTERS_H
 #include FT_SFNT_NAMES_H
+#include FT_TYPES_H
 
 typedef union FaceIndex {
     struct {
@@ -30,25 +33,39 @@ typedef union FaceIndex {
     FT_Long val;
 } FaceIndex;
 
+typedef struct FaceMetrics {
+    float size_in_pts;
+    unsigned int units_per_EM;
+    // The following are in font units use font_units_to_pixels_x/y to convert to pixels
+    int ascender, descender, height, max_advance_width, max_advance_height, underline_position, underline_thickness, strikethrough_position, strikethrough_thickness;
+} FaceMetrics;
+
 typedef struct {
     PyObject_HEAD
 
-    FT_Face face;
-    unsigned int units_per_EM;
-    int ascender, descender, height, max_advance_width, max_advance_height, underline_position, underline_thickness, strikethrough_position, strikethrough_thickness;
+    FT_Face face, face_for_cairo;
+    FaceMetrics metrics;
     int hinting, hintstyle;
     bool is_scalable, has_color, is_variable, has_svg;
-    float size_in_pts;
     FT_F26Dot6 char_width, char_height;
-    FT_UInt xdpi, ydpi;
+    double xdpi, ydpi;
     PyObject *path;
+    long index;
     hb_font_t *harfbuzz_font;
+    struct {
+        cairo_font_face_t *font;
+        void *buf;
+        cairo_surface_t *surface;
+        cairo_t *cr;
+        size_t width, height, stride;
+        unsigned size_in_px;
+    } cairo;
     hb_codepoint_t space_glyph_id;
     void *extra_data;
     free_extra_data_func free_extra_data;
-    float apple_leading;
     PyObject *name_lookup_table;
     FontFeatures font_features;
+    unsigned short dark_palette_index, light_palette_index, palettes_scanned;
 } Face;
 PyTypeObject Face_Type;
 
@@ -128,7 +145,7 @@ get_height_for_char(Face *self, char ch) {
     unsigned int ans = 0;
     int glyph_index = FT_Get_Char_Index(self->face, ch);
     if (load_glyph(self, glyph_index, FT_LOAD_DEFAULT)) {
-        unsigned int baseline = font_units_to_pixels_y(self, self->ascender);
+        unsigned int baseline = font_units_to_pixels_y(self, self->metrics.ascender);
         FT_GlyphSlotRec *glyph = self->face->glyph;
         FT_Bitmap *bm = &glyph->bitmap;
         if (glyph->bitmap_top <= 0 || (glyph->bitmap_top > 0 && (unsigned int)glyph->bitmap_top < baseline)) {
@@ -140,7 +157,7 @@ get_height_for_char(Face *self, char ch) {
 
 static unsigned int
 calc_cell_height(Face *self, bool for_metrics) {
-    unsigned int ans = font_units_to_pixels_y(self, self->height);
+    unsigned int ans = font_units_to_pixels_y(self, self->metrics.height);
     if (for_metrics) {
         unsigned int underscore_height = get_height_for_char(self, '_');
         if (underscore_height > ans) {
@@ -153,11 +170,12 @@ calc_cell_height(Face *self, bool for_metrics) {
 }
 
 static bool
-set_font_size(Face *self, FT_F26Dot6 char_width, FT_F26Dot6 char_height, FT_UInt xdpi, FT_UInt ydpi, unsigned int desired_height, unsigned int cell_height) {
+set_font_size(Face *self, FT_F26Dot6 char_width, FT_F26Dot6 char_height, double xdpi_, double ydpi_, unsigned int desired_height, unsigned int cell_height) {
+    FT_UInt xdpi = (FT_UInt)xdpi_, ydpi = (FT_UInt)ydpi_;
     int error = FT_Set_Char_Size(self->face, 0, char_height, xdpi, ydpi);
     if (!error) {
-        self->char_width = char_width; self->char_height = char_height; self->xdpi = xdpi; self->ydpi = ydpi;
-        if (self->harfbuzz_font != NULL) hb_ft_font_changed(self->harfbuzz_font);
+        self->char_width = char_width; self->char_height = char_height;
+        self->xdpi = xdpi_; self->ydpi = ydpi_;
     } else {
         if (!self->is_scalable && self->face->num_fixed_sizes > 0) {
             int32_t min_diff = INT32_MAX;
@@ -178,12 +196,14 @@ set_font_size(Face *self, FT_F26Dot6 char_width, FT_F26Dot6 char_height, FT_UInt
             if (strike_index > -1) {
                 error = FT_Select_Size(self->face, strike_index);
                 if (error) { set_freetype_error("Failed to set char size for non-scalable font, with error:", error); return false; }
+                self->xdpi = xdpi_; self->ydpi = ydpi_;
                 return true;
             }
         }
         set_freetype_error("Failed to set char size, with error:", error);
         return false;
     }
+    if (self->harfbuzz_font != NULL) hb_ft_font_changed(self->harfbuzz_font);
     return !error;
 }
 
@@ -193,8 +213,8 @@ set_size_for_face(PyObject *s, unsigned int desired_height, bool force, FONTS_DA
     FT_F26Dot6 w = (FT_F26Dot6)(ceil(fg->font_sz_in_pts * 64.0));
     FT_UInt xdpi = (FT_UInt)fg->logical_dpi_x, ydpi = (FT_UInt)fg->logical_dpi_y;
     if (!force && (self->char_width == w && self->char_height == w && self->xdpi == xdpi && self->ydpi == ydpi)) return true;
-    ((Face*)self)->size_in_pts = (float)fg->font_sz_in_pts;
-    return set_font_size(self, w, w, xdpi, ydpi, desired_height, fg->cell_height);
+    self->metrics.size_in_pts = (float)fg->font_sz_in_pts;
+    return set_font_size(self, w, w, fg->logical_dpi_x, fg->logical_dpi_y, desired_height, fg->fcm.cell_height);
 }
 
 static PyObject*
@@ -202,18 +222,34 @@ set_size(Face *self, PyObject *args) {
     double font_sz_in_pts, dpi_x, dpi_y;
     if (!PyArg_ParseTuple(args, "ddd", &font_sz_in_pts, &dpi_x, &dpi_y)) return NULL;
     FT_F26Dot6 w = (FT_F26Dot6)(ceil(font_sz_in_pts * 64.0));
-    FT_UInt xdpi = (FT_UInt)dpi_x, ydpi = (FT_UInt)dpi_y;
-    if (self->char_width == w && self->char_height == w && self->xdpi == xdpi && self->ydpi == ydpi) { Py_RETURN_NONE; }
-    self->size_in_pts = (float)font_sz_in_pts;
-    if (!set_font_size(self, w, w, xdpi, ydpi, 0, 0)) return NULL;
+    if (self->char_width == w && self->char_height == w && self->xdpi == dpi_x && self->ydpi == dpi_y) { Py_RETURN_NONE; }
+    self->metrics.size_in_pts = (float)font_sz_in_pts;
+    if (!set_font_size(self, w, w, dpi_x, dpi_y, 0, 0)) return NULL;
     Py_RETURN_NONE;
 }
 
-static bool
-init_ft_face(Face *self, PyObject *path, int hinting, int hintstyle, FONTS_DATA_HANDLE fg) {
-#define CPY(n) self->n = self->face->n;
+static void
+copy_face_metrics(Face *self) {
+#define CPY(n) self->metrics.n = self->face->n;
     CPY(units_per_EM); CPY(ascender); CPY(descender); CPY(height); CPY(max_advance_width); CPY(max_advance_height); CPY(underline_position); CPY(underline_thickness);
 #undef CPY
+}
+
+bool
+face_apply_scaling(PyObject *f, const FONTS_DATA_HANDLE fg) {
+    Face *self = (Face*)f;
+    if (set_size_for_face(f, 0, false, fg)) {
+        if (self->harfbuzz_font) hb_ft_font_changed(self->harfbuzz_font);
+        copy_face_metrics(self);
+        return true;
+    }
+    return false;
+}
+
+static bool
+init_ft_face(Face *self, PyObject *path, int hinting, int hintstyle, long index, FONTS_DATA_HANDLE fg) {
+    copy_face_metrics(self);
+    self->index = index;
     self->is_scalable = FT_IS_SCALABLE(self->face);
     self->has_color = FT_HAS_COLOR(self->face);
     self->is_variable = FT_HAS_MULTIPLE_MASTERS(self->face);
@@ -227,11 +263,12 @@ init_ft_face(Face *self, PyObject *path, int hinting, int hintstyle, FONTS_DATA_
     self->harfbuzz_font = hb_ft_font_create(self->face, NULL);
     if (self->harfbuzz_font == NULL) { PyErr_NoMemory(); return false; }
     hb_ft_font_set_load_flags(self->harfbuzz_font, get_load_flags(self->hinting, self->hintstyle, FT_LOAD_DEFAULT));
+    FT_Reference_Face(self->face);
 
     TT_OS2 *os2 = (TT_OS2*)FT_Get_Sfnt_Table(self->face, FT_SFNT_OS2);
     if (os2 != NULL) {
-      self->strikethrough_position = os2->yStrikeoutPosition;
-      self->strikethrough_thickness = os2->yStrikeoutSize;
+      self->metrics.strikethrough_position = os2->yStrikeoutPosition;
+      self->metrics.strikethrough_thickness = os2->yStrikeoutSize;
     }
 
     self->path = path; Py_INCREF(self->path);
@@ -258,6 +295,8 @@ face_equals_descriptor(PyObject *face_, PyObject *descriptor) {
     return true;
 }
 
+static char* get_variation_as_string(Face *self);
+
 PyObject*
 face_from_descriptor(PyObject *descriptor, FONTS_DATA_HANDLE fg) {
 #define D(key, conv, missing_ok) { \
@@ -276,11 +315,11 @@ face_from_descriptor(PyObject *descriptor, FONTS_DATA_HANDLE fg) {
     D(hint_style, PyLong_AsLong, true);
 #undef D
     RAII_PyObject(retval, Face_Type.tp_alloc(&Face_Type, 0));
+    Face *self = (Face *)retval;
     if (retval != NULL) {
-        Face *self = (Face *)retval;
         int error;
         if ((error = FT_New_Face(library, path, index, &(self->face)))) { self->face = NULL; return set_load_error(path, error); }
-        if (!init_ft_face(self, PyDict_GetItemString(descriptor, "path"), hinting, hint_style, fg)) return NULL;
+        if (!init_ft_face(self, PyDict_GetItemString(descriptor, "path"), hinting, hint_style, index, fg)) { Py_CLEAR(retval); return NULL; }
         PyObject *ns = PyDict_GetItemString(descriptor, "named_style");
         if (ns) {
             unsigned long index = PyLong_AsUnsignedLong(ns);
@@ -340,14 +379,33 @@ face_from_path(const char *path, int index, FONTS_DATA_HANDLE fg) {
     int error;
     error = FT_New_Face(library, path, index, &ans->face);
     if (error) { ans->face = NULL; return set_load_error(path, error); }
-    if (!init_ft_face(ans, Py_None, true, 3, fg)) { Py_CLEAR(ans); return NULL; }
+    RAII_PyObject(pypath, PyUnicode_FromString(path));
+    if (!pypath) return NULL;
+    if (!init_ft_face(ans, pypath, true, 3, index, fg)) { Py_CLEAR(ans); return NULL; }
     return (PyObject*)ans;
 }
+
+static inline void cleanup_ftmm(FT_MM_Var **p) { if (*p) FT_Done_MM_Var(library, *p); *p = NULL; }
+
+static const char*
+tag_to_string(uint32_t tag, uint8_t bytes[5]) {
+    bytes[0] = (tag >> 24) & 0xff;
+    bytes[1] = (tag >> 16) & 0xff;
+    bytes[2] = (tag >> 8) & 0xff;
+    bytes[3] = (tag) & 0xff;
+    bytes[4] = 0;
+    return (const char*)bytes;
+}
+
+#define RAII_FTMMVar(name) __attribute__((cleanup(cleanup_ftmm))) FT_MM_Var *name = NULL
+
+static void free_cairo(Face *self);
 
 static void
 dealloc(Face* self) {
     if (self->harfbuzz_font) hb_font_destroy(self->harfbuzz_font);
-    if (self->face) FT_Done_Face(self->face);
+    FT_Done_Face(self->face);
+    free_cairo(self);
     if (self->extra_data && self->free_extra_data) self->free_extra_data(self->extra_data);
     free(self->font_features.features);
     Py_CLEAR(self->path);
@@ -391,25 +449,27 @@ calc_cell_width(Face *self) {
 }
 
 
-void
-cell_metrics(PyObject *s, unsigned int* cell_width, unsigned int* cell_height, unsigned int* baseline, unsigned int* underline_position, unsigned int* underline_thickness, unsigned int* strikethrough_position, unsigned int* strikethrough_thickness) {
+FontCellMetrics
+cell_metrics(PyObject *s) {
     Face *self = (Face*)s;
-    *cell_width = calc_cell_width(self);
-    *cell_height = calc_cell_height(self, true);
-    *baseline = font_units_to_pixels_y(self, self->ascender);
-    *underline_position = MIN(*cell_height - 1, (unsigned int)font_units_to_pixels_y(self, MAX(0, self->ascender - self->underline_position)));
-    *underline_thickness = MAX(1, font_units_to_pixels_y(self, self->underline_thickness));
+    FontCellMetrics ans = {0};
+    ans.cell_width = calc_cell_width(self);
+    ans.cell_height = calc_cell_height(self, true);
+    ans.baseline = font_units_to_pixels_y(self, self->metrics.ascender);
+    ans.underline_position = MIN(ans.cell_height - 1, (unsigned int)font_units_to_pixels_y(self, MAX(0, self->metrics.ascender - self->metrics.underline_position)));
+    ans.underline_thickness = MAX(1, font_units_to_pixels_y(self, self->metrics.underline_thickness));
 
-    if (self->strikethrough_position != 0) {
-      *strikethrough_position = MIN(*cell_height - 1, (unsigned int)font_units_to_pixels_y(self, MAX(0, self->ascender - self->strikethrough_position)));
+    if (self->metrics.strikethrough_position != 0) {
+      ans.strikethrough_position = MIN(ans.cell_height - 1, (unsigned int)font_units_to_pixels_y(self, MAX(0, self->metrics.ascender - self->metrics.strikethrough_position)));
     } else {
-      *strikethrough_position = (unsigned int)floor(*baseline * 0.65);
+      ans.strikethrough_position = (unsigned int)floor(ans.baseline * 0.65);
     }
-    if (self->strikethrough_thickness > 0) {
-      *strikethrough_thickness = MAX(1, font_units_to_pixels_y(self, self->strikethrough_thickness));
+    if (self->metrics.strikethrough_thickness > 0) {
+      ans.strikethrough_thickness = MAX(1, font_units_to_pixels_y(self, self->metrics.strikethrough_thickness));
     } else {
-      *strikethrough_thickness = *underline_thickness;
+      ans.strikethrough_thickness = ans.underline_thickness;
     }
+    return ans;
 }
 
 unsigned int
@@ -417,6 +477,34 @@ glyph_id_for_codepoint(const PyObject *s, char_type cp) {
     return FT_Get_Char_Index(((Face*)s)->face, cp);
 }
 
+typedef enum { NOT_COLORED, CBDT_COLORED, COLR_V0_COLORED, COLR_V1_COLORED } GlyphColorType;
+
+static bool
+is_colrv0_glyph (Face *self, int glyph_id) {
+    FT_LayerIterator iterator = {0}; FT_UInt layer_glyph_index = 0, layer_color_index = 0;
+    return FT_Get_Color_Glyph_Layer(self->face, glyph_id, &layer_glyph_index, &layer_color_index, &iterator);
+}
+
+static bool
+is_colrv1_glyph(Face *self, int glyph_id) {
+    FT_OpaquePaint paint = {0};
+    return FT_Get_Color_Glyph_Paint(self->face, glyph_id, FT_COLOR_INCLUDE_ROOT_TRANSFORM, &paint);
+}
+
+static bool
+is_colored_cbdt_glyph(Face *self, int glyph_id) {
+    FT_Error err = FT_Load_Glyph(self->face, glyph_id, get_load_flags(self->hinting, self->hintstyle, FT_LOAD_DEFAULT | FT_LOAD_COLOR));
+    if (err) return false;
+    return self->face->glyph->format == FT_GLYPH_FORMAT_BITMAP && self->face->glyph->bitmap.pixel_mode == FT_PIXEL_MODE_BGRA;
+}
+
+static GlyphColorType
+glyph_color_type(Face *self, int glyph_id) {
+    if (is_colrv1_glyph(self, glyph_id)) return COLR_V1_COLORED;
+    if (is_colrv0_glyph(self, glyph_id)) return COLR_V0_COLORED;
+    if (is_colored_cbdt_glyph(self, glyph_id)) return CBDT_COLORED;
+    return NOT_COLORED;
+}
 
 bool
 is_glyph_empty(PyObject *s, glyph_index g) {
@@ -485,7 +573,7 @@ populate_processed_bitmap(FT_GlyphSlotRec *slot, FT_Bitmap *bitmap, ProcessedBit
     ans->stride = bitmap->pitch < 0 ? -bitmap->pitch : bitmap->pitch;
     ans->rows = bitmap->rows;
     if (copy_buf) {
-        ans->buf = calloc(ans->rows, ans->stride);
+        ans->buf = malloc(ans->rows * ans->stride);
         if (!ans->buf) fatal("Out of memory");
         ans->needs_free = true;
         memcpy(ans->buf, bitmap->buffer, ans->rows * ans->stride);
@@ -537,10 +625,10 @@ render_bitmap(Face *self, int glyph_id, ProcessedBitmap *ans, unsigned int cell_
         } else if (rescale && self->is_scalable && extra > 1) {
             FT_F26Dot6 char_width = self->char_width, char_height = self->char_height;
             float ar = (float)max_width / (float)ans->width;
-            if (set_font_size(self, (FT_F26Dot6)((float)self->char_width * ar), (FT_F26Dot6)((float)self->char_height * ar), self->xdpi, self->ydpi, 0, fg->cell_height)) {
+            if (set_font_size(self, (FT_F26Dot6)((float)self->char_width * ar), (FT_F26Dot6)((float)self->char_height * ar), self->xdpi, self->ydpi, 0, fg->fcm.cell_height)) {
                 free_processed_bitmap(ans);
                 if (!render_bitmap(self, glyph_id, ans, cell_width, cell_height, num_cells, bold, italic, false, fg)) return false;
-                if (!set_font_size(self, char_width, char_height, self->xdpi, self->ydpi, 0, fg->cell_height)) return false;
+                if (!set_font_size(self, char_width, char_height, self->xdpi, self->ydpi, 0, fg->fcm.cell_height)) return false;
             } else return false;
         }
     }
@@ -573,72 +661,260 @@ downsample_32bit_image(uint8_t *src, unsigned src_width, unsigned src_height, un
     return factor;
 }
 
-static void
-downsample_bitmap(ProcessedBitmap *bm, unsigned int width, unsigned int cell_height) {
-    uint8_t *dest = calloc(4, (size_t)width * cell_height);
-    if (dest == NULL) fatal("Out of memory");
-    bm->factor = downsample_32bit_image(bm->buf, bm->width, bm->rows, bm->stride, dest, width, cell_height);
-    bm->buf = dest; bm->needs_free = true; bm->stride = 4 * width; bm->width = width; bm->rows = cell_height;
+static bool
+set_cairo_exception(const char *msg, cairo_status_t s) {
+    PyErr_Format(FreeType_Exception, "cairo error: %s: %s", msg, cairo_status_to_string(s));
+    return false;
 }
 
 static void
-detect_right_edge(ProcessedBitmap *ans) {
-    ans->right_edge = 0;
-    for (ssize_t x = ans->width - 1; !ans->right_edge && x > -1; x--) {
-        for (size_t y = 0; y < ans->rows && !ans->right_edge; y++) {
-            uint8_t *p = ans->buf + x * 4 + y * ans->stride;
-            if (p[3] > 20) ans->right_edge = x;
+free_cairo_surface_data(Face *self) {
+    if (self->cairo.cr) cairo_destroy(self->cairo.cr);
+    if (self->cairo.surface) cairo_surface_destroy(self->cairo.surface);
+    if (self->cairo.buf) free(self->cairo.buf);
+}
+
+static void
+free_cairo(Face *self) {
+    free_cairo_surface_data(self);
+    if (self->cairo.font) cairo_font_face_destroy(self->cairo.font);
+    zero_at_ptr(&self->cairo);
+}
+
+static void
+cairo_done_ft_face(void* x) { if (x) FT_Done_Face(x); }
+
+static bool
+is_color_dark(color_type c) {
+    ARGB32 bg = {.val=c};
+    return rgb_luminance(bg) / 255.0 < 0.5;
+}
+
+static unsigned short
+get_preferred_palette_index(Face *self) {
+    if (!self->palettes_scanned) {
+        self->palettes_scanned = 1;
+        self->dark_palette_index = CAIRO_COLOR_PALETTE_DEFAULT; self->light_palette_index = CAIRO_COLOR_PALETTE_DEFAULT;
+        FT_Palette_Data palette_data;
+        FT_Error error = FT_Palette_Data_Get(self->face, &palette_data);
+        if (error) log_error("Could not retrieve palette data for font from FreeType");
+        else if (palette_data.palette_flags) {
+            for (FT_UShort i = 0; i < palette_data.num_palettes; i++) {
+                FT_UShort flags = palette_data.palette_flags[i];
+                if (flags & FT_PALETTE_FOR_DARK_BACKGROUND) self->dark_palette_index = i;
+                else if (flags & FT_PALETTE_FOR_DARK_BACKGROUND) self->light_palette_index = i;
+            }
         }
     }
+    return is_color_dark(OPT(background)) ? self->dark_palette_index : self->light_palette_index;
+}
+
+static char*
+get_variation_as_string(Face *self) {
+    RAII_FTMMVar(mm);
+    FT_Error err;
+    if ((err = FT_Get_MM_Var(self->face, &mm))) return NULL;
+    RAII_ALLOC(FT_Fixed, coords, malloc(mm->num_axis * sizeof(FT_Fixed))); if (!coords) return NULL;
+    if ((err = FT_Get_Var_Design_Coordinates(self->face, mm->num_axis, coords))) return NULL;
+    RAII_ALLOC(char, buf, NULL);
+    uint8_t tag[5];
+    size_t pos = 0, sz = 0;
+    for (FT_UInt i = 0; i < mm->num_axis; i++) {
+        double val = coords[i] / 65536.0;
+        tag_to_string(mm->axis[i].tag, tag);
+        if (sz - pos < 32) {
+            sz += 4096; buf = realloc(buf, sz); if (!buf) return NULL;
+        }
+        if ((long)val == val) pos += snprintf(buf + pos, sz - pos - 1, "%s=%ld,", tag, (long)val);
+        else pos += snprintf(buf + pos, sz - pos - 1, "%s=%.4f,", tag, val);
+    }
+    char *ans = NULL;
+    if (buf) {
+        buf[pos] = 0; if (pos && buf[pos-1] == ',') buf[pos-1] = 0;
+        ans = buf; buf = NULL;
+    }
+    return ans;
+}
+
+static void
+set_variation_for_cairo(Face *self, cairo_font_options_t *opts) {
+    RAII_ALLOC(char, buf, get_variation_as_string(self));
+    cairo_font_options_set_variations(opts, buf ? buf : "");
+}
+
+
+static bool
+ensure_cairo_resources(Face *self, size_t width, size_t height) {
+    if (!self->cairo.font) {
+        const char *path = PyUnicode_AsUTF8(self->path);
+        int error;
+        if ((error = FT_New_Face(library, path, self->index, &self->face_for_cairo))) {
+            self->face_for_cairo = NULL; return set_load_error(path, error);
+        }
+        self->cairo.font = cairo_ft_font_face_create_for_ft_face(self->face_for_cairo, 0);
+        if (!self->cairo.font) { FT_Done_Face(self->face_for_cairo); self->face_for_cairo = NULL; PyErr_NoMemory(); return false; }
+        // Sadly cairo does not use FT_Reference_Face https://lists.cairographics.org/archives/cairo/2015-March/026023.html
+        // so we have to let cairo manage lifetime of the FT_Face
+        static const cairo_user_data_key_t key;
+        cairo_status_t status = cairo_font_face_set_user_data(self->cairo.font, &key, self->face_for_cairo, cairo_done_ft_face);
+        if (status) {
+            FT_Done_Face(self->face_for_cairo); self->face_for_cairo = NULL;
+            PyErr_Format(PyExc_RuntimeError, "Failed to set cairo font destructor with error: %s", cairo_status_to_string(status));
+            return false;
+        }
+        self->cairo.size_in_px = 0;
+    }
+    size_t stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, width);
+    if (stride * height > self->cairo.stride * self->cairo.height) {
+        free_cairo_surface_data(self);
+        self->cairo.width = 0; self->cairo.height = 0;
+        self->cairo.stride = stride;
+        int ret = posix_memalign(&self->cairo.buf, 64, self->cairo.stride * height);
+        switch (ret) {
+            case 0: break;
+            case ENOMEM: PyErr_NoMemory(); return false;
+            case EINVAL: PyErr_SetString(FreeType_Exception, "Invalid alignment for cairo surface buffer: 64"); return false;
+            default: PyErr_SetString(FreeType_Exception, "Unknown error when calling posix_memalign to create ciro surface buffer"); return false;
+        }
+        self->cairo.surface = cairo_image_surface_create_for_data(self->cairo.buf, CAIRO_FORMAT_ARGB32, width, height, self->cairo.stride);
+        if (!self->cairo.surface) { PyErr_NoMemory(); return false; }
+        self->cairo.cr = cairo_create(self->cairo.surface);
+        if (!self->cairo.cr) { PyErr_NoMemory(); return false; }
+        cairo_set_font_face(self->cairo.cr, self->cairo.font);
+        self->cairo.width = width; self->cairo.height = height; self->cairo.size_in_px = 0;
+        cairo_font_options_t *opts = cairo_font_options_create();
+        cairo_status_t s;
+#define check(msg) \
+        if ((s = cairo_font_options_status(opts)) != CAIRO_STATUS_SUCCESS) { \
+            cairo_font_options_destroy(opts); \
+            return set_cairo_exception(msg, s); \
+        }
+        check("Failed to create cairo font options");
+        cairo_hint_style_t h = CAIRO_HINT_STYLE_NONE;
+        if (self->hinting) {
+            switch(self->hintstyle) {
+                case 0: break;
+                case 1: h = CAIRO_HINT_STYLE_SLIGHT; break;
+                case 2: h = CAIRO_HINT_STYLE_MEDIUM; break;
+                case 3: h = CAIRO_HINT_STYLE_FULL; break;
+                default: h = CAIRO_HINT_STYLE_MEDIUM; break;
+            }
+        }
+        cairo_font_options_set_hint_style(opts, h); check("Failed to set cairo hintstyle");
+        cairo_font_options_set_color_palette(opts, get_preferred_palette_index(self)); check("Failed to set cairo palette index");
+        set_variation_for_cairo(self, opts); check("Failed to set cairo font variations");
+        cairo_set_font_options(self->cairo.cr, opts);
+        cairo_font_options_destroy(opts);
+#undef check
+    }
+    return true;
+}
+
+static long
+pt_to_px(double pt, double dpi) {
+    return ((long)round((pt * (dpi / 72.0))));
+}
+
+static void
+set_cairo_font_size(Face *self, double size_in_pts) {
+    unsigned sz_px = pt_to_px(size_in_pts, (self->xdpi + self->ydpi) / 2.0);
+    if (self->cairo.size_in_px == sz_px) return;
+    cairo_set_font_size(self->cairo.cr, sz_px);
+    self->cairo.size_in_px = sz_px;
+}
+
+static cairo_scaled_font_t*
+fit_cairo_glyph(Face *self, cairo_glyph_t *g, cairo_text_extents_t *bb, cairo_scaled_font_t *sf, unsigned width, unsigned height) {
+    while (self->cairo.size_in_px > 2 && (bb->width > width || bb->height > height)) {
+        double ratio = MIN(width / bb->width, height / bb->height);
+        unsigned sz = (unsigned)(ratio * self->cairo.size_in_px);
+        if (sz >= self->cairo.size_in_px) sz = self->cairo.size_in_px - 2;
+        cairo_set_font_size(self->cairo.cr, sz);
+        sf = cairo_get_scaled_font(self->cairo.cr);
+        cairo_scaled_font_glyph_extents(sf, g, 1, bb);
+        self->cairo.size_in_px = sz;
+    }
+    return sf;
 }
 
 static bool
-render_color_bitmap(Face *self, int glyph_id, ProcessedBitmap *ans, unsigned int cell_width, unsigned int cell_height, unsigned int num_cells, unsigned int baseline UNUSED) {
-    unsigned short best = 0, diff = USHRT_MAX;
-    if (self->face->num_fixed_sizes > 0) {
-        const short limit = self->face->num_fixed_sizes;
-        for (short i = 0; i < limit; i++) {
-            unsigned short w = self->face->available_sizes[i].width;
-            unsigned short d = w > (unsigned short)cell_width ? w - (unsigned short)cell_width : (unsigned short)cell_width - w;
-            if (d < diff) {
-                diff = d;
-                best = i;
-            }
-        }
-        FT_Error error = FT_Select_Size(self->face, best);
-        if (error) { set_freetype_error("Failed to set char size for non-scalable font, with error:", error); return false; }
-    } else FT_Set_Char_Size(self->face, 0, self->char_height, self->xdpi, self->ydpi);
-    if (!load_glyph(self, glyph_id, FT_LOAD_COLOR | FT_LOAD_RENDER)) return false;
-    FT_Bitmap *bitmap = &self->face->glyph->bitmap;
-    if (bitmap->pixel_mode != FT_PIXEL_MODE_BGRA) return false;
-    ans->buf = bitmap->buffer;
-    ans->start_x = 0; ans->width = bitmap->width;
-    ans->stride = bitmap->pitch < 0 ? -bitmap->pitch : bitmap->pitch;
-    ans->rows = bitmap->rows;
-    ans->pixel_mode = bitmap->pixel_mode;
-    if (ans->width > num_cells * cell_width + 2) downsample_bitmap(ans, num_cells * cell_width, cell_height);
-    ans->bitmap_top = (int)((float)self->face->glyph->bitmap_top / ans->factor);
-    ans->bitmap_left = (int)((float)self->face->glyph->bitmap_left / ans->factor);
-    detect_right_edge(ans);
+render_glyph_with_cairo(Face *self, int glyph_id, ProcessedBitmap *ans, unsigned width, unsigned height, ARGB32 fg, unsigned cell_baseline) {
+    cairo_glyph_t g = {.index=glyph_id};
+    cairo_text_extents_t bb = {0};
+    if (!ensure_cairo_resources(self, MAX(width, 256u), MAX(height, 256u))) return false;
+    set_cairo_font_size(self, self->metrics.size_in_pts);
+    cairo_scaled_font_t *sf = cairo_get_scaled_font(self->cairo.cr);
+    cairo_scaled_font_glyph_extents(sf, &g, 1, &bb);
+    cairo_font_extents_t fm;
+    if (!width || !height) {
+        cairo_scaled_font_extents(sf, &fm);
+        width = (unsigned)ceil(fm.max_x_advance); height = (unsigned)ceil(fm.height);
+        return render_glyph_with_cairo(self, glyph_id, ans, width, height, fg, cell_baseline);
+    }
+    sf = fit_cairo_glyph(self, &g, &bb, sf, width, height);
+    cairo_scaled_font_extents(sf, &fm);
+    g.y = fm.ascent;
+    memset(self->cairo.buf, 0, self->cairo.stride * self->cairo.height);
+    cairo_set_source_rgba(self->cairo.cr, fg.r / 255., fg.g / 255., fg.b / 255., fg.a / 255.);
+    cairo_show_glyphs(self->cairo.cr, &g, 1);
+    cairo_surface_flush(self->cairo.surface);
+#if 0
+        printf("canvas: %ux%u glyph: %.1fx%.1f x_bearing: %.1f y_bearing: %.1f cell_baseline: %u font_baseline: %.1f\n",
+                width, height, bb.width, bb.height, bb.x_bearing, bb.y_bearing, cell_baseline, fm.ascent);
+        cairo_status_t s = cairo_surface_write_to_png(cairo_get_target(self->cairo.cr), "/tmp/glyph.png");
+        if (s) fprintf(stderr, "Failed to write to PNG with error: %s", cairo_status_to_string(s));
+#endif
+    ans->pixel_mode = FT_PIXEL_MODE_MAX;  // place_bitmap_in_canvas() takes this to mean ARGB
+    ans->buf = self->cairo.buf; ans->needs_free = false;
+    ans->start_x = 0;
+    ans->width = width;
+    ans->stride = self->cairo.stride;
+    ans->rows = height;
+    ans->bitmap_left = (int)bb.x_bearing;
+    ans->bitmap_top = -(int)bb.y_bearing;
     return true;
 }
 
 
+static bool
+render_color_bitmap(Face *self, int glyph_id, ProcessedBitmap *ans, unsigned int cell_width, unsigned int cell_height, unsigned int num_cells, unsigned int baseline) {
+    const unsigned int width_to_render_in = num_cells * cell_width;
+    uint8_t v = is_color_dark(OPT(background)) ? 255 : 0;
+    ARGB32 fg = {.red = v, .green = v, .blue = v, .alpha=255};
+    return render_glyph_with_cairo(self, glyph_id, ans, width_to_render_in, cell_height, fg, baseline);
+}
+
+
 static void
-copy_color_bitmap(uint8_t *src, pixel* dest, Region *src_rect, Region *dest_rect, size_t src_stride, size_t dest_stride) {
+copy_color_bitmap_bgra(uint8_t *src, pixel* dest, Region *src_rect, Region *dest_rect, size_t src_stride, size_t dest_stride) {
     for (size_t sr = src_rect->top, dr = dest_rect->top; sr < src_rect->bottom && dr < dest_rect->bottom; sr++, dr++) {
         pixel *d = dest + dest_stride * dr;
         uint8_t *s = src + src_stride * sr;
         for(size_t sc = src_rect->left, dc = dest_rect->left; sc < src_rect->right && dc < dest_rect->right; sc++, dc++) {
             uint8_t *bgra = s + 4 * sc;
-            if (bgra[3]) {
-#define C(idx, shift) ( (uint8_t)(((float)bgra[idx] / (float)bgra[3]) * 255) << shift)
-                d[dc] = C(2, 24) | C(1, 16) | C(0, 8) | bgra[3];
+            const float inv_alpha = 255.f / bgra[3];
+#define C(idx, shift) ( (uint8_t)(bgra[idx] * inv_alpha) << shift)
+            d[dc] = C(2, 24) | C(1, 16) | C(0, 8) | bgra[3];
 #undef C
-        } else d[dc] = 0;
         }
     }
 }
+
+static void
+copy_color_bitmap_argb(uint8_t *src, pixel* dest, Region *src_rect, Region *dest_rect, size_t src_stride, size_t dest_stride) {
+    for (size_t sr = src_rect->top, dr = dest_rect->top; sr < src_rect->bottom && dr < dest_rect->bottom; sr++, dr++) {
+        pixel *d = dest + dest_stride * dr;
+        pixel *s = (pixel*)(src + src_stride * sr);
+        for (size_t sc = src_rect->left, dc = dest_rect->left; sc < src_rect->right && dc < dest_rect->right; sc++, dc++) {
+            pixel argb = s[sc]; pixel alpha = (argb >> 24) & 0xff;
+            const float inv_alpha = 255.f / alpha;
+#define C(src_shift, dest_shift) ( (pixel)(((argb >> src_shift) & 0xff) * inv_alpha) << dest_shift )
+            d[dc] = C(16, 24) | C(8, 16) | C(0, 8) | alpha;
+#undef C
+        }
+    }
+}
+
 
 static const bool debug_placement = false;
 
@@ -672,9 +948,11 @@ place_bitmap_in_canvas(pixel *cell, ProcessedBitmap *bm, size_t cell_width, size
 
     // printf("x_offset: %d y_offset: %d src_start_row: %u src_start_column: %u dest_start_row: %u dest_start_column: %u bm_width: %lu bitmap_rows: %lu\n", xoff, yoff, src.top, src.left, dest.top, dest.left, bm->width, bm->rows);
 
-    if (bm->pixel_mode == FT_PIXEL_MODE_BGRA) {
-        copy_color_bitmap(bm->buf, cell, &src, &dest, bm->stride, cell_width);
-    } else render_alpha_mask(bm->buf, cell, &src, &dest, bm->stride, cell_width, fg_rgb);
+    switch (bm->pixel_mode) {
+        case FT_PIXEL_MODE_BGRA: copy_color_bitmap_bgra(bm->buf, cell, &src, &dest, bm->stride, cell_width); break;
+        case FT_PIXEL_MODE_MAX: copy_color_bitmap_argb(bm->buf, cell, &src, &dest, bm->stride, cell_width); break;
+        default: render_alpha_mask(bm->buf, cell, &src, &dest, bm->stride, cell_width, fg_rgb); break;
+    }
 }
 
 static const ProcessedBitmap EMPTY_PBM = {.factor = 1};
@@ -686,11 +964,12 @@ render_glyphs_in_cells(PyObject *f, bool bold, bool italic, hb_glyph_info_t *inf
     float x = 0.f, y = 0.f, x_offset = 0.f;
     ProcessedBitmap bm;
     unsigned int canvas_width = cell_width * num_cells;
+    GlyphColorType colored;
     for (unsigned int i = 0; i < num_glyphs; i++) {
         bm = EMPTY_PBM;
         // dont load the space glyph since loading it fails for some fonts/sizes and it is anyway to be rendered as a blank
         if (info[i].codepoint != self->space_glyph_id) {
-            if (*was_colored) {
+            if (*was_colored && (colored = glyph_color_type(self, info[i].codepoint)) != NOT_COLORED) {
                 if (!render_color_bitmap(self, info[i].codepoint, &bm, cell_width, cell_height, num_cells, baseline)) {
                     if (PyErr_Occurred()) PyErr_Print();
                     if (!render_bitmap(self, info[i].codepoint, &bm, cell_width, cell_height, num_cells, bold, italic, true, fg)) {
@@ -790,20 +1069,6 @@ _get_best_name(Face *self, unsigned long nameid) {
     return key ? get_best_name(self, key) : NULL;
 }
 // }}}
-
-static inline void cleanup_ftmm(FT_MM_Var **p) { if (*p) FT_Done_MM_Var(library, *p); *p = NULL; }
-
-#define RAII_FTMMVar(name) __attribute__((cleanup(cleanup_ftmm))) FT_MM_Var *name = NULL
-
-static const char*
-tag_to_string(uint32_t tag, uint8_t bytes[5]) {
-    bytes[0] = (tag >> 24) & 0xff;
-    bytes[1] = (tag >> 16) & 0xff;
-    bytes[2] = (tag >> 8) & 0xff;
-    bytes[3] = (tag) & 0xff;
-    bytes[4] = 0;
-    return (const char*)bytes;
-}
 
 static PyObject*
 convert_named_style_to_python(Face *face, const FT_Var_Named_Style *src, FT_Var_Axis *axes, unsigned num_of_axes) {
@@ -971,19 +1236,49 @@ render_simple_text_impl(PyObject *s, const char *text, unsigned int baseline) {
 static void destroy_hb_buffer(hb_buffer_t **x) { if (*x) hb_buffer_destroy(*x); }
 
 static PyObject*
+render_codepoint(Face *self, PyObject *args) {
+    unsigned long cp, fg = 0xffffff;
+    if (!PyArg_ParseTuple(args, "k|k", &cp, &fg)) return NULL;
+    FT_UInt glyph_index = FT_Get_Char_Index(self->face, cp);
+    ProcessedBitmap pbm = EMPTY_PBM;
+    GlyphColorType colored;
+    if (self->has_color && (colored = glyph_color_type(self, glyph_index)) != NOT_COLORED) {
+        render_color_bitmap(self, glyph_index, &pbm, 0, 0, 0, 0);
+    } else {
+        int load_flags = get_load_flags(self->hinting, self->hintstyle, FT_LOAD_RENDER);
+        FT_Load_Glyph(self->face, glyph_index, load_flags);
+        FT_Render_Glyph(self->face->glyph, FT_RENDER_MODE_NORMAL);
+        FT_Bitmap *bitmap = &self->face->glyph->bitmap;
+        populate_processed_bitmap(self->face->glyph, bitmap, &pbm, false);
+    }
+    const unsigned long canvas_width = pbm.width, canvas_height = pbm.rows;
+    RAII_PyObject(ans, PyBytes_FromStringAndSize(NULL, sizeof(pixel) * canvas_height * canvas_width));
+    if (!ans) return NULL;
+    pixel *canvas = (pixel*)PyBytes_AS_STRING(ans);
+    memset(canvas, 0, PyBytes_GET_SIZE(ans));
+    place_bitmap_in_canvas(canvas, &pbm, canvas_width, canvas_height, 0, 0, 0, 99999, fg, 0, 0);
+    free_processed_bitmap(&pbm);
+    for (pixel *c = canvas; c < canvas + canvas_width * canvas_height; c++) {
+        uint8_t *p = (uint8_t*)c;
+        uint8_t a = p[0], b = p[1], g = p[2], r = p[3];
+        p[0] = r; p[1] = g; p[2] = b; p[3] = a;
+    }
+    return Py_BuildValue("Okk", ans, canvas_width, canvas_height);
+}
+
+static PyObject*
 render_sample_text(Face *self, PyObject *args) {
     unsigned long canvas_width, canvas_height;
     unsigned long fg = 0xffffff;
     PyObject *ptext;
     if (!PyArg_ParseTuple(args, "Ukk|k", &ptext, &canvas_width, &canvas_height, &fg)) return NULL;
-    unsigned int cell_width, cell_height, baseline, underline_position, underline_thickness, strikethrough_position, strikethrough_thickness;
-    cell_metrics((PyObject*)self, &cell_width, &cell_height, &baseline, &underline_position, &underline_thickness, &strikethrough_position, &strikethrough_thickness);
+    FontCellMetrics fcm = cell_metrics((PyObject*)self);
     RAII_PyObject(pbuf, PyBytes_FromStringAndSize(NULL, sizeof(pixel) * canvas_width * canvas_height));
     if (!pbuf) return NULL;
     memset(PyBytes_AS_STRING(pbuf), 0, PyBytes_GET_SIZE(pbuf));
-    if (!cell_width || !cell_height) return Py_BuildValue("OII", pbuf, cell_width, cell_height);
-    int num_chars_per_line = canvas_width / cell_width, num_of_lines = (int)ceil((float)PyUnicode_GET_LENGTH(ptext) / (float)num_chars_per_line);
-    canvas_height = MIN(canvas_height, num_of_lines * cell_height);
+    if (!fcm.cell_width || !fcm.cell_height) return Py_BuildValue("OII", pbuf, fcm.cell_width, fcm.cell_height);
+    int num_chars_per_line = canvas_width / fcm.cell_width, num_of_lines = (int)ceil((float)PyUnicode_GET_LENGTH(ptext) / (float)num_chars_per_line);
+    canvas_height = MIN(canvas_height, num_of_lines * fcm.cell_height);
 
     __attribute__((cleanup(destroy_hb_buffer))) hb_buffer_t *hb_buffer = hb_buffer_create();
     if (!hb_buffer_pre_allocate(hb_buffer, 4*PyUnicode_GET_LENGTH(ptext))) { PyErr_NoMemory(); return NULL; }
@@ -998,7 +1293,7 @@ render_sample_text(Face *self, PyObject *args) {
     hb_glyph_info_t *info = hb_buffer_get_glyph_infos(hb_buffer, NULL);
     hb_glyph_position_t *positions = hb_buffer_get_glyph_positions(hb_buffer, NULL);
 
-    if (cell_width > canvas_width) goto end;
+    if (fcm.cell_width > canvas_width) goto end;
     pixel *canvas = (pixel*)PyBytes_AS_STRING(pbuf);
     int load_flags = get_load_flags(self->hinting, self->hintstyle, FT_LOAD_RENDER);
     int error;
@@ -1007,7 +1302,7 @@ render_sample_text(Face *self, PyObject *args) {
     for (unsigned int i = 0; i < len; i++) {
         float advance = (float)positions[i].x_advance / 64.0f;
         if (pen_x + advance > canvas_width) {
-            pen_y += cell_height;
+            pen_y += fcm.cell_height;
             pen_x = 0;
             if (pen_y >= canvas_height) break;
         }
@@ -1019,7 +1314,8 @@ render_sample_text(Face *self, PyObject *args) {
         FT_Bitmap *bitmap = &self->face->glyph->bitmap;
         ProcessedBitmap pbm = EMPTY_PBM;
         populate_processed_bitmap(self->face->glyph, bitmap, &pbm, false);
-        place_bitmap_in_canvas(canvas, &pbm, canvas_width, canvas_height, x, 0, baseline, 99999, fg, 0, y);
+        place_bitmap_in_canvas(canvas, &pbm, canvas_width, canvas_height, x, 0, fcm.baseline, 99999, fg, 0, y);
+        free_processed_bitmap(&pbm);
     }
 
     const uint8_t *last_pixel = (uint8_t*)PyBytes_AS_STRING(pbuf) + PyBytes_GET_SIZE(pbuf) - sizeof(pixel);
@@ -1028,7 +1324,7 @@ render_sample_text(Face *self, PyObject *args) {
         p[0] = r; p[1] = g; p[2] = b; p[3] = a;
     }
 end:
-    return Py_BuildValue("OII", pbuf, cell_width, cell_height);
+    return Py_BuildValue("OII", pbuf, fcm.cell_width, fcm.cell_height);
 }
 
 
@@ -1036,22 +1332,26 @@ end:
 
 static PyMemberDef members[] = {
 #define MEM(name, type) {#name, type, offsetof(Face, name), READONLY, #name}
-    MEM(units_per_EM, T_UINT),
-    MEM(ascender, T_INT),
-    MEM(descender, T_INT),
-    MEM(height, T_INT),
-    MEM(max_advance_width, T_INT),
-    MEM(max_advance_height, T_INT),
-    MEM(underline_position, T_INT),
-    MEM(underline_thickness, T_INT),
-    MEM(strikethrough_position, T_INT),
-    MEM(strikethrough_thickness, T_INT),
+#define MMEM(name, type) {#name, type, offsetof(Face, metrics) + offsetof(FaceMetrics, name), READONLY, #name}
+    MMEM(units_per_EM, T_UINT),
+    MMEM(size_in_pts, T_FLOAT),
+    MMEM(ascender, T_INT),
+    MMEM(descender, T_INT),
+    MMEM(height, T_INT),
+    MMEM(max_advance_width, T_INT),
+    MMEM(max_advance_height, T_INT),
+    MMEM(underline_position, T_INT),
+    MMEM(underline_thickness, T_INT),
+    MMEM(strikethrough_position, T_INT),
+    MMEM(strikethrough_thickness, T_INT),
     MEM(is_scalable, T_BOOL),
     MEM(is_variable, T_BOOL),
     MEM(has_svg, T_BOOL),
     MEM(has_color, T_BOOL),
     MEM(path, T_OBJECT_EX),
     {NULL}  /* Sentinel */
+#undef MEM
+#undef MMEM
 };
 
 static PyMethodDef methods[] = {
@@ -1065,6 +1365,7 @@ static PyMethodDef methods[] = {
     METHODB(get_best_name, METH_O),
     METHODB(set_size, METH_VARARGS),
     METHODB(render_sample_text, METH_VARARGS),
+    METHODB(render_codepoint, METH_VARARGS),
     {NULL}  /* Sentinel */
 };
 
@@ -1083,6 +1384,7 @@ PyTypeObject Face_Type = {
 
 static void
 free_freetype(void) {
+    cairo_debug_reset_static_data();
     FT_Done_FreeType(library);
 }
 

@@ -8,6 +8,7 @@
 #include "wcswidth.h"
 #include "lineops.h"
 #include "charsets.h"
+#include "resize.h"
 #include <structmember.h>
 #include "../3rdparty/ringbuf/ringbuf.h"
 
@@ -15,28 +16,32 @@ extern PyTypeObject Line_Type;
 #define SEGMENT_SIZE 2048
 
 static void
-add_segment(HistoryBuf *self) {
-    self->num_segments += 1;
-    self->segments = realloc(self->segments, sizeof(HistoryBufSegment) * self->num_segments);
+add_segment(HistoryBuf *self, index_type num) {
+    self->segments = realloc(self->segments, sizeof(HistoryBufSegment) * (self->num_segments + num));
     if (self->segments == NULL) fatal("Out of memory allocating new history buffer segment");
-    HistoryBufSegment *s = self->segments + self->num_segments - 1;
     const size_t cpu_cells_size = self->xnum * SEGMENT_SIZE * sizeof(CPUCell);
     const size_t gpu_cells_size = self->xnum * SEGMENT_SIZE * sizeof(GPUCell);
-    s->cpu_cells = calloc(1, cpu_cells_size + gpu_cells_size + SEGMENT_SIZE * sizeof(LineAttrs));
-    if (!s->cpu_cells) fatal("Out of memory allocating new history buffer segment");
-    s->gpu_cells = (GPUCell*)(((uint8_t*)s->cpu_cells) + cpu_cells_size);
-    s->line_attrs = (LineAttrs*)(((uint8_t*)s->gpu_cells) + gpu_cells_size);
+    const size_t segment_size = cpu_cells_size + gpu_cells_size + SEGMENT_SIZE * sizeof(LineAttrs);
+    char *mem = calloc(num, segment_size);
+    if (!mem) fatal("Out of memory allocating new history buffer segment");
+    self->segments[self->num_segments].mem = mem;
+    for (HistoryBufSegment *s = self->segments + self->num_segments; s < self->segments + self->num_segments + num; s++, mem += segment_size) {
+        s->cpu_cells = (CPUCell*)mem;
+        s->gpu_cells = (GPUCell*)(((uint8_t*)s->cpu_cells) + cpu_cells_size);
+        s->line_attrs = (LineAttrs*)(((uint8_t*)s->gpu_cells) + gpu_cells_size);
+    }
+    self->num_segments += num;
 }
 
 static void
 free_segment(HistoryBufSegment *s) {
-    free(s->cpu_cells); memset(s, 0, sizeof(HistoryBufSegment));
+    free(s->mem); zero_at_ptr(s);
 }
 
 static index_type
 segment_for(HistoryBuf *self, index_type y) {
     index_type seg_num = y / SEGMENT_SIZE;
-    while (UNLIKELY(seg_num >= self->num_segments && SEGMENT_SIZE * self->num_segments < self->ynum)) add_segment(self);
+    while (UNLIKELY(seg_num >= self->num_segments && SEGMENT_SIZE * self->num_segments < self->ynum)) add_segment(self, 1);
     if (UNLIKELY(seg_num >= self->num_segments)) fatal("Out of bounds access to history buffer line number: %u", y);
     return seg_num;
 }
@@ -124,7 +129,7 @@ create_historybuf(PyTypeObject *type, unsigned int xnum, unsigned int ynum, unsi
         self->xnum = xnum;
         self->ynum = ynum;
         self->num_segments = 0;
-        add_segment(self);
+        add_segment(self, 1);
         self->text_cache = tc_incref(tc);
         self->line = alloc_line(self->text_cache);
         self->line->xnum = xnum;
@@ -170,7 +175,7 @@ init_line(HistoryBuf *self, index_type num, Line *l) {
     l->gpu_cells = gpu_lineptr(self, num);
     l->attrs = *attrptr(self, num);
     if (num > 0) {
-        l->attrs.is_continued = gpu_lineptr(self, num - 1)[self->xnum-1].attrs.next_char_was_wrapped;
+        l->attrs.is_continued = cpu_lineptr(self, num - 1)[self->xnum-1].next_char_was_wrapped;
     } else {
         l->attrs.is_continued = false;
         size_t sz;
@@ -188,7 +193,7 @@ historybuf_init_line(HistoryBuf *self, index_type lnum, Line *l) {
 
 bool
 history_buf_endswith_wrap(HistoryBuf *self) {
-    return gpu_lineptr(self, index_of(self, 0))[self->xnum-1].attrs.next_char_was_wrapped;
+    return cpu_lineptr(self, index_of(self, 0))[self->xnum-1].next_char_was_wrapped;
 }
 
 CPUCell*
@@ -216,8 +221,10 @@ historybuf_clear(HistoryBuf *self) {
     pagerhist_clear(self);
     self->count = 0;
     self->start_of_data = 0;
-    for (size_t i = 1; i < self->num_segments; i++) free_segment(self->segments + i);
-    self->num_segments = 1;
+    for (size_t i = 0; i < self->num_segments; i++) free_segment(self->segments + i);
+    free(self->segments); self->segments = NULL;
+    self->num_segments = 0;
+    add_segment(self, 1);
 }
 
 static bool
@@ -264,33 +271,39 @@ static void
 pagerhist_push(HistoryBuf *self, ANSIBuf *as_ansi_buf) {
     PagerHistoryBuf *ph = self->pagerhist;
     if (!ph) return;
-    const GPUCell *prev_cell = NULL;
     Line l = {.xnum=self->xnum, .text_cache=self->text_cache};
     init_line(self, self->start_of_data, &l);
-    line_as_ansi(&l, as_ansi_buf, &prev_cell, 0, l.xnum, 0);
+    ANSILineState s = {.output_buf=as_ansi_buf};
+    as_ansi_buf->len = 0;
+    line_as_ansi(&l, &s, 0, l.xnum, 0, true);
     pagerhist_write_bytes(ph, (const uint8_t*)"\x1b[m", 3);
     if (pagerhist_write_ucs4(ph, as_ansi_buf->buf, as_ansi_buf->len)) {
         char line_end[2]; size_t num = 0;
         line_end[num++] = '\r';
-        if (!l.gpu_cells[l.xnum - 1].attrs.next_char_was_wrapped) line_end[num++] = '\n';
+        if (!l.cpu_cells[l.xnum - 1].next_char_was_wrapped) line_end[num++] = '\n';
         pagerhist_write_bytes(ph, (const uint8_t*)line_end, num);
     }
 }
 
 static index_type
-historybuf_push(HistoryBuf *self, ANSIBuf *as_ansi_buf) {
+historybuf_push(HistoryBuf *self, ANSIBuf *as_ansi_buf, bool *needs_clear) {
     index_type idx = (self->start_of_data + self->count) % self->ynum;
-    init_line(self, idx, self->line);
     if (self->count == self->ynum) {
         pagerhist_push(self, as_ansi_buf);
         self->start_of_data = (self->start_of_data + 1) % self->ynum;
-    } else self->count++;
+        *needs_clear = true;
+    } else {
+        self->count++;
+        *needs_clear = false;
+    }
     return idx;
 }
 
 void
 historybuf_add_line(HistoryBuf *self, const Line *line, ANSIBuf *as_ansi_buf) {
-    index_type idx = historybuf_push(self, as_ansi_buf);
+    bool needs_clear;
+    index_type idx = historybuf_push(self, as_ansi_buf, &needs_clear);
+    init_line(self, idx, self->line);
     copy_line(line, self->line);
     *attrptr(self, idx) = line->attrs;
 }
@@ -302,13 +315,6 @@ historybuf_pop_line(HistoryBuf *self, Line *line) {
     init_line(self, idx, line);
     self->count--;
     return true;
-}
-
-static void
-history_buf_set_last_char_as_continuation(HistoryBuf *self, index_type y, bool wrapped) {
-    if (self->count > 0) {
-        gpu_lineptr(self, index_of(self, y))[self->xnum-1].attrs.next_char_was_wrapped = wrapped;
-    }
 }
 
 static PyObject*
@@ -326,9 +332,10 @@ static PyObject*
 __str__(HistoryBuf *self) {
     PyObject *lines = PyTuple_New(self->count);
     if (lines == NULL) return PyErr_NoMemory();
+    RAII_ANSIBuf(buf);
     for (index_type i = 0; i < self->count; i++) {
         init_line(self, index_of(self, i), self->line);
-        PyObject *t = line_as_unicode(self->line, false);
+        PyObject *t = line_as_unicode(self->line, false, &buf);
         if (t == NULL) { Py_CLEAR(lines); return NULL; }
         PyTuple_SET_ITEM(lines, i, t);
     }
@@ -353,12 +360,12 @@ static PyObject*
 as_ansi(HistoryBuf *self, PyObject *callback) {
 #define as_ansi_doc "as_ansi(callback) -> The contents of this buffer as ANSI escaped text. callback is called with each successive line."
     Line l = {.xnum=self->xnum, .text_cache=self->text_cache};
-    const GPUCell *prev_cell = NULL;
-    ANSIBuf output = {0};
+    ANSIBuf output = {0}; ANSILineState s = {.output_buf=&output};
     for(unsigned int i = 0; i < self->count; i++) {
         init_line(self, i, &l);
-        line_as_ansi(&l, &output, &prev_cell, 0, l.xnum, 0);
-        if (!l.gpu_cells[l.xnum - 1].attrs.next_char_was_wrapped) {
+        output.len = 0;
+        line_as_ansi(&l, &s, 0, l.xnum, 0, true);
+        if (!l.cpu_cells[l.xnum - 1].next_char_was_wrapped) {
             ensure_space_for(&output, buf, Py_UCS4, output.len + 1, capacity, 2048, false);
             output.buf[output.len++] = '\n';
         }
@@ -606,48 +613,71 @@ INIT_TYPE(HistoryBuf)
 HistoryBuf *alloc_historybuf(unsigned int lines, unsigned int columns, unsigned int pagerhist_sz, TextCache *tc) {
     return create_historybuf(&HistoryBuf_Type, columns, lines, pagerhist_sz, tc);
 }
+
 // }}}
 
-#define BufType HistoryBuf
-
-#define map_src_index(y) ((src->start_of_data + y) % src->ynum)
-
-#define init_src_line(src_y) init_line(src, map_src_index(src_y), src->line);
-
-#define next_dest_line(cont) { history_buf_set_last_char_as_continuation(dest, 0, cont); LineAttrs *lap = attrptr(dest, historybuf_push(dest, as_ansi_buf)); *lap = src->line->attrs; }
-
-#define first_dest_line next_dest_line(false);
-
-#include "rewrap.h"
-
-void
-historybuf_rewrap(HistoryBuf *self, HistoryBuf *other, ANSIBuf *as_ansi_buf) {
-    while(other->num_segments < self->num_segments) add_segment(other);
-    if (other->xnum == self->xnum && other->ynum == self->ynum) {
-        // Fast path
-        for (index_type i = 0; i < self->num_segments; i++) {
-            memcpy(other->segments[i].cpu_cells, self->segments[i].cpu_cells, SEGMENT_SIZE * self->xnum * sizeof(CPUCell));
-            memcpy(other->segments[i].gpu_cells, self->segments[i].gpu_cells, SEGMENT_SIZE * self->xnum * sizeof(GPUCell));
-            memcpy(other->segments[i].line_attrs, self->segments[i].line_attrs, SEGMENT_SIZE * sizeof(LineAttrs));
-        }
-        other->count = self->count; other->start_of_data = self->start_of_data;
-        return;
-    }
-    if (other->pagerhist && other->xnum != self->xnum && ringbuf_bytes_used(other->pagerhist->ringbuf))
-        other->pagerhist->rewrap_needed = true;
-    other->count = 0; other->start_of_data = 0;
+static void
+history_buf_set_last_char_as_continuation(HistoryBuf *self, index_type y, bool wrapped) {
     if (self->count > 0) {
-        rewrap_inner(self, other, self->count, NULL, NULL, as_ansi_buf);
-        for (index_type i = 0; i < other->count; i++) attrptr(other, (other->start_of_data + i) % other->ynum)->has_dirty_text = true;
+        cpu_lineptr(self, index_of(self, y))[self->xnum-1].next_char_was_wrapped = wrapped;
     }
 }
 
+index_type
+historybuf_next_dest_line(HistoryBuf *self, ANSIBuf *as_ansi_buf, Line *src_line, index_type dest_y, Line *dest_line, bool continued) {
+    history_buf_set_last_char_as_continuation(self, 0, continued);
+    bool needs_clear;
+    index_type idx = historybuf_push(self, as_ansi_buf, &needs_clear);
+    *attrptr(self, idx) = src_line->attrs;
+    init_line(self, idx, dest_line);
+    if (needs_clear) {
+        zero_at_ptr_count(dest_line->cpu_cells, dest_line->xnum);
+        zero_at_ptr_count(dest_line->gpu_cells, dest_line->xnum);
+    }
+    return dest_y + 1;
+}
+
+HistoryBuf*
+historybuf_alloc_for_rewrap(unsigned int columns, HistoryBuf *self) {
+    if (!self) return NULL;
+    HistoryBuf *ans = alloc_historybuf(self->ynum, columns, 0, self->text_cache);
+    if (ans) {
+        if (ans->num_segments < self->num_segments) add_segment(ans, self->num_segments - ans->num_segments);
+        ans->count = 0; ans->start_of_data = 0;
+    }
+    return ans;
+}
+
+void
+historybuf_finish_rewrap(HistoryBuf *dest, HistoryBuf *src) {
+    for (index_type i = 0; i < dest->count; i++) attrptr(dest, (dest->start_of_data + i) % dest->ynum)->has_dirty_text = true;
+    dest->pagerhist = src->pagerhist; src->pagerhist = NULL;
+    if (dest->pagerhist && dest->xnum != src->xnum && ringbuf_bytes_used(dest->pagerhist->ringbuf)) dest->pagerhist->rewrap_needed = true;
+}
+
+void
+historybuf_fast_rewrap(HistoryBuf *dest, HistoryBuf *src) {
+    for (index_type i = 0; i < src->num_segments; i++) {
+        memcpy(dest->segments[i].cpu_cells, src->segments[i].cpu_cells, SEGMENT_SIZE * src->xnum * sizeof(CPUCell));
+        memcpy(dest->segments[i].gpu_cells, src->segments[i].gpu_cells, SEGMENT_SIZE * src->xnum * sizeof(GPUCell));
+        memcpy(dest->segments[i].line_attrs, src->segments[i].line_attrs, SEGMENT_SIZE * sizeof(LineAttrs));
+    }
+    dest->count = src->count; dest->start_of_data = src->start_of_data;
+}
+
+
 static PyObject*
 rewrap(HistoryBuf *self, PyObject *args) {
-    HistoryBuf *other;
-    if (!PyArg_ParseTuple(args, "O!", &HistoryBuf_Type, &other)) return NULL;
+    unsigned xnum;
+    if (!PyArg_ParseTuple(args, "I", &xnum)) return NULL;
     ANSIBuf as_ansi_buf = {0};
-    historybuf_rewrap(self, other, &as_ansi_buf);
+    LineBuf *dummy = alloc_linebuf(4, self->xnum, self->text_cache);
+    if (!dummy) return PyErr_NoMemory();
+    RAII_PyObject(cleanup, (PyObject*)dummy); (void)cleanup;
+    TrackCursor cursors[1] = {{.is_sentinel=true}};
+    ResizeResult r = resize_screen_buffers(dummy, self, 8, xnum, &as_ansi_buf, cursors);
     free(as_ansi_buf.buf);
-    Py_RETURN_NONE;
+    if (!r.ok) return PyErr_NoMemory();
+    Py_CLEAR(r.lb);
+    return (PyObject*)r.hb;
 }

@@ -20,7 +20,7 @@
 #define debug_input(...) if (OPT(debug_keyboard)) { timed_debug_print(__VA_ARGS__); }
 #define debug_fonts(...) if (global_state.debug_font_fallback) { timed_debug_print(__VA_ARGS__); }
 
-typedef enum { LEFT_EDGE, TOP_EDGE, RIGHT_EDGE, BOTTOM_EDGE } Edge;
+typedef enum { LEFT_EDGE = 1, TOP_EDGE = 2, RIGHT_EDGE = 4, BOTTOM_EDGE = 8 } Edge;
 typedef enum { REPEAT_MIRROR, REPEAT_CLAMP, REPEAT_DEFAULT } RepeatStrategy;
 typedef enum { WINDOW_NORMAL, WINDOW_FULLSCREEN, WINDOW_MAXIMIZED, WINDOW_MINIMIZED } WindowState;
 
@@ -123,6 +123,9 @@ typedef struct {
         } *entries;
     } font_features;
     struct { Animation *cursor, *visual_bell; } animation;
+    unsigned undercurl_style;
+    struct { float thickness; int unit; } underline_exclusion;
+    float box_drawing_scale[4];
 } Options;
 
 typedef struct WindowLogoRenderData {
@@ -338,6 +341,13 @@ extern GlobalState global_state;
     else Py_DECREF(cret_); \
 }
 
+static inline void
+sprite_index_to_pos(unsigned idx, unsigned xnum, unsigned ynum, unsigned *x, unsigned *y, unsigned *z) {
+    div_t r = div(idx & 0x7fffffff, ynum * xnum), r2 = div(r.rem, xnum);
+    *z = r.quot; *y = r2.quot; *x = r2.rem;
+}
+
+
 void gl_init(void);
 void remove_vao(ssize_t vao_idx);
 bool remove_os_window(id_type os_window_id);
@@ -379,7 +389,7 @@ void update_surface_size(int, int, uint32_t);
 void free_texture(uint32_t*);
 void free_framebuffer(uint32_t*);
 void send_image_to_gpu(uint32_t*, const void*, int32_t, int32_t, bool, bool, bool, RepeatStrategy);
-void send_sprite_to_gpu(FONTS_DATA_HANDLE fg, unsigned int, unsigned int, unsigned int, pixel*);
+void send_sprite_to_gpu(FONTS_DATA_HANDLE fg, sprite_index, pixel*, sprite_index);
 void blank_canvas(float, color_type);
 void blank_os_window(OSWindow *);
 void set_os_window_chrome(OSWindow *w);

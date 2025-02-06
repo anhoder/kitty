@@ -7,6 +7,8 @@
 
 #include "data-types.h"
 #include "lineops.h"
+#include "resize.h"
+
 #include <structmember.h>
 
 extern PyTypeObject Line_Type;
@@ -131,6 +133,12 @@ linebuf_init_cells(LineBuf *lb, index_type idx, CPUCell **c, GPUCell **g) {
     *g = gpu_lineptr(lb, ynum);
 }
 
+CPUCell*
+linebuf_cpu_cells_for_line(LineBuf *lb, index_type idx) {
+    const index_type ynum = lb->line_map[idx];
+    return cpu_lineptr(lb, ynum);
+}
+
 static void
 init_line(LineBuf *lb, Line *l, index_type ynum) {
     l->cpu_cells = cpu_lineptr(lb, ynum);
@@ -138,12 +146,17 @@ init_line(LineBuf *lb, Line *l, index_type ynum) {
 }
 
 void
+linebuf_init_line_at(LineBuf *self, index_type idx, Line *line) {
+    line->ynum = idx;
+    line->xnum = self->xnum;
+    line->attrs = self->line_attrs[idx];
+    line->attrs.is_continued = idx > 0 ? cpu_lineptr(self, self->line_map[idx - 1])[self->xnum - 1].next_char_was_wrapped : false;
+    init_line(self, line, self->line_map[idx]);
+}
+
+void
 linebuf_init_line(LineBuf *self, index_type idx) {
-    self->line->ynum = idx;
-    self->line->xnum = self->xnum;
-    self->line->attrs = self->line_attrs[idx];
-    self->line->attrs.is_continued = idx > 0 ? gpu_lineptr(self, self->line_map[idx - 1])[self->xnum - 1].attrs.next_char_was_wrapped : false;
-    init_line(self, self->line, self->line_map[idx]);
+    linebuf_init_line_at(self, idx, self->line);
 }
 
 void
@@ -180,20 +193,20 @@ line(LineBuf *self, PyObject *y) {
     return (PyObject*)self->line;
 }
 
-unsigned int
-linebuf_char_width_at(LineBuf *self, index_type x, index_type y) {
-    return gpu_lineptr(self, self->line_map[y])[x].attrs.width;
+CPUCell*
+linebuf_cpu_cell_at(LineBuf *self, index_type x, index_type y) {
+    return &cpu_lineptr(self, self->line_map[y])[x];
 }
 
 bool
 linebuf_line_ends_with_continuation(LineBuf *self, index_type y) {
-    return y < self->ynum ? gpu_lineptr(self, self->line_map[y])[self->xnum - 1].attrs.next_char_was_wrapped : false;
+    return y < self->ynum ? cpu_lineptr(self, self->line_map[y])[self->xnum - 1].next_char_was_wrapped : false;
 }
 
 void
 linebuf_set_last_char_as_continuation(LineBuf *self, index_type y, bool continued) {
     if (y < self->ynum) {
-        gpu_lineptr(self, self->line_map[y])[self->xnum - 1].attrs.next_char_was_wrapped = continued;
+        cpu_lineptr(self, self->line_map[y])[self->xnum - 1].next_char_was_wrapped = continued;
     }
 }
 
@@ -290,17 +303,22 @@ copy_line_to(LineBuf *self, PyObject *args) {
 
 static void
 clear_line_(Line *l, index_type xnum) {
+#if BLANK_CHAR != 0
+#error This implementation is incorrect for BLANK_CHAR != 0
+#endif
     zero_at_ptr_count(l->cpu_cells, xnum);
     zero_at_ptr_count(l->gpu_cells, xnum);
-    if (BLANK_CHAR != 0) clear_chars_in_line(l->cpu_cells, l->gpu_cells, xnum, BLANK_CHAR);
     l->attrs.has_dirty_text = false;
 }
 
 void
 linebuf_clear_line(LineBuf *self, index_type y, bool clear_attrs) {
-    Line l;
-    init_line(self, &l, self->line_map[y]);
-    clear_line_(&l, self->xnum);
+#if BLANK_CHAR != 0
+#error This implementation is incorrect for BLANK_CHAR != 0
+#endif
+    index_type ym = self->line_map[y];
+    CPUCell *c = cpu_lineptr(self, ym); GPUCell *g = gpu_lineptr(self, ym);
+    zero_at_ptr_count(c, self->xnum); zero_at_ptr_count(g, self->xnum);
     if (clear_attrs) self->line_attrs[y].val = 0;
 }
 
@@ -323,7 +341,7 @@ linebuf_index(LineBuf* self, index_type top, index_type bottom) {
         self->line_attrs[i] = self->line_attrs[i + 1];
     }
     self->line_map[bottom] = old_top;
-    self->line_attrs[bottom]= old_attrs;
+    self->line_attrs[bottom] = old_attrs;
 }
 
 static PyObject*
@@ -449,19 +467,20 @@ as_ansi(LineBuf *self, PyObject *callback) {
     Line l = {.xnum=self->xnum, .text_cache=self->text_cache};
     // remove trailing empty lines
     index_type ylimit = self->ynum - 1;
-    const GPUCell *prev_cell = NULL;
-    ANSIBuf output = {0};
+    ANSIBuf output = {0}; ANSILineState s = {.output_buf=&output};
     do {
         init_line(self, &l, self->line_map[ylimit]);
-        line_as_ansi(&l, &output, &prev_cell, 0, l.xnum, 0);
+        output.len = 0;
+        line_as_ansi(&l, &s, 0, l.xnum, 0, true);
         if (output.len) break;
         ylimit--;
     } while(ylimit > 0);
 
     for(index_type i = 0; i <= ylimit; i++) {
         bool output_newline = !linebuf_line_ends_with_continuation(self, i);
+        output.len = 0;
         init_line(self, &l, self->line_map[i]);
-        line_as_ansi(&l, &output, &prev_cell, 0, l.xnum, 0);
+        line_as_ansi(&l, &s, 0, l.xnum, 0, true);
         if (output_newline) {
             ensure_space_for(&output, buf, Py_UCS4, output.len + 1, capacity, 2048, false);
             output.buf[output.len++] = 10; // 10 = \n
@@ -498,10 +517,11 @@ as_text(LineBuf *self, PyObject *args) {
 static PyObject*
 __str__(LineBuf *self) {
     RAII_PyObject(lines, PyTuple_New(self->ynum));
+    RAII_ANSIBuf(buf);
     if (lines == NULL) return PyErr_NoMemory();
     for (index_type i = 0; i < self->ynum; i++) {
         init_line(self, self->line, self->line_map[i]);
-        PyObject *t = line_as_unicode(self->line, false);
+        PyObject *t = line_as_unicode(self->line, false, &buf);
         if (t == NULL) return NULL;
         PyTuple_SET_ITEM(lines, i, t);
     }
@@ -579,150 +599,16 @@ copy_old(LineBuf *self, PyObject *y) {
     Py_RETURN_NONE;
 }
 
-#include "rewrap.h"
-
-static index_type
-restitch(Line *dest, index_type at, LineBuf *src, const index_type src_y, TrackCursor *cursors) {
-    index_type y = src_y, num_of_lines_removed = 0, num_cells_removed_on_last_line = 0;
-    bool last_char_has_wrapped_flag = true;
-    CPUCell *cp; GPUCell *gp;
-    // copy the cells into dest
-    while (at < dest->xnum && y < src->ynum) {
-        linebuf_init_cells(src, y, &cp, &gp);
-        index_type x = 0;
-        bool found_text = false;
-        while (at < dest->xnum && x < src->xnum) {
-            if (!found_text && cell_has_text(&cp[x])) found_text = true;
-            if (gp[x].attrs.width == 2) {
-                if (dest->xnum - at > 1) {
-                    dest->cpu_cells[at] = cp[x];
-                    dest->gpu_cells[at++] = gp[x++];
-                    dest->cpu_cells[at] = cp[x];
-                    dest->gpu_cells[at] = gp[x];
-                    at++; x++;
-                } else {
-                    dest->cpu_cells[at] = (CPUCell){0};
-                    dest->gpu_cells[at] = (GPUCell){0};
-                    at++;
-                }
-            } else {
-                dest->cpu_cells[at] = cp[x];
-                dest->gpu_cells[at] = gp[x];
-                at++; x++;
-            }
-        }
-        if (!found_text) {
-            last_char_has_wrapped_flag = false;
-            break;
-        }
-        if (x >= src->xnum) {  // Entire line was copied
-            num_of_lines_removed++;
-            bool line_ends_with_newline = !linebuf_line_ends_with_continuation(src, y);
-            if (line_ends_with_newline) {
-                last_char_has_wrapped_flag = false;
-                break;
-            }
-        } else {
-            num_cells_removed_on_last_line = x;
-            break;
-        }
-        y++;
-    }
-    dest->gpu_cells[dest->xnum - 1].attrs.next_char_was_wrapped = last_char_has_wrapped_flag;
-    // remove the copied lines and cells from src
-    if (num_of_lines_removed) {
-        for (index_type i = 0; i < num_of_lines_removed; i++) {
-            linebuf_clear_line(src, src_y, true);
-            linebuf_index(src, src_y, src->ynum - 1);
-        }
-        for (TrackCursor *tc = cursors; !tc->is_sentinel; tc++) if (tc->y >= src_y) tc->y -= num_of_lines_removed;
-    }
-    if (num_cells_removed_on_last_line) {
-        bool line_is_continued_to_next = linebuf_line_ends_with_continuation(src, src_y);
-        linebuf_init_cells(src, src_y, &cp, &gp);
-        for (TrackCursor *tc = cursors; !tc->is_sentinel; tc++) if (tc->y == src_y && tc->x >= num_cells_removed_on_last_line) tc->x -= num_cells_removed_on_last_line;
-        index_type remaining_cells = src->xnum - num_cells_removed_on_last_line;
-        memmove(cp, cp + num_cells_removed_on_last_line, remaining_cells * sizeof(cp[0]));
-        memset(cp + remaining_cells, 0, num_cells_removed_on_last_line * sizeof(cp[0]));
-        memmove(gp, gp + num_cells_removed_on_last_line, remaining_cells * sizeof(gp[0]));
-        memset(gp + remaining_cells, 0, num_cells_removed_on_last_line * sizeof(gp[0]));
-        if (line_is_continued_to_next && remaining_cells < src->xnum && src->ynum > src_y + 1) {
-            Line next_dest = {.xnum=src->xnum};
-            init_line(src, &next_dest, src_y);
-            num_of_lines_removed += restitch(&next_dest, remaining_cells, src, src_y + 1, cursors);
-        }
-    }
-    return num_of_lines_removed;
-}
-
-
-void
-linebuf_rewrap(
-    LineBuf *self, LineBuf *other, index_type *num_content_lines_before, index_type *num_content_lines_after,
-    HistoryBuf *historybuf, index_type *track_x, index_type *track_y, index_type *track_x2, index_type *track_y2,
-    ANSIBuf *as_ansi_buf, bool history_buf_last_line_is_split
-) {
-    index_type first, i;
-    bool is_empty = true;
-
-    // Fast path
-    if (other->xnum == self->xnum && other->ynum == self->ynum) {
-        memcpy(other->line_map, self->line_map, sizeof(index_type) * self->ynum);
-        memcpy(other->line_attrs, self->line_attrs, sizeof(LineAttrs) * self->ynum);
-        memcpy(other->cpu_cell_buf, self->cpu_cell_buf, (size_t)self->xnum * self->ynum * sizeof(CPUCell));
-        memcpy(other->gpu_cell_buf, self->gpu_cell_buf, (size_t)self->xnum * self->ynum * sizeof(GPUCell));
-        *num_content_lines_before = self->ynum; *num_content_lines_after = self->ynum;
-        return;
-    }
-
-    // Find the first line that contains some content
-    first = self->ynum;
-    do {
-        first--;
-        CPUCell *cells = cpu_lineptr(self, self->line_map[first]);
-        for(i = 0; i < self->xnum; i++) {
-            if (cells[i].ch_or_idx || cells[i].ch_is_idx) { is_empty = false; break; }
-        }
-    } while(is_empty && first > 0);
-
-    if (is_empty) {  // All lines are empty
-        *num_content_lines_after = 0;
-        *num_content_lines_before = 0;
-        return;
-    }
-    *num_content_lines_before = first + 1;
-    TrackCursor tcarr[3] = {{.x = *track_x, .y = *track_y }, {.x = *track_x2, .y = *track_y2}, {.is_sentinel = true}};
-    rewrap_inner(self, other, *num_content_lines_before, historybuf, (TrackCursor*)tcarr, as_ansi_buf);
-    *track_x = tcarr[0].x; *track_y = tcarr[0].y;
-    *track_x2 = tcarr[1].x; *track_y2 = tcarr[1].y;
-    *num_content_lines_after = other->line->ynum + 1;
-    if (history_buf_last_line_is_split && historybuf) {
-        historybuf_init_line(historybuf, 0, historybuf->line);
-        index_type xlimit = xlimit_for_line(historybuf->line);
-        if (xlimit < historybuf->line->xnum) {
-            TrackCursor tcarr[3] = {{.x = *track_x, .y = *track_y }, {.x = *track_x2, .y = *track_y2}, {.is_sentinel = true}};
-            index_type num_of_lines_removed = restitch(historybuf->line, xlimit, other, 0, tcarr);
-            *track_x = tcarr[0].x; *track_y = tcarr[0].y;
-            *track_x2 = tcarr[1].x; *track_y2 = tcarr[1].y;
-            *num_content_lines_after -= num_of_lines_removed;
-        }
-    }
-    for (i = 0; i < *num_content_lines_after; i++) other->line_attrs[i].has_dirty_text = true;
-}
-
 static PyObject*
 rewrap(LineBuf *self, PyObject *args) {
-    LineBuf* other;
-    HistoryBuf *historybuf;
-    unsigned int nclb, ncla;
-
-    if (!PyArg_ParseTuple(args, "O!O!", &LineBuf_Type, &other, &HistoryBuf_Type, &historybuf)) return NULL;
-    index_type x = 0, y = 0, x2 = 0, y2 = 0;
+    unsigned int lines, columns;
+    if (!PyArg_ParseTuple(args, "II", &lines, &columns)) return NULL;
+    TrackCursor cursors[1] = {{.is_sentinel=true}};
     ANSIBuf as_ansi_buf = {0};
-    linebuf_rewrap(self, other, &nclb, &ncla, historybuf, &x, &y, &x2, &y2, &as_ansi_buf, false);
+    ResizeResult r = resize_screen_buffers(self, NULL, lines, columns, &as_ansi_buf, cursors);
     free(as_ansi_buf.buf);
-
-    return Py_BuildValue("II", nclb, ncla);
+    if (!r.ok) return PyErr_NoMemory();
+    return Py_BuildValue("NII", r.lb, r.num_content_lines_before, r.num_content_lines_after);
 }
 
 

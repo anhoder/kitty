@@ -38,6 +38,19 @@ typedef struct {
 PyTypeObject CTFace_Type;
 static CTFontRef window_title_font = nil;
 
+static BOOL
+CTFontSupportsColorGlyphs(CTFontRef font) {
+    CFTypeRef symbolicTraits = CTFontCopyAttribute(font, kCTFontSymbolicTrait);
+    if (symbolicTraits) {
+        if ([(NSNumber *)symbolicTraits unsignedLongValue] & kCTFontColorGlyphsTrait) {
+            CFRelease(symbolicTraits);
+            return YES;
+        }
+        CFRelease(symbolicTraits);
+    }
+    return NO;
+}
+
 static PyObject*
 convert_cfstring(CFStringRef src, int free_src) {
     RAII_CoreFoundation(CFStringRef, releaseme, free_src ? src : nil);
@@ -346,11 +359,9 @@ manually_search_fallback_fonts(CTFontRef current_font, const ListOfChars *lc) {
     for (CFIndex i = 0; i < count; i++) {
         CTFontDescriptorRef descriptor = (CTFontDescriptorRef)CFArrayGetValueAtIndex(fonts, i);
         CTFontRef new_font = CTFontCreateWithFontDescriptor(descriptor, CTFontGetSize(current_font), NULL);
-        if (!is_last_resort_font(new_font)) {
-            if (font_can_render_cell(new_font, lc)) {
-                ans = new_font;
-                break;
-            }
+        if (!is_last_resort_font(new_font) && font_can_render_cell(new_font, lc)) {
+            ans = new_font;
+            break;
         }
         CFRelease(new_font);
     }
@@ -367,53 +378,41 @@ manually_search_fallback_fonts(CTFontRef current_font, const ListOfChars *lc) {
 
 static CTFontRef
 find_substitute_face(CFStringRef str, CTFontRef old_font, const ListOfChars *lc) {
-    // CTFontCreateForString returns the original font when there are combining
-    // diacritics in the font and the base character is in the original font,
-    // so we have to check each character individually
-    CFIndex len = CFStringGetLength(str), start = 0, amt = len;
-    while (start < len) {
-        CTFontRef new_font = CTFontCreateForString(old_font, str, CFRangeMake(start, amt));
-        if (amt == len && len != 1) amt = 1;
-        else start++;
-        if (new_font == old_font) { CFRelease(new_font); continue; }
-        if (!new_font || is_last_resort_font(new_font)) {
-            if (new_font) CFRelease(new_font);
-            if (is_private_use(lc->chars[0])) {
-                // CoreTexts fallback font mechanism does not work for private use characters
-                new_font = manually_search_fallback_fonts(old_font, lc);
-                if (new_font) return new_font;
-            }
-            return NULL;
-        }
-        return new_font;
+    // CoreText's fallback system has various problems:
+    // 1) CTFontCreateForString returns the original font when there are combining
+    // diacritics in the text and the base character is in the original font.
+    // 2) Fallback does not work for PUA characters
+    CTFontRef new_font = CTFontCreateForString(old_font, str, CFRangeMake(0, CFStringGetLength(str)));
+    if (!new_font || is_last_resort_font(new_font) || !font_can_render_cell(new_font, lc)) {
+        if (new_font) CFRelease(new_font);
+        // CoreText's fallback font mechanism does not work for private use characters, it also fails
+        // in specific circumstances, such as:
+        return manually_search_fallback_fonts(old_font, lc);
     }
-    return NULL;
+    return new_font;
 }
 
 static CTFontRef
-apply_styles_to_fallback_font(CTFontRef original_fallback_font, bool bold, bool italic) {
+apply_styles_to_fallback_font(CTFontRef original_fallback_font, bool bold, bool italic, const ListOfChars *lc) {
     if (!original_fallback_font || (!bold && !italic) || is_last_resort_font(original_fallback_font)) return original_fallback_font;
-    CTFontDescriptorRef original_descriptor = CTFontCopyFontDescriptor(original_fallback_font);
+    RAII_CoreFoundation(CTFontDescriptorRef, original_descriptor, CTFontCopyFontDescriptor(original_fallback_font));
+    if (!original_descriptor) return original_fallback_font;
     // We cannot set kCTFontTraitMonoSpace in traits as if the original
     // fallback font is Zapf Dingbats we get .AppleSystemUIFontMonospaced as
     // the new fallback
     CTFontSymbolicTraits traits = 0;
     if (bold) traits |= kCTFontTraitBold;
     if (italic) traits |= kCTFontTraitItalic;
-    CTFontDescriptorRef descriptor = CTFontDescriptorCreateCopyWithSymbolicTraits(original_descriptor, traits, traits);
-    CFRelease(original_descriptor);
-    if (descriptor) {
-        CTFontRef ans = CTFontCreateWithFontDescriptor(descriptor, CTFontGetSize(original_fallback_font), NULL);
-        CFRelease(descriptor);
-        if (!ans) return original_fallback_font;
-        CFStringRef new_name = CTFontCopyFamilyName(ans);
-        CFStringRef old_name = CTFontCopyFamilyName(original_fallback_font);
-        bool same_family = cf_string_equals(new_name, old_name);
-        /* NSLog(@"old: %@ new: %@", old_name, new_name); */
-        CFRelease(new_name); CFRelease(old_name);
-        if (same_family) { CFRelease(original_fallback_font); return ans; }
-        CFRelease(ans);
-    }
+    RAII_CoreFoundation(CTFontDescriptorRef, descriptor, CTFontDescriptorCreateCopyWithSymbolicTraits(original_descriptor, traits, traits));
+    if (!descriptor) return original_fallback_font;
+    CTFontRef ans = CTFontCreateWithFontDescriptor(descriptor, CTFontGetSize(original_fallback_font), NULL);
+    if (!ans) return original_fallback_font;
+    RAII_CoreFoundation(CFStringRef, new_name, CTFontCopyFamilyName(ans));
+    RAII_CoreFoundation(CFStringRef, old_name, CTFontCopyFamilyName(original_fallback_font));
+    bool same_family = cf_string_equals(new_name, old_name);
+    /* NSLog(@"old: %@ new: %@", old_name, new_name); */
+    if (same_family && font_can_render_cell(ans, lc)) { CFRelease(original_fallback_font); return ans; }
+    CFRelease(ans);
     return original_fallback_font;
 }
 
@@ -431,20 +430,20 @@ PyObject*
 create_fallback_face(PyObject *base_face, const ListOfChars *lc, bool bold, bool italic, bool emoji_presentation, FONTS_DATA_HANDLE fg) {
     CTFace *self = (CTFace*)base_face;
     RAII_CoreFoundation(CTFontRef, new_font, NULL);
-#define search_for_fallback() \
-        CFStringRef str = lc_as_fallback(lc); \
-        if (str == NULL) return PyErr_NoMemory(); \
-        new_font = find_substitute_face(str, self->ct_font, lc); \
-        CFRelease(str);
+    RAII_CoreFoundation(CFStringRef, str, lc_as_fallback(lc));
+    if (str == NULL) return PyErr_NoMemory();
 
     if (emoji_presentation) {
         new_font = CTFontCreateWithName((CFStringRef)@"AppleColorEmoji", self->scaled_point_sz, NULL);
         if (!new_font || !glyph_id_for_codepoint_ctfont(new_font, lc->chars[0])) {
             if (new_font) CFRelease(new_font);
-            search_for_fallback();
+            new_font = find_substitute_face(str, self->ct_font, lc);
         }
     }
-    else { search_for_fallback(); new_font = apply_styles_to_fallback_font(new_font, bold, italic); }
+    else {
+        new_font = find_substitute_face(str, self->ct_font, lc);
+        new_font = apply_styles_to_fallback_font(new_font, bold, italic, lc);
+    }
     if (new_font == NULL) Py_RETURN_NONE;
     RAII_PyObject(postscript_name, convert_cfstring(CTFontCopyPostScriptName(new_font), true));
     if (!postscript_name) return NULL;
@@ -517,6 +516,11 @@ set_size_for_face(PyObject *s, unsigned int UNUSED desired_height, bool force, F
     return _set_size_for_face(self, force, fg->font_sz_in_pts, fg->logical_dpi_x, fg->logical_dpi_y);
 }
 
+bool
+face_apply_scaling(PyObject *f, const FONTS_DATA_HANDLE fg) {
+    return set_size_for_face(f, 0, false, fg);
+}
+
 static PyObject*
 set_size(CTFace *self, PyObject *args) {
     double font_sz_in_pts, dpi_x, dpi_y;
@@ -579,10 +583,11 @@ harfbuzz_font_for_face(PyObject* s) {
     return self->hb_font;
 }
 
-void
-cell_metrics(PyObject *s, unsigned int* cell_width, unsigned int* cell_height, unsigned int* baseline, unsigned int* underline_position, unsigned int* underline_thickness, unsigned int* strikethrough_position, unsigned int* strikethrough_thickness) {
+FontCellMetrics
+cell_metrics(PyObject *s) {
     // See https://developer.apple.com/library/content/documentation/StringsTextFonts/Conceptual/TextAndWebiPhoneOS/TypoFeatures/TextSystemFeatures.html
     CTFace *self = (CTFace*)s;
+    FontCellMetrics fcm = {0};
 #define count (128 - 32)
     unichar chars[count+1] = {0};
     CGGlyph glyphs[count+1] = {0};
@@ -596,9 +601,9 @@ cell_metrics(PyObject *s, unsigned int* cell_width, unsigned int* cell_height, u
             if (w > width) width = w;
         }
     }
-    *cell_width = MAX(1u, width);
-    *underline_thickness = (unsigned int)ceil(MAX(0.1, self->underline_thickness));
-    *strikethrough_thickness = *underline_thickness;
+    fcm.cell_width = MAX(1u, width);
+    fcm.underline_thickness = (unsigned int)ceil(MAX(0.1, self->underline_thickness));
+    fcm.strikethrough_thickness = fcm.underline_thickness;
     // float line_height = MAX(1, floor(self->ascent + self->descent + MAX(0, self->leading) + 0.5));
     // Let CoreText's layout engine calculate the line height. Slower, but hopefully more accurate.
 #define W "AQWMH_gyl "
@@ -623,13 +628,13 @@ cell_metrics(PyObject *s, unsigned int* cell_width, unsigned int* cell_height, u
     CGRect bounds_without_leading = CTLineGetBoundsWithOptions(line, kCTLineBoundsExcludeTypographicLeading);
     CGFloat typographic_ascent, typographic_descent, typographic_leading;
     CTLineGetTypographicBounds(line, &typographic_ascent, &typographic_descent, &typographic_leading);
-    *cell_height = MAX(4u, (unsigned int)ceilf(line_height));
+    fcm.cell_height = MAX(4u, (unsigned int)ceilf(line_height));
     CGFloat bounds_ascent = bounds_without_leading.size.height + bounds_without_leading.origin.y;
-    *baseline = (unsigned int)floor(bounds_ascent + 0.5);
+    fcm.baseline = (unsigned int)floor(bounds_ascent + 0.5);
     // Not sure if we should add this to bounds ascent and then round it or add
     // it to already rounded baseline and round again.
-    *underline_position = (unsigned int)floor(bounds_ascent - self->underline_position + 0.5);
-    *strikethrough_position = (unsigned int)floor(*baseline * 0.65);
+    fcm.underline_position = (unsigned int)floor(bounds_ascent - self->underline_position + 0.5);
+    fcm.strikethrough_position = (unsigned int)floor(fcm.baseline * 0.65);
 
     debug("Cell height calculation:\n");
     debug("\tline height from line origins: %f\n", line_height);
@@ -638,8 +643,9 @@ cell_metrics(PyObject *s, unsigned int* cell_width, unsigned int* cell_height, u
     debug("\tbounds metrics: ascent: %f\n", bounds_ascent);
     debug("\tline metrics: ascent: %f descent: %f leading: %f\n", typographic_ascent, typographic_descent, typographic_leading);
     debug("\tfont metrics: ascent: %f descent: %f leading: %f underline_position: %f\n", self->ascent, self->descent, self->leading, self->underline_position);
-    debug("\tcell_height: %u baseline: %u underline_position: %u strikethrough_position: %u\n", *cell_height, *baseline, *underline_position, *strikethrough_position);
+    debug("\tcell_height: %u baseline: %u underline_position: %u strikethrough_position: %u\n", fcm.cell_height, fcm.baseline, fcm.underline_position, fcm.strikethrough_position);
     CFRelease(test_frame); CFRelease(path); CFRelease(framesetter);
+    return fcm;
 
 #undef count
 }
@@ -812,18 +818,52 @@ render_simple_text_impl(PyObject *s, const char *text, unsigned int baseline) {
 static void destroy_hb_buffer(hb_buffer_t **x) { if (*x) hb_buffer_destroy(*x); }
 
 static PyObject*
+render_codepoint(CTFace *self, PyObject *args) {
+    unsigned long cp, fg = 0xffffff;
+    if (!PyArg_ParseTuple(args, "k|k", &cp, &fg)) return NULL;
+    const int num_chars = 1;
+    ensure_render_space(0, 0, num_chars);
+    buffers.glyphs[0] = glyph_id_for_codepoint_ctfont(self->ct_font, cp);
+    CGSize local_advances[num_chars];
+    CTFontGetAdvancesForGlyphs(self->ct_font, kCTFontOrientationDefault, buffers.glyphs, local_advances, num_chars);
+    CGRect bounding_box = CTFontGetBoundingRectsForGlyphs(self->ct_font, kCTFontOrientationDefault, buffers.glyphs, buffers.boxes, num_chars);
+    StringCanvas ans = { .width = (size_t)(bounding_box.size.width + 1), .height = (size_t)(1 + bounding_box.size.height) };
+    size_t baseline = ans.height;
+    ensure_render_space(ans.width, ans.height, num_chars);
+    PyObject *pbuf = PyBytes_FromStringAndSize(NULL, ans.width * ans.height * sizeof(pixel));
+    if (!pbuf) return NULL;
+    memset(PyBytes_AS_STRING(pbuf), 0, PyBytes_GET_SIZE(pbuf));
+    const unsigned long canvas_width = ans.width, canvas_height = ans.height;
+    if (CTFontSupportsColorGlyphs(self->ct_font)) {
+        render_color_glyph(self->ct_font, (uint8_t*)PyBytes_AS_STRING(pbuf), buffers.glyphs[0], ans.width, ans.height, baseline);
+    } else {
+        render_glyphs(self->ct_font, ans.width, ans.height, baseline, num_chars);
+        uint8_t r = (fg >> 16) & 0xff, g = (fg >> 8) & 0xff, b = fg & 0xff;
+        const uint8_t *last_pixel = (uint8_t*)PyBytes_AS_STRING(pbuf) + PyBytes_GET_SIZE(pbuf) - sizeof(pixel);
+        const uint8_t *s_limit = buffers.render_buf + canvas_width * canvas_height;
+        for (
+            uint8_t *p = (uint8_t*)PyBytes_AS_STRING(pbuf), *s = buffers.render_buf;
+            p <= last_pixel && s < s_limit;
+            p += sizeof(pixel), s++
+        ) {
+            p[0] = r; p[1] = g; p[2] = b; p[3] = s[0];
+        }
+    }
+    return Py_BuildValue("Nkk", pbuf, canvas_width, canvas_height);
+}
+
+static PyObject*
 render_sample_text(CTFace *self, PyObject *args) {
     unsigned long canvas_width, canvas_height;
     unsigned long fg = 0xffffff;
     CTFontRef font = self->ct_font;
     PyObject *ptext;
     if (!PyArg_ParseTuple(args, "Ukk|k", &ptext, &canvas_width, &canvas_height, &fg)) return NULL;
-    unsigned int cell_width, cell_height, baseline, underline_position, underline_thickness, strikethrough_position, strikethrough_thickness;
-    cell_metrics((PyObject*)self, &cell_width, &cell_height, &baseline, &underline_position, &underline_thickness, &strikethrough_position, &strikethrough_thickness);
-    if (!cell_width || !cell_height) return Py_BuildValue("yII", "", cell_width, cell_height);
+    FontCellMetrics fcm = cell_metrics((PyObject*)self);
+    if (!fcm.cell_width || !fcm.cell_height) return Py_BuildValue("yII", "", fcm.cell_width, fcm.cell_height);
     size_t num_chars = PyUnicode_GET_LENGTH(ptext);
-    int num_chars_per_line = canvas_width / cell_width, num_of_lines = (int)ceil((float)num_chars / (float)num_chars_per_line);
-    canvas_height = MIN(canvas_height, num_of_lines * cell_height);
+    int num_chars_per_line = canvas_width / fcm.cell_width, num_of_lines = (int)ceil((float)num_chars / (float)num_chars_per_line);
+    canvas_height = MIN(canvas_height, num_of_lines * fcm.cell_height);
     RAII_PyObject(pbuf, PyBytes_FromStringAndSize(NULL, sizeof(pixel) * canvas_width * canvas_height));
     if (!pbuf) return NULL;
     memset(PyBytes_AS_STRING(pbuf), 0, PyBytes_GET_SIZE(pbuf));
@@ -842,7 +882,7 @@ render_sample_text(CTFace *self, PyObject *args) {
     hb_glyph_position_t *positions = hb_buffer_get_glyph_positions(hb_buffer, NULL);
 
     memset(PyBytes_AS_STRING(pbuf), 0, PyBytes_GET_SIZE(pbuf));
-    if (cell_width > canvas_width) goto end;
+    if (fcm.cell_width > canvas_width) goto end;
 
     ensure_render_space(canvas_width, canvas_height, len);
     float pen_x = 0, pen_y = 0;
@@ -851,7 +891,7 @@ render_sample_text(CTFace *self, PyObject *args) {
     for (unsigned int i = 0; i < len; i++) {
         float advance = (float)positions[i].x_advance * scale;
         if (pen_x + advance > canvas_width) {
-            pen_y += cell_height;
+            pen_y += fcm.cell_height;
             pen_x = 0;
             if (pen_y >= canvas_height) break;
         }
@@ -862,7 +902,7 @@ render_sample_text(CTFace *self, PyObject *args) {
         buffers.glyphs[i] = info[i].codepoint;
         num_glyphs++;
     }
-    render_glyphs(font, canvas_width, canvas_height, baseline, num_glyphs);
+    render_glyphs(font, canvas_width, canvas_height, fcm.baseline, num_glyphs);
     uint8_t r = (fg >> 16) & 0xff, g = (fg >> 8) & 0xff, b = fg & 0xff;
     const uint8_t *last_pixel = (uint8_t*)PyBytes_AS_STRING(pbuf) + PyBytes_GET_SIZE(pbuf) - sizeof(pixel);
     const uint8_t *s_limit = buffers.render_buf + canvas_width * canvas_height;
@@ -874,7 +914,7 @@ render_sample_text(CTFace *self, PyObject *args) {
         p[0] = r; p[1] = g; p[2] = b; p[3] = s[0];
     }
 end:
-    return Py_BuildValue("OII", pbuf, cell_width, cell_height);
+    return Py_BuildValue("OII", pbuf, fcm.cell_width, fcm.cell_height);
 
 }
 
@@ -1116,6 +1156,7 @@ static PyMethodDef methods[] = {
     METHODB(identify_for_debug, METH_NOARGS),
     METHODB(set_size, METH_VARARGS),
     METHODB(render_sample_text, METH_VARARGS),
+    METHODB(render_codepoint, METH_VARARGS),
     METHODB(get_best_name, METH_O),
     {NULL}  /* Sentinel */
 };

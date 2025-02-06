@@ -1,5 +1,4 @@
 import termios
-from ctypes import Array, c_ubyte
 from typing import Any, Callable, Dict, Iterator, List, Literal, NewType, Optional, Tuple, TypedDict, Union, overload
 
 from kitty.boss import Boss
@@ -276,7 +275,6 @@ GRAPHICS_PROGRAM: int
 MARK: int
 MARK_MASK: int
 DECORATION_MASK: int
-NUM_UNDERLINE_STYLES: int
 FILE_TRANSFER_CODE: int
 ESC_CSI: int
 ESC_OSC: int
@@ -308,6 +306,9 @@ WINDOW_NORMAL: int = 0
 WINDOW_FULLSCREEN: int
 WINDOW_MAXIMIZED: int
 WINDOW_MINIMIZED: int
+TEXT_SIZE_CODE: int
+TOP_EDGE: int
+BOTTOM_EDGE: int
 # }}}
 
 
@@ -449,7 +450,10 @@ class Face:
     def identify_for_debug(self) -> str: ...
     def postscript_name(self) -> str: ...
     def set_size(self, sz_in_pts: float, dpi_x: float, dpi_y: float) -> None: ...
-    def render_sample_text(self, text: str, width: int, height: int, fg_color: int = 0xffffff) -> Tuple[bytes, int, int]: ...
+    def render_sample_text(
+        self, text: str, width: int, height: int, fg_color: int = 0xffffff
+    ) -> tuple[bytes, int, int]: ...
+    def render_codepoint(self, cp: int, fg_color: int = 0xffffff) -> tuple[bytes, int, int]: ...
     def get_variation(self) -> Optional[Dict[str, float]]: ...
     def get_features(self) -> Dict[str, Optional[FeatureData]]: ...
     def applied_features(self) -> Dict[str, str]: ...
@@ -486,7 +490,10 @@ class CTFace:
     def identify_for_debug(self) -> str: ...
     def postscript_name(self) -> str: ...
     def set_size(self, sz_in_pts: float, dpi_x: float, dpi_y: float) -> None: ...
-    def render_sample_text(self, text: str, width: int, height: int, fg_color: int = 0xffffff) -> Tuple[bytes, int, int]: ...
+    def render_sample_text(
+        self, text: str, width: int, height: int, fg_color: int = 0xffffff,
+    ) -> tuple[bytes, int, int]: ...
+    def render_codepoint(self, cp: int, fg_color: int = 0xffffff) -> tuple[bytes, int, int]: ...
     def get_variation(self) -> Optional[Dict[str, float]]: ...
     def get_features(self) -> Dict[str, Optional[FeatureData]]: ...
     def applied_features(self) -> Dict[str, str]: ...
@@ -1003,7 +1010,7 @@ def ring_bell() -> None:
     pass
 
 
-def concat_cells(cell_width: int, cell_height: int, is_32_bit: bool, cells: Tuple[bytes, ...]) -> bytes:
+def concat_cells(cell_width: int, cell_height: int, is_32_bit: bool, cells: Tuple[bytes, ...], bgcolor: int = 0) -> bytes:
     pass
 
 
@@ -1112,8 +1119,7 @@ def parse_input_from_terminal(
 
 class Line:
 
-    def sprite_at(self, cell: int) -> Tuple[int, int, int]:
-        pass
+    def sprite_at(self, cell: int) -> int: ...
 
 
 def test_shape(line: Line,
@@ -1137,12 +1143,7 @@ def set_send_sprite_to_gpu(
 
 
 def set_font_data(
-    box_drawing_func: Callable[[int, int, int, float],
-                               Tuple[int, Union[bytearray, bytes, Array[c_ubyte]]]],
-    prerender_func: Callable[
-        [int, int, int, int, int, int, int, float, float, float, float],
-        Tuple[Tuple[int, ...], Tuple[Array[c_ubyte], ...]]],
-    descriptor_for_idx: Callable[[int], Tuple[FontObject, bool, bool]],
+    descriptor_for_idx: Callable[[int], Tuple[Union[FontObject|str], bool, bool]],
     bold: int, italic: int, bold_italic: int, num_symbol_fonts: int,
     symbol_maps: Tuple[Tuple[int, int, int], ...], font_sz_in_pts: float,
     narrow_symbols: Tuple[Tuple[int, int, int], ...],
@@ -1154,9 +1155,7 @@ def get_fallback_font(text: str, bold: bool, italic: bool) -> Any:
     pass
 
 
-def create_test_font_group(sz: float, dpix: float,
-                           dpiy: float) -> Tuple[int, int]:
-    pass
+def create_test_font_group(sz: float, dpix: float, dpiy: float) -> tuple[int, int, int]: ...
 
 
 class HistoryBuf:
@@ -1223,6 +1222,7 @@ class Screen:
     def test_create_write_buffer(self) -> memoryview: ...
     def test_commit_write_buffer(self, inp: memoryview, output: memoryview) -> int: ...
     def test_parse_written_data(self, dump_callback: None = None) -> None: ...
+    def hyperlink_for_id(self, hyperlink_id: int) -> str: ...
 
     def cursor_at_prompt(self) -> bool:
         pass
@@ -1723,6 +1723,8 @@ def cocoa_play_system_sound_by_id_async(sound_id: int) -> None: ...
 def glfw_get_system_color_theme(query_if_unintialized: bool = True) -> Literal['light', 'dark', 'no_preference']: ...
 def set_redirect_keys_to_overlay(os_window_id: int, tab_id: int, window_id: int, overlay_window_id: int) -> None: ...
 def buffer_keys_in_window(os_window_id: int, tab_id: int, window_id: int, enabled: bool = True) -> bool: ...
+def sprite_idx_to_pos(idx: int, xnum: int, ynum: int) -> tuple[int, int, int]: ...
+def render_box_char(ch: int, width: int, height: int, scale: float = 1.0, dpi_x: float = 96.0, dpi_y: float = 96.0) -> bytes: ...
 
 class MousePosition(TypedDict):
     cell_x: int
