@@ -28,6 +28,7 @@ from .constants import (
     kitty_exe,
     logo_png_file,
     running_in_kitty,
+    supports_window_occlusion,
     website_url,
 )
 from .fast_data_types import (
@@ -40,6 +41,7 @@ from .fast_data_types import (
     glfw_terminate,
     load_png_data,
     mask_kitty_signals_process_wide,
+    run_at_exit_cleanup_functions,
     set_custom_cursor,
     set_default_window_icon,
     set_options,
@@ -88,8 +90,10 @@ def load_all_shaders(semi_transparent: bool = False) -> None:
 
 
 def init_glfw_module(glfw_module: str, debug_keyboard: bool = False, debug_rendering: bool = False, wayland_enable_ime: bool = True) -> None:
-    if not glfw_init(glfw_path(glfw_module), edge_spacing, debug_keyboard, debug_rendering, wayland_enable_ime):
+    ok, swo = glfw_init(glfw_path(glfw_module), edge_spacing, debug_keyboard, debug_rendering, wayland_enable_ime)
+    if not ok:
         raise SystemExit('GLFW initialization failed')
+    supports_window_occlusion(swo)
 
 
 def init_glfw(opts: Options, debug_keyboard: bool = False, debug_rendering: bool = False) -> str:
@@ -537,3 +541,7 @@ def main() -> None:
         tb = traceback.format_exc()
         log_error(tb)
         raise SystemExit(1)
+    finally:
+        # we cant rely on this running during module unloading of fast_data_types as Python fails
+        # to unload the module, due to reference cycles, I am guessing.
+        run_at_exit_cleanup_functions()

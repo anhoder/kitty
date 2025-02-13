@@ -11,6 +11,9 @@ from kitty.types import LayerShellConfig, SignalInfo
 from kitty.typing import EdgeLiteral, NotRequired, ReadableBuffer, WriteableBuffer
 
 # Constants {{{
+SCALE_BITS: int
+WIDTH_BITS: int
+SUBSCALE_BITS: int
 GLFW_LAYER_SHELL_NONE: int
 GLFW_LAYER_SHELL_PANEL: int
 GLFW_LAYER_SHELL_TOP: int
@@ -674,7 +677,7 @@ def glfw_terminate() -> None:
 def glfw_init(
     path: str, edge_spacing_func: Callable[[EdgeLiteral], float], debug_keyboard: bool = False, debug_rendering: bool = False,
     wayland_enable_ime: bool = True
-) -> bool:
+) -> tuple[bool, bool]:
     pass
 
 
@@ -1725,6 +1728,13 @@ def set_redirect_keys_to_overlay(os_window_id: int, tab_id: int, window_id: int,
 def buffer_keys_in_window(os_window_id: int, tab_id: int, window_id: int, enabled: bool = True) -> bool: ...
 def sprite_idx_to_pos(idx: int, xnum: int, ynum: int) -> tuple[int, int, int]: ...
 def render_box_char(ch: int, width: int, height: int, scale: float = 1.0, dpi_x: float = 96.0, dpi_y: float = 96.0) -> bytes: ...
+def run_at_exit_cleanup_functions() -> None: ...
+DecorationTypes = Literal[
+    'curl', 'dashed', 'dotted', 'double', 'straight', 'strikethrough', 'beam_cursor', 'underline_cursor', 'hollow_cursor', 'missing']
+def render_decoration(
+    which: DecorationTypes, cell_width: int, cell_height: int, underline_position: int, underline_thickness: int, dpi: float = 96.0
+) -> bytes: ...
+def os_window_is_invisible(os_window_id: int) -> bool: ...
 
 class MousePosition(TypedDict):
     cell_x: int

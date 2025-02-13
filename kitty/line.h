@@ -27,6 +27,7 @@ static_assert(sizeof(CellAttrs) == sizeof(uint32_t), "Fix the ordering of CellAt
 #define WIDTH_MASK (3u)
 #define DECORATION_MASK (7u)
 #define SGR_MASK (~(((CellAttrs){.mark=MARK_MASK}).val))
+#define MAX_NUM_CODEPOINTS_PER_CELL 24u
 // Text presentation selector
 #define VS15 0xfe0e
 // Emoji presentation selector
@@ -70,11 +71,10 @@ static_assert(sizeof(CPUCell) == 12, "Fix the ordering of CPUCell");
 
 typedef union LineAttrs {
     struct {
-        uint8_t is_continued : 1;
         uint8_t has_dirty_text : 1;
         uint8_t has_image_placeholders : 1;
         uint8_t prompt_kind : 2;
-        uint8_t : 3;
+        uint8_t : 4;
     };
     uint8_t val;
 } LineAttrs ;

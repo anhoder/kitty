@@ -106,6 +106,14 @@ Detailed list of changes
   terminal ecosystem for decades by allowing terminal programs to specify how
   many cells to render a piece of text in (:iss:`8226`)
 
+- **Behavior change**: The :opt:`notify_on_cmd_finish` option now uses OS
+  Window visibility instead of focus state when set to ``invisible`` on
+  platforms that support querying OS window visibility (:iss:`8320`)
+
+- launch: Add options :option:`launch --source-window` and :option:`launch --next-to` to allow
+  specifying which window is used as the data source and destination location independently of the
+  currently active window (:iss:`8295`)
+
 - Linux: Add support for `COLRv1 <https://nabla.typearture.com/whatisCOLRV1.html>`__ fonts. These are typically emoji fonts that use vector images for emoji
 
 - Add support for the octant box-drawing characters
@@ -113,6 +121,15 @@ Detailed list of changes
 - Speed up rendering of box drawing characters by moving the implementation to native code
 
 - macOS: Fix fallback font rendering for bold/italic text not working for some symbols that are present in the Menlo regular face but not the bold/italic faces (:iss:`8282`)
+
+- XTGETTCAP: Fix response invalid for empty string capabilities (:pull:`8304`)
+
+- ssh kitten: Fix incorrect copying of data files when using the python interpreter and also fix incorrect hard link detection (:disc:`8308`)
+
+- Fix a regression in the previous release that broke setting of nullable colors
+
+- Fix a regression in 0.39.0 that caused a crash on invalid Unicode with a
+  large number of combining characters in a single cell (:iss:`8318`)
 
 0.39.1 [2025-02-01]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

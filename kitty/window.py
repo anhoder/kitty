@@ -134,7 +134,6 @@ class CwdRequest:
     def __init__(self, window: Optional['Window'] = None, request_type: CwdRequestType = CwdRequestType.current) -> None:
         self.window_id = -1 if window is None else window.id
         self.request_type = request_type
-        self.rc_from_window_id = 0
 
     def __bool__(self) -> bool:
         return self.window_id > -1
@@ -1293,7 +1292,7 @@ class Window:
 
     def color_profile_popped(self, bg_changed: bool) -> None:
         if bg_changed:
-            get_boss().default_bg_changed_for(self.id)
+            get_boss().default_bg_changed_for(self.id, via_escape_code=True)
 
     def report_color(self, code: str, col: Color) -> None:
         r, g, b = col.red, col.green, col.blue

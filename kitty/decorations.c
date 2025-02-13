@@ -128,38 +128,46 @@ add_dashed_underline(uint8_t *buf, FontCellMetrics fcm) {
 }
 
 static unsigned
-add_intensity(uint8_t *buf, unsigned x, unsigned y, uint8_t val, unsigned max_y, unsigned position, unsigned cell_width) {
+add_intensity(uint8_t *buf, unsigned x, int y, uint8_t val, unsigned max_y, unsigned position, unsigned cell_width) {
     y += position;
-    y = min(y, max_y);
+    y = min(MAX(0, y), max_y);
     unsigned idx = cell_width * y + x;
     buf[idx] = min(255, buf[idx] + val);
     return y;
+}
+
+static uint
+minus(uint a, uint b) {  // saturating subtraction (a > b ? a - b : 0)
+    uint res = a - b;
+    res &= -(res <= a);
+    return res;
 }
 
 DecorationGeometry
 add_curl_underline(uint8_t *buf, FontCellMetrics fcm) {
     unsigned max_x = fcm.cell_width - 1, max_y = fcm.cell_height - 1;
     double xfactor = ((OPT(undercurl_style) & 1) ? 4.0 : 2.0) * M_PI / max_x;
-    unsigned half_thickness = fcm.underline_thickness / 2;
-    unsigned top = fcm.underline_position > half_thickness ? fcm.underline_position - half_thickness : 0;
-    unsigned max_height = fcm.cell_height - top;  // descender from the font
-    unsigned half_height = max(1u, max_height / 4u);
-    unsigned thickness;
-    if (OPT(undercurl_style) & 2) thickness = max(half_height, fcm.underline_thickness);
-    else thickness = max(1u, fcm.underline_thickness) - (fcm.underline_thickness < 3u ? 1u : 2u);
-    unsigned position = fcm.underline_position;
+    div_t d = div(fcm.underline_thickness, 2);
+    /*printf("cell_width: %u cell_height: %u underline_position: %u underline_thickness: %u\n",*/
+    /*        fcm.cell_width, fcm.cell_height, fcm.underline_position, fcm.underline_thickness);*/
+    unsigned position = min(fcm.underline_position, minus(fcm.cell_height, d.quot + d.rem));
+    unsigned thickness = max(1u, min(fcm.underline_thickness, minus(fcm.cell_height, position + 1)));
+    unsigned max_height = fcm.cell_height - minus(position, thickness / 2);  // descender from the font
+    unsigned half_height = max(1u, max_height / 4u);  // 4 so as to be not too large
+    if (OPT(undercurl_style) & 2) thickness = max(half_height, thickness);
+    else thickness = max(1u, thickness) - (thickness < 3u ? 1u : 2u);
 
-    // Ensure curve doesn't exceed cell boundary at the bottom
     position += half_height * 2;
     if (position + half_height > max_y) position = max_y - half_height;
+    /*printf("position: %u half_height: %u thickness: %u\n", position, half_height, thickness);*/
 
     unsigned miny = fcm.cell_height, maxy = 0;
     // Use the Wu antialias algorithm to draw the curve
     // cosine waves always have slope <= 1 so are never steep
     for (unsigned x = 0; x < fcm.cell_width; x++) {
         double y = half_height * cos(x * xfactor);
-        unsigned y1 = (unsigned)floor(y - thickness), y2 = (unsigned)ceil(y);
-        unsigned intensity = (unsigned)(255. * fabs(y - floor(y)));
+        int y1 = (int)(floor(y - thickness)), y2 = (int)(ceil(y));
+        unsigned intensity = (unsigned)((255. * fabs(y - floor(y))));
         unsigned i1 = 255 - intensity, i2 = intensity;
         unsigned yc = add_intensity(buf, x, y1, i1, max_y, position, fcm.cell_width);  // upper bound
         if (i1) { if (yc < miny) miny = yc; if (yc > maxy) maxy = yc; }
@@ -235,7 +243,7 @@ typedef struct Canvas {
 } Canvas;
 
 static void
-fill_canvas(Canvas *self, int byte) { memset(self->mask, byte, self->width * self->height * sizeof(self->mask[0])); }
+fill_canvas(Canvas *self, int byte) { memset(self->mask, byte, sizeof(self->mask[0]) * self->width * self->height); }
 
 static void
 append_hole(Canvas *self, Range hole) {
@@ -257,13 +265,6 @@ thickness(Canvas *self, uint level, bool horizontal) {
     double pts = OPT(box_drawing_scale)[level];
     double dpi = horizontal ? self->dpi.x : self->dpi.y;
     return (uint)ceil(self->supersample_factor * self->scale * pts * dpi / 72.0);
-}
-
-static uint
-minus(uint a, uint b) {  // saturating subtraction (a > b ? a - b : 0)
-    uint res = a - b;
-    res &= -(res <= a);
-    return res;
 }
 
 static const uint hole_factor = 8;
@@ -1581,7 +1582,7 @@ START_ALLOW_CASE_RANGE
         SH(L'🮖', .xnum=4, .ynum=4, .invert=true);
         SH(L'🮗', .xnum=1, .ynum=4, .invert=true);
 #define M(ch, corner) SB(ch, corner_triangle(c, corner)); \
-            memcpy(ss.mask, canvas.mask, canvas.width * canvas.height * sizeof(canvas.mask[0])); \
+            memcpy(ss.mask, canvas.mask, sizeof(canvas.mask[0]) * canvas.width * canvas.height); \
             fill_canvas(&canvas, 0); shade(&canvas, (Shade){.xnum=12}); \
             apply_mask(&canvas, ss.mask); break;
         M(L'🮜', TOP_LEFT);

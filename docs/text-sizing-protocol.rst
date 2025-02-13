@@ -57,9 +57,11 @@ at the specified size. It is an ``OSC`` code of the form::
 
 Here, ``OSC`` is the bytes ``ESC ] (0x1b 0x5b)``. The ``metadata`` is a colon
 separated list of ``key=value`` pairs. The final part of the escape code is the
-text which is simply plain text encoded as :ref:`safe_utf8`. Spaces in this
-definition are for clarity only and should be ignored. The ``terminator`` is
-either the byte ``BEL (0x7)`` or the bytes ``ESC ST (0x1b 0x5c)``.
+text which is simply plain text encoded as :ref:`safe_utf8`, the text must be
+no longer than ``4096`` bytes. Longer strings than that must be broken up into
+multiple escape codes. Spaces in this definition are for clarity only and
+should be ignored. The ``terminator`` is either the byte ``BEL (0x7)`` or the
+bytes ``ESC ST (0x1b 0x5c)``.
 
 There are only a handful of metadata keys, defined in the table below:
 
@@ -105,7 +107,11 @@ characters and thus ends up rendering text at twice the base size.
 
 When ``w`` is a non-zero value, it specifies the width in scaled cells of the
 following text. Note that **all** the text in that escape code must be rendered
-in ``s * w`` cells. If it does not fit, the terminal is free to do whatever it
+in ``s * w`` cells. When both ``s`` and ``w`` are present, the resulting multicell
+contains all the text in the escape code rendered in a grid of ``(s * w, s)``
+cells, i.e. the multicell is ``s*w`` cells wide and ``s`` cells high.
+
+If the text does not fit, the terminal is free to do whatever it
 feels is best, including truncating the text or downsizing the font size when
 rendering it. It is up to client applications to use the ``w`` key wisely and not
 try to render too much text in too few cells. When sending a string of text
@@ -128,6 +134,13 @@ when using fractional scaling, as described below.
 
 .. note:: Text sizes specified by scale are relative to the base font size,
    thus if the base font size is changed, these sizes are changed as well.
+   So if the terminal emulator is using a base font size of ``11pt``, then
+   ``s=2`` will be rendered in approximately ``22pt`` (approx. because the
+   terminal may need to slightly adjust font size to ensure it fits as not all
+   fonts scale sizes linearly). If the user changes the base font size of the
+   terminal emulator to ``12pt`` then the scaled font size becomes ``~24pt``
+   and so on.
+
 
 Fractional scaling
 ^^^^^^^^^^^^^^^^^^^^^^^
@@ -192,7 +205,8 @@ exact number of cells the client expects.
 .. note::
    It is possible for a terminal to implement only the width part of this spec
    and ignore the scale part. This escape code works with only the `w` key as
-   well as a means of specifying how many cells each piece of text occupies.
+   well, as a means of specifying how many cells each piece of text occupies.
+   In such cases ``s`` defaults to 1.
    See the section on :ref:`detect_text_sizing` on how client applications can
    query for terminal emulator support.
 

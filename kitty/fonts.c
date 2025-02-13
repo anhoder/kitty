@@ -135,7 +135,7 @@ static void
 display_rgba_data(const pixel *b, unsigned width, unsigned height) {
     RAII_PyObject(m, PyImport_ImportModule("kitty.fonts.render"));
     RAII_PyObject(f, PyObject_GetAttrString(m, "show"));
-    RAII_PyObject(data, PyMemoryView_FromMemory((char*)b, width * height * sizeof(b[0]), PyBUF_READ));
+    RAII_PyObject(data, PyMemoryView_FromMemory((char*)b, (Py_ssize_t)width * height * sizeof(b[0]), PyBUF_READ));
     RAII_PyObject(ret, PyObject_CallFunction(f, "OII", data, width, height));
     if (ret == NULL) PyErr_Print();
 }
@@ -154,7 +154,7 @@ python_send_to_gpu(FontGroup *fg, sprite_index idx, pixel *buf) {
     if (0) dump_sprite(buf, fg->fcm.cell_width, fg->fcm.cell_height);
     unsigned int x, y, z;
     sprite_index_to_pos(idx, fg->sprite_tracker.xnum, fg->sprite_tracker.ynum, &x, &y, &z);
-    const size_t sprite_size = fg->fcm.cell_width * fg->fcm.cell_height;
+    const size_t sprite_size = (size_t)fg->fcm.cell_width * fg->fcm.cell_height;
     PyObject *ret = PyObject_CallFunction(python_send_to_gpu_impl, "IIIy#", x, y, z, buf, sprite_size * sizeof(buf[0]));
     if (ret == NULL) PyErr_Print();
     else Py_DECREF(ret);
@@ -662,13 +662,13 @@ load_fallback_font(FontGroup *fg, const ListOfChars *lc, bool bold, bool italic,
     return ans;
 }
 
-size_t
-chars_as_utf8(const ListOfChars *lc, char *buf, char_type zero_char) {
+static size_t
+chars_as_utf8(const ListOfChars *lc, char *buf, size_t bufsz, char_type zero_char) {
     size_t n;
     if (lc->count == 1) n = encode_utf8(lc->chars[0] ? lc->chars[0] : zero_char, buf);
     else {
         n = encode_utf8(lc->chars[0], buf);
-        if (lc->chars[0] != '\t') for (unsigned i = 1; i < lc->count; i++) n += encode_utf8(lc->chars[i], buf + n);
+        if (lc->chars[0] != '\t') for (unsigned i = 1; i < lc->count && n < bufsz - 4; i++) n += encode_utf8(lc->chars[i], buf + n);
     }
     buf[n] = 0;
     return n;
@@ -681,8 +681,8 @@ fallback_font(FontGroup *fg, const CPUCell *cpu_cell, const GPUCell *gpu_cell, c
     bool emoji_presentation = has_emoji_presentation(cpu_cell, lc);
     char style = emoji_presentation ? 'a' : 'A';
     if (bold) style += italic ? 3 : 2; else style += italic ? 1 : 0;
-    char cell_text[4 * 32] = {style};
-    const size_t cell_text_len = 1 + chars_as_utf8(lc, cell_text + 1, ' ');
+    char cell_text[4u * (MAX_NUM_CODEPOINTS_PER_CELL + 8u)] = {style};
+    const size_t cell_text_len = 1 + chars_as_utf8(lc, cell_text + 1, arraysz(cell_text) - 1, ' ');
     fallback_font_map_t_itr fi = vt_get(&fg->fallback_font_map, cell_text);
     if (!vt_is_end(fi)) return fi.data->val;
     ssize_t idx = load_fallback_font(fg, lc, bold, italic, emoji_presentation);
@@ -834,8 +834,8 @@ effective_scale(RunFont rf) {
 static float
 scaled_cell_dimensions(RunFont rf, unsigned *width, unsigned *height) {
     float frac = effective_scale(rf);
-    *width = (unsigned)ceil(frac * *width);
-    *height = (unsigned)ceil(frac * *height);
+    *width = (unsigned)ceilf(frac * *width);
+    *height = (unsigned)ceilf(frac * *height);
     return frac;
 }
 
@@ -956,7 +956,7 @@ map_scaled_decoration_geometry(DecorationGeometry sdg, Region src, Region dest) 
 
 static void
 render_scaled_decoration(FontCellMetrics unscaled_metrics, FontCellMetrics scaled_metrics, uint8_t *alpha_mask, pixel *output, Region src, Region dest) {
-    memset(output, 0, unscaled_metrics.cell_width * (unscaled_metrics.cell_height + 1) * sizeof(output[0]));
+    memset(output, 0, sizeof(output[0]) * unscaled_metrics.cell_width * (unscaled_metrics.cell_height + 1));
     unsigned src_limit = MIN(scaled_metrics.cell_height, src.bottom), dest_limit = MIN(unscaled_metrics.cell_height, dest.bottom);
     unsigned cell_width = MIN(scaled_metrics.cell_width, unscaled_metrics.cell_width);
     for (unsigned srcy = src.top, desty=dest.top; srcy < src_limit && desty < dest_limit; srcy++, desty++) {
@@ -972,13 +972,13 @@ render_decorations(FontGroup *fg, Region src, Region dest, FontCellMetrics scale
     if ((src.bottom == src.top) || (dest.bottom == dest.top)) return 0;   // no overlap
     const FontCellMetrics unscaled_metrics = fg->fcm;
     scaled_metrics.cell_width = unscaled_metrics.cell_width;
-    RAII_ALLOC(uint8_t, alpha_mask, malloc(scaled_metrics.cell_height * scaled_metrics.cell_width));
-    RAII_ALLOC(pixel, buf, malloc(unscaled_metrics.cell_width * (unscaled_metrics.cell_height + 1) * sizeof(pixel)));
+    RAII_ALLOC(uint8_t, alpha_mask, malloc((size_t)scaled_metrics.cell_height * scaled_metrics.cell_width));
+    RAII_ALLOC(pixel, buf, malloc(sizeof(pixel) * unscaled_metrics.cell_width * (unscaled_metrics.cell_height + 1)));
     if (!alpha_mask || !buf) fatal("Out of memory");
     sprite_index ans = 0;
     bool is_underline = false; uint32_t underline_top = unscaled_metrics.cell_height, underline_bottom = 0;
 #define do_one(call) { \
-    memset(alpha_mask, 0, scaled_metrics.cell_width * scaled_metrics.cell_height * sizeof(alpha_mask[0])); \
+    memset(alpha_mask, 0, sizeof(alpha_mask[0]) * scaled_metrics.cell_width * scaled_metrics.cell_height); \
     DecorationGeometry sdg = call; \
     render_scaled_decoration(unscaled_metrics, scaled_metrics, alpha_mask, buf, src, dest); \
     sprite_index q = current_send_sprite_to_gpu(fg, buf, (DecorationMetadata){0}, scaled_metrics); \
@@ -1119,11 +1119,11 @@ load_hb_buffer(CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, index_type num_
 static void
 render_filled_sprite(pixel *buf, unsigned num_glyphs, FontCellMetrics scaled_metrics, unsigned num_scaled_cells) {
     if (num_scaled_cells > num_glyphs) {
-        memset(buf, 0xff, num_glyphs * scaled_metrics.cell_width * sizeof(buf[0]));
-        memset(buf + num_glyphs * scaled_metrics.cell_width, 0, (num_scaled_cells - num_glyphs) * scaled_metrics.cell_width * sizeof(buf[0]));
+        memset(buf, 0xff, sizeof(buf[0]) * num_glyphs * scaled_metrics.cell_width);
+        memset(buf + num_glyphs * scaled_metrics.cell_width, 0, sizeof(buf[0]) * (num_scaled_cells - num_glyphs) * scaled_metrics.cell_width);
         for (unsigned y = 1; y < scaled_metrics.cell_height; y++) memcpy(
-            buf + scaled_metrics.cell_width * num_scaled_cells * y, buf, scaled_metrics.cell_width * num_scaled_cells * sizeof(buf[0]));
-    } else memset(buf, 0xff, num_glyphs * scaled_metrics.cell_height * scaled_metrics.cell_width * sizeof(buf[0]));
+            buf + scaled_metrics.cell_width * num_scaled_cells * y, buf, sizeof(buf[0]) * scaled_metrics.cell_width * num_scaled_cells );
+    } else memset(buf, 0xff, sizeof(buf[0]) * num_glyphs * scaled_metrics.cell_height * scaled_metrics.cell_width );
 }
 
 static void
@@ -2108,6 +2108,31 @@ alpha_blend(uint32_t fg, uint32_t bg) {
 }
 
 static PyObject*
+render_decoration(PyObject *self UNUSED, PyObject *args) {
+    const char *which;
+    FontCellMetrics fcm = {0};
+    double dpi = 96.0;
+    if (!PyArg_ParseTuple(args, "sIIII|d", &which, &fcm.cell_width, &fcm.cell_height, &fcm.underline_position, &fcm.underline_thickness, &dpi)) return NULL;
+    PyObject *ans = PyBytes_FromStringAndSize(NULL, (Py_ssize_t)fcm.cell_width * fcm.cell_height);
+    if (!ans) return NULL;
+    memset(PyBytes_AS_STRING(ans), 0, PyBytes_GET_SIZE(ans));
+#define u(x) if (strcmp(which, #x) == 0) add_ ## x ## _underline((uint8_t*)PyBytes_AS_STRING(ans), fcm)
+    u(curl);
+    u(dashed);
+    u(dotted);
+    u(double);
+    u(straight);
+    else if (strcmp(which, "strikethrough") == 0) add_strikethrough((uint8_t*)PyBytes_AS_STRING(ans), fcm);
+    else if (strcmp(which, "missing") == 0) add_missing_glyph((uint8_t*)PyBytes_AS_STRING(ans), fcm);
+    else if (strcmp(which, "beam_cursor") == 0) add_beam_cursor((uint8_t*)PyBytes_AS_STRING(ans), fcm, dpi);
+    else if (strcmp(which, "underline_cursor") == 0) add_underline_cursor((uint8_t*)PyBytes_AS_STRING(ans), fcm, dpi);
+    else if (strcmp(which, "hollow_cursor") == 0) add_hollow_cursor((uint8_t*)PyBytes_AS_STRING(ans), fcm, dpi, dpi);
+    else { Py_CLEAR(ans); PyErr_Format(PyExc_KeyError, "Unknown decoration type: %s", which); }
+    return ans;
+#undef u
+}
+
+static PyObject*
 concat_cells(PyObject UNUSED *self, PyObject *args) {
     // Concatenate cells returning RGBA data
     unsigned int cell_width, cell_height;
@@ -2334,6 +2359,7 @@ static PyMethodDef module_methods[] = {
     METHODB(sprite_map_set_layout, METH_VARARGS),
     METHODB(test_sprite_position_increment, METH_NOARGS),
     METHODB(concat_cells, METH_VARARGS),
+    METHODB(render_decoration, METH_VARARGS),
     METHODB(set_send_sprite_to_gpu, METH_O),
     METHODB(set_allow_use_of_box_fonts, METH_O),
     METHODB(test_shape, METH_VARARGS),
