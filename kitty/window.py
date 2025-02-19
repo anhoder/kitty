@@ -1317,7 +1317,8 @@ class Window:
         if code == 22:
             ret = set_pointer_shape(self.screen, value, self.os_window_id)
             if ret:
-                self.screen.send_escape_code_to_child(ESC_OSC, '22:' + ret)
+                self.screen.send_escape_code_to_child(ESC_OSC, '22;' + ret)
+            return
 
         dirtied = default_bg_changed = False
         def change(which: DynamicColor, val: str) -> None:
@@ -1522,6 +1523,13 @@ class Window:
     def handle_remote_print(self, msg: memoryview) -> None:
         text = process_remote_print(msg)
         print(text, end='', flush=True)
+
+    def handle_restore_cursor_appearance(self, msg: memoryview | None = None) -> None:
+        opts = get_options()
+        self.screen.cursor.blink = opts.cursor_blink_interval[0] != 0
+        self.screen.cursor.shape = opts.cursor_shape
+        self.screen.cursor_visible = True
+        delattr(self.screen.color_profile, 'cursor_color')
 
     def send_cmd_response(self, response: Any) -> None:
         self.screen.send_escape_code_to_child(ESC_DCS, '@kitty-cmd' + json.dumps(response))

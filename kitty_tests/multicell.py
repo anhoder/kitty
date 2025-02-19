@@ -53,6 +53,7 @@ def test_multicell(self: TestMulticell) -> None:
         ae('subscale_n')
         ae('subscale_d')
         ae('vertical_align')
+        ae('horizontal_align')
         ae('text')
         ae('natural_width')
         ae('next_char_was_wrapped')
@@ -129,9 +130,14 @@ def test_multicell(self: TestMulticell) -> None:
         for x in range(1, 3):
             comb(x, y)
     comb(0, 1)
+    s = self.create_screen(cols=7 * 7, lines=7)
+    multicell(s, 'a', scale=7, width=7)
+    for y in range(s.lines):
+        for x in range(s.columns):
+            ac(x, y, is_multicell=True, x=x, y=y)
 
     # Test wrapping
-    s.reset()
+    s = self.create_screen(cols=6, lines=6)
     s.draw('x' * (s.columns - 1))
     multicell(s, 'a', scale=2)
     ac(s.columns - 1, 0, is_multicell=False, text='', next_char_was_wrapped=True)
@@ -405,7 +411,7 @@ def test_multicell(self: TestMulticell) -> None:
     s.erase_in_display(22)
     assert_line('ab_c\0\0', -2)
     assert_line('\0__\0\0\0', -1)
-    self.ae(s.historybuf.line(1).as_ansi(), f'a\x1b]{TEXT_SIZE_CODE};w=1:s=2;b\x07c')
+    self.ae(s.historybuf.line(1).as_ansi(), f'a\x1b]{TEXT_SIZE_CODE};s=2;b\x07c')
     self.ae(s.historybuf.line(0).as_ansi(), ' ')
 
     # Insert lines
@@ -443,26 +449,31 @@ def test_multicell(self: TestMulticell) -> None:
         s.reset()
 
     s.reset()
-    multicell(s, 'a', width=2, scale=3, subscale_n=1, subscale_d=2, vertical_align=1)
-    ta('\x1b]66;w=2:s=3:n=1:d=2:v=1;a\x07')
+    multicell(s, 'a', width=2, scale=3, subscale_n=1, subscale_d=2, vertical_align=3, horizontal_align=3)
+    ta(f'\x1b]{TEXT_SIZE_CODE};w=2:s=3:n=1:d=2:v=3:h=3;a\x07')
     s.draw('a')
     multicell(s, 'b', width=2)
     s.draw('c')
-    ta('a\x1b]66;w=2;b\x07c')
+    ta(f'a\x1b]{TEXT_SIZE_CODE};w=2;b\x07c')
     multicell(s, 'a')
     s.cursor.fg = as_rgb(0xffffff)
     multicell(s, 'b')
     ta('a\x1b[38:2:255:255:255mb')
     multicell(s, 'a', scale=2)
     multicell(s, 'b', scale=2)
-    ta('\x1b]66;w=1:s=2;ab\x07')
+    ta(f'\x1b]{TEXT_SIZE_CODE};s=2;ab\x07')
+    multicell(s, '😀a', scale=2)
+    ta(f'\x1b]{TEXT_SIZE_CODE};s=2;😀a\x07')
+    multicell(s, '😀', scale=2)
+    multicell(s, 'b', width=1, scale=2)
+    ta(f'\x1b]{TEXT_SIZE_CODE};s=2;😀\x07\x1b]{TEXT_SIZE_CODE};w=1:s=2;b\x07')
     multicell(s, 'a', scale=2)
     s.cursor.fg = as_rgb(0xffffff)
     multicell(s, 'b', scale=2)
-    ta('\x1b]66;w=1:s=2;a\x07\x1b[38:2:255:255:255m\x1b]66;w=1:s=2;b\x07\n\x1b[m\x1b[38:2:255:255:255m')
+    ta(f'\x1b]{TEXT_SIZE_CODE};s=2;a\x07\x1b[38:2:255:255:255m\x1b]{TEXT_SIZE_CODE};s=2;b\x07\n\x1b[m\x1b[38:2:255:255:255m')
     multicell(s, 'a', scale=3)
     multicell(s, 'b', scale=2)
-    ta('\x1b]66;w=1:s=3;a\x07\x1b]66;w=1:s=2;b\x07')
+    ta(f'\x1b]{TEXT_SIZE_CODE};s=3;a\x07\x1b]{TEXT_SIZE_CODE};s=2;b\x07')
 
     # rewrap with multicells
     s = self.create_screen(cols=6, lines=6, scrollback=20)
@@ -516,14 +527,14 @@ def test_multicell(self: TestMulticell) -> None:
     reset()
     multicell(s, 'a', scale=3), s.draw('b'*(s.columns-3))
     resize(s.lines, s.columns-1, 5, 0)
-    self.ae('\x1b[m\x1b]66;w=1:s=3;a\x07bb\x1b[mb', as_ansi().rstrip())  # ]]
+    self.ae(f'\x1b[m\x1b]{TEXT_SIZE_CODE};s=3;a\x07bb\x1b[mb', as_ansi().rstrip())  # ]]
     ac(0, 0, is_multicell=True)
     ac(0, 1, is_multicell=True)
     ac(3, 1, is_multicell=False, text='b')
     reset()
     s.draw('X'), multicell(s, 'a', scale=3), s.draw('12345')
     resize(s.lines, s.columns-1, 4, 0)
-    self.ae('\x1b[mX\x1b]66;w=1:s=3;a\x071\x1b[m23\x1b[m45', as_ansi().rstrip())  # ]]
+    self.ae(f'\x1b[mX\x1b]{TEXT_SIZE_CODE};s=3;a\x071\x1b[m23\x1b[m45', as_ansi().rstrip())  # ]]
     for y in (0, 1):
         ac(0, y, is_multicell=False), ac(1, y, is_multicell=True), ac(3, y, is_multicell=True)
     ac(0, 1, is_multicell=False, text='2'), ac(4, 1, is_multicell=False, text='3')
@@ -549,7 +560,7 @@ def test_multicell(self: TestMulticell) -> None:
     reset()
     s.draw('a'*(s.columns - 1)), multicell(s, 'X', scale=2), s.draw('bcd')
     resize(s.lines, s.columns + 1, 0, 2)
-    self.ae('\x1b[maaaaa\x1b]66;w=1:s=2;X\x07\x1b[mbcd', as_ansi().rstrip()) # ]]]]]]]
+    self.ae(f'\x1b[maaaaa\x1b]{TEXT_SIZE_CODE};s=2;X\x07\x1b[mbcd', as_ansi().rstrip()) # ]]]]]]]
     for y in (0, 1):
         for x in (1, 2):
             ac(s.columns-x, y, is_multicell=True)
@@ -558,7 +569,7 @@ def test_multicell(self: TestMulticell) -> None:
     reset()
     s.draw('a'*(s.columns - 1)), multicell(s, 'X', scale=2), s.draw('bcd1234!')
     s.resize(s.lines, s.columns + 2)
-    self.ae('\x1b[maaaaa\x1b]66;w=1:s=2;X\x07b\x1b[mcd1234\x1b[m!', as_ansi().rstrip()) # ]]]]]]]
+    self.ae(f'\x1b[maaaaa\x1b]{TEXT_SIZE_CODE};s=2;X\x07b\x1b[mcd1234\x1b[m!', as_ansi().rstrip()) # ]]]]]]]
     for y in (0, 1):
         for x in (1, 2):
             ac(s.columns-x -1, y, is_multicell=True)
@@ -660,15 +671,15 @@ def test_multicell(self: TestMulticell) -> None:
     ss(p(), p(x=4, in_left_half_of_cell=False))
     asl((0, 0, 5), (1, 1, 2), (1, 4, 5))
     ast('abcd')
-    asa(f'a\x1b]{TEXT_SIZE_CODE};w=1:s=2;b\x07c\x1b]{TEXT_SIZE_CODE};w=1:s=2;d\x07', '\x1b[m')
+    asa(f'a\x1b]{TEXT_SIZE_CODE};s=2;b\x07c\x1b]{TEXT_SIZE_CODE};s=2;d\x07', '\x1b[m')
     ss(p(y=1, x=1), p(y=1, x=1, in_left_half_of_cell=False))
     asl((0, 1, 2), (1, 1, 2))
     ast('b')
-    asa(f'\x1b]{TEXT_SIZE_CODE};w=1:s=2;b\x07', '\x1b[m')
+    asa(f'\x1b]{TEXT_SIZE_CODE};s=2;b\x07', '\x1b[m')
     ss(p(y=1, x=0), p(y=1, x=1, in_left_half_of_cell=False))  # empty leading cell before multiline on y=1
     asl((0, 1, 2), (1, 0, 2))
-    ast(' b')
-    asa(f' \x1b]{TEXT_SIZE_CODE};w=1:s=2;b\x07', '\x1b[m')
+    ast('b')
+    asa(f'\x1b]{TEXT_SIZE_CODE};s=2;b\x07', '\x1b[m')
 
     s.reset()
     multicell(s, 'X', scale=2), s.draw('123456abcd')
@@ -676,13 +687,27 @@ def test_multicell(self: TestMulticell) -> None:
         ss(p(x=x), p(x=3, y=1, in_left_half_of_cell=False))
         asl((0, 0, 7), (1, 0, 3))
         ast('X123456', 'ab')
-        asa(f'\x1b]{TEXT_SIZE_CODE};w=1:s=2;X\x07123456', 'ab', '\x1b[m')
+        asa(f'\x1b]{TEXT_SIZE_CODE};s=2;X\x07123456', 'ab', '\x1b[m')
     ss(p(y=1), p(y=1, x=3, in_left_half_of_cell=False))
     asl((0, 0, 1), (1, 0, 3))
-    ast('Xab')
-    asa(f'\x1b]{TEXT_SIZE_CODE};w=1:s=2;X\x07ab', '\x1b[m')
+    ast('X', 'ab')
+    asa(f'\x1b]{TEXT_SIZE_CODE};s=2;X\x07', 'ab', '\x1b[m')
+
+    s = self.create_screen(lines=5, cols=24)
+
+    s.reset()
+    multicell(s, 'ab cd ef', scale=2)
+    ss(p(6, 1), p(9, 0, in_left_half_of_cell=False))
+    ast('cd')
+    asa(f'\x1b]{TEXT_SIZE_CODE};s=2;cd\x07', '\x1b[m')
+
+    s.reset()
+    multicell(s, 'ab', scale=2), s.draw('  '), multicell(s, 'cd', scale=2), s.draw('  '), multicell(s, 'ef', scale=2)
+    ss(p(6, 1), p(9, 0, in_left_half_of_cell=False))
+    ast('cd')
 
     # Hyperlinks
+    s = self.create_screen(lines=5, cols=8)
     asu = partial(asl, bp=2)
     def set_link(url=None, id=None):
         parse_bytes(s, '\x1b]8;id={};{}\x1b\\'.format(id or '', url or '').encode('utf-8'))

@@ -66,7 +66,9 @@ write_multicell_ansi_prefix(ANSILineState *s, const CPUCell *mcd) {
     w(0x1b); w(']');
     for (unsigned i = 0; i < sizeof(xstr(TEXT_SIZE_CODE)) - 1; i++) w(xstr(TEXT_SIZE_CODE)[i]);
     w(';');
-    w('w'); w('='); nonnegative_integer_as_utf32(mcd->width, s->output_buf); w(':');
+    if (!mcd->natural_width) {
+        w('w'); w('='); nonnegative_integer_as_utf32(mcd->width, s->output_buf); w(':');
+    }
     if (mcd->scale > 1) {
         w('s'); w('='); nonnegative_integer_as_utf32(mcd->scale, s->output_buf); w(':');
     }
@@ -76,8 +78,11 @@ write_multicell_ansi_prefix(ANSILineState *s, const CPUCell *mcd) {
     if (mcd->subscale_d) {
         w('d'); w('='); nonnegative_integer_as_utf32(mcd->subscale_d, s->output_buf); w(':');
     }
-    if (mcd->vertical_align) {
-        w('v'); w('='); nonnegative_integer_as_utf32(mcd->vertical_align, s->output_buf); w(':');
+    if (mcd->valign) {
+        w('v'); w('='); nonnegative_integer_as_utf32(mcd->valign, s->output_buf); w(':');
+    }
+    if (mcd->halign) {
+        w('h'); w('='); nonnegative_integer_as_utf32(mcd->halign, s->output_buf); w(':');
     }
     if (s->output_buf->buf[s->output_buf->len - 1] == ':') s->output_buf->len--;
     w(';');
@@ -96,12 +101,12 @@ close_multicell(ANSILineState *s) {
 
 static void
 start_multicell_if_needed(ANSILineState *s, const CPUCell *c) {
-    if (!c->natural_width || c->scale > 1 || c->subscale_n || c->subscale_d || c->vertical_align) write_multicell_ansi_prefix(s, c);
+    if (!c->natural_width || c->scale > 1 || c->subscale_n || c->subscale_d || c->valign || c->halign) write_multicell_ansi_prefix(s, c);
 }
 
 static bool
 multicell_is_continuation_of_previous(const CPUCell *prev, const CPUCell *curr) {
-    if (prev->scale != curr->scale || prev->subscale_n != curr->subscale_n || prev->subscale_d != curr->subscale_d || prev->vertical_align != curr->vertical_align) return false;
+    if (prev->scale != curr->scale || prev->subscale_n != curr->subscale_n || prev->subscale_d != curr->subscale_d || prev->valign != curr->valign || prev->halign != curr->halign) return false;
     if (prev->natural_width) return curr->natural_width;
     return prev->width == curr->width && !curr->natural_width;
 }
@@ -400,11 +405,11 @@ text_at(Line* self, Py_ssize_t xval) {
 }
 
 size_t
-cell_as_unicode_for_fallback(const ListOfChars *lc, Py_UCS4 *buf) {
+cell_as_unicode_for_fallback(const ListOfChars *lc, Py_UCS4 *buf, size_t sz) {
     size_t n = 1;
     buf[0] = lc->chars[0] ? lc->chars[0] : ' ';
     if (buf[0] != '\t') {
-        for (unsigned i = 1; i < lc->count; i++) {
+        for (unsigned i = 1; i < lc->count && n < sz; i++) {
             if (lc->chars[i] != VS15 && lc->chars[i] != VS16) buf[n++] = lc->chars[i];
         }
     } else buf[0] = ' ';
@@ -412,13 +417,13 @@ cell_as_unicode_for_fallback(const ListOfChars *lc, Py_UCS4 *buf) {
 }
 
 size_t
-cell_as_utf8_for_fallback(const ListOfChars *lc, char *buf) {
+cell_as_utf8_for_fallback(const ListOfChars *lc, char *buf, size_t sz) {
     char_type ch = lc->chars[0] ? lc->chars[0] : ' ';
     bool include_cc = true;
     if (ch == '\t') { ch = ' '; include_cc = false; }
     size_t n = encode_utf8(ch, buf);
     if (include_cc) {
-        for (unsigned i = 1; i < lc->count; i++) {
+        for (unsigned i = 1; i < lc->count && sz > n + 4; i++) {
             char_type ch = lc->chars[i];
             if (ch != VS15 && ch != VS16) n += encode_utf8(ch, buf + n);
         }
@@ -561,12 +566,14 @@ line_as_ansi(Line *self, ANSILineState *s, index_type start_at, index_type stop_
     s->escape_code_written = false;
     if (prefix_char) write_ch_to_ansi_buf(s, prefix_char);
 
-    switch (self->attrs.prompt_kind) {
-        case UNKNOWN_PROMPT_KIND:
-            break;
-        case PROMPT_START: write_mark_to_ansi_buf(s, "A"); break;
-        case SECONDARY_PROMPT: write_mark_to_ansi_buf(s, "A;k=s"); break;
-        case OUTPUT_START: write_mark_to_ansi_buf(s, "C"); break;
+    if (start_at == 0) {
+        switch (self->attrs.prompt_kind) {
+            case UNKNOWN_PROMPT_KIND:
+                break;
+            case PROMPT_START: write_mark_to_ansi_buf(s, "A"); break;
+            case SECONDARY_PROMPT: write_mark_to_ansi_buf(s, "A;k=s"); break;
+            case OUTPUT_START: write_mark_to_ansi_buf(s, "C"); break;
+        }
     }
     if (s->limit <= start_at) return s->escape_code_written;
 
