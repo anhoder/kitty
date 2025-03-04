@@ -139,6 +139,10 @@ Detailed list of changes
 
 - When dragging in rectangle select mode use a crosshair mouse cursor configurable via :opt:`pointer_shape_when_dragging`
 
+- macOS: notify kitten: Fix waiting for result from desktop notification not working (:disc:`8379`)
+
+- Wayland: Fix mouse pointer position update not being sent when focus regained (:iss`8397`)
+
 
 0.39.1 [2025-02-01]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
