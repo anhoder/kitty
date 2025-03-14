@@ -603,6 +603,17 @@ clipboard.
 '''
     )
 
+opt('clear_selection_on_clipboard_loss', 'no', option_type='to_bool', long_text='''
+When the contents of the clipboard no longer reflect the current selection, clear it.
+This is primarily useful on platforms such as Linux where selecting text automatically
+copies it to a special "primary selection" clipboard or if you have :opt:`copy_on_select`
+set to :code:`clipboard`.
+
+Note that on macOS the system does not provide notifications when the clipboard owner
+is changed, so there, copying to clipboard in a non-kitty application will not clear
+selections even if :opt:`copy_on_select` is enabled.
+''')
+
 opt('paste_actions', 'quote-urls-at-prompt,confirm',
     option_type='paste_actions',
     long_text='''
@@ -1236,9 +1247,7 @@ Specify your preference as a string of characters.
 '''
     )
 
-opt('confirm_os_window_close', '-1',
-    option_type='int',
-    long_text='''
+opt('confirm_os_window_close', '-1', option_type='confirm_close', long_text='''
 Ask for confirmation when closing an OS window or a tab with at least this
 number of kitty windows in it by window manager (e.g. clicking the window close
 button or pressing the operating system shortcut to close windows) or by the
@@ -1247,10 +1256,11 @@ also applies to requests to quit the entire application (all OS windows, via the
 :ac:`quit` action). Negative values are converted to positive ones, however,
 with :opt:`shell_integration` enabled, using negative values means windows
 sitting at a shell prompt are not counted, only windows where some command is
-currently running or is running in the background. Note that if you want confirmation
-when closing individual windows, you can map the :ac:`close_window_with_confirmation` action.
-'''
-    )
+currently running. You can also have backgrounded jobs prevent closing,
+by adding :code:`count-background` to the setting, for example: :code:`-1 count-background`.
+Note that if you want confirmation when closing individual windows,
+you can map the :ac:`close_window_with_confirmation` action.
+''')
 egr()  # }}}
 
 

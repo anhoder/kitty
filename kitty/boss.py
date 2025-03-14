@@ -18,6 +18,7 @@ from time import sleep
 from typing import (
     TYPE_CHECKING,
     Any,
+    Literal,
     Optional,
     Union,
 )
@@ -964,6 +965,7 @@ class Boss:
     def close_windows_with_confirmation_msg(self, windows: Iterable[Window], active_window: Window | None) -> tuple[str, int]:
         num_running_programs = 0
         num_background_programs = 0
+        count_background = get_options().confirm_os_window_close[1]
         running_program = background_program = ''
         windows = sorted(windows, key=lambda w: 0 if w is active_window else 1)
         with cached_process_data():
@@ -971,7 +973,7 @@ class Boss:
                 if window.has_running_program:
                     num_running_programs += 1
                     running_program = running_program or (window.child.foreground_cmdline or [''])[0]
-                elif bp := window.child.background_processes:
+                elif count_background and (bp := window.child.background_processes):
                     num_background_programs += len(bp)
                     for q in bp:
                         background_program = background_program or (q['cmdline'] or [''])[0]
@@ -1143,7 +1145,7 @@ class Boss:
 
     def confirm_tab_close(self, tab: Tab) -> None:
         msg, num_active_windows = self.close_windows_with_confirmation_msg(tab, tab.active_window)
-        x = get_options().confirm_os_window_close
+        x = get_options().confirm_os_window_close[0]
         num = num_active_windows if x < 0 else len(tab)
         needs_confirmation = x != 0 and num >= abs(x)
         if not needs_confirmation:
@@ -1779,7 +1781,7 @@ class Boss:
         for tab in tm:
             windows += list(tab)
         msg, num_active_windows = self.close_windows_with_confirmation_msg(windows, active_window)
-        q = get_options().confirm_os_window_close
+        q = get_options().confirm_os_window_close[0]
         num = num_active_windows if q < 0 else len(windows)
         needs_confirmation = tm is not None and q != 0 and num >= abs(q)
         if not needs_confirmation:
@@ -1822,7 +1824,7 @@ class Boss:
                 windows += list(qt)
         active_window = self.active_window
         msg, num_active_windows = self.close_windows_with_confirmation_msg(windows, active_window)
-        x = get_options().confirm_os_window_close
+        x = get_options().confirm_os_window_close[0]
         num = num_active_windows if x < 0 else len(windows)
         needs_confirmation = x != 0 and num >= abs(x)
         if not needs_confirmation:
@@ -2243,6 +2245,7 @@ class Boss:
             text = w.text_for_selection()
             if text:
                 set_primary_selection(text)
+                self.handle_clipboard_loss('primary', w.id)
                 if get_options().copy_on_select:
                     self.copy_to_buffer(get_options().copy_on_select)
 
@@ -2280,8 +2283,10 @@ class Boss:
             if text:
                 if buffer_name == 'clipboard':
                     set_clipboard_string(text)
+                    self.handle_clipboard_loss('clipboard', w.id)
                 elif buffer_name == 'primary':
                     set_primary_selection(text)
+                    self.handle_clipboard_loss('primary', w.id)
                 else:
                     self.set_clipboard_buffer(buffer_name, text)
 
@@ -2518,8 +2523,10 @@ class Boss:
             if stdin:
                 if dest == 'clipboard':
                     set_clipboard_string(stdin)
+                    self.handle_clipboard_loss('clipboard')
                 else:
                     set_primary_selection(stdin)
+                    self.handle_clipboard_loss('primary')
         else:
             env, stdin = self.process_stdin_source(stdin=source, window=window)
             self.run_background_process(cmd, cwd_from=cwd_from, stdin=stdin, env=env)
@@ -3072,6 +3079,7 @@ class Boss:
         if w is not None:
             output = debug_config(get_options(), self.mappings.global_shortcuts)
             set_clipboard_string(re.sub(r'\x1b.+?m', '', output))
+            self.handle_clipboard_loss('clipboard')
             output += '\n\x1b[35mThis debug output has been copied to the clipboard\x1b[m'  # ]]]
             self.display_scrollback(w, output, title=_('Current kitty options'), report_cursor=False)
 
@@ -3101,3 +3109,33 @@ class Boss:
         tm = self.active_tab_manager_with_dispatch
         if tm is not None:
             tm.toggle_tab(match_expression)
+
+    def update_progress_in_dock(self) -> None:
+        if not is_macos:
+            return
+        has_indeterminate_progress = False
+        num_of_windows_with_progress = total_progress = 0
+        for tm in self.os_window_map.values():
+            if tm.num_of_windows_with_progress:
+                total_progress += tm.total_progress
+                num_of_windows_with_progress += tm.num_of_windows_with_progress
+            if tm.has_indeterminate_progress:
+                has_indeterminate_progress = True
+        from .fast_data_types import cocoa_show_progress_bar_on_dock_icon
+        if num_of_windows_with_progress:
+            cocoa_show_progress_bar_on_dock_icon(min(100, total_progress / num_of_windows_with_progress))
+        elif has_indeterminate_progress:
+            cocoa_show_progress_bar_on_dock_icon(101)
+        else:
+            cocoa_show_progress_bar_on_dock_icon()
+
+    def on_clipboard_lost(self, which: Literal['clipboard', 'primary']) -> None:
+        self.handle_clipboard_loss(which)
+
+    def handle_clipboard_loss(self, which: Literal['clipboard', 'primary'], exception: int = 0) -> None:
+        opts = get_options()
+        if opts.clear_selection_on_clipboard_loss and (which == 'primary' or opts.copy_on_select == 'clipboard'):
+            for wid, window in self.window_id_map.items():
+                if wid == exception:
+                    continue
+                window.screen.clear_selection()

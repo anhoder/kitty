@@ -453,6 +453,11 @@ void _glfwInputColorScheme(GLFWColorScheme value, bool is_initial_value) {
     if (_glfw.callbacks.system_color_theme_change) _glfw.callbacks.system_color_theme_change(value, is_initial_value);
 }
 
+void _glfwInputClipboardLost(GLFWClipboardType which) {
+    if (_glfw.callbacks.clipboard_lost) _glfw.callbacks.clipboard_lost(which);
+}
+
+
 //////////////////////////////////////////////////////////////////////////
 //////                       GLFW internal API                      //////
 //////////////////////////////////////////////////////////////////////////
@@ -728,9 +733,7 @@ GLFWAPI void glfwSetInputMode(GLFWwindow* handle, int mode, int value)
 
         window->cursorMode = value;
 
-        _glfwPlatformGetCursorPos(window,
-                                  &window->virtualCursorPosX,
-                                  &window->virtualCursorPosY);
+        _glfwPlatformGetCursorPos(window, &window->virtualCursorPosX, &window->virtualCursorPosY);
         _glfwPlatformSetCursorMode(window, value);
     }
     else if (mode == GLFW_STICKY_KEYS)

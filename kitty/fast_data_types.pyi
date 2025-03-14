@@ -23,6 +23,7 @@ GLFW_EDGE_TOP: int
 GLFW_EDGE_BOTTOM: int
 GLFW_EDGE_LEFT: int
 GLFW_EDGE_RIGHT: int
+GLFW_EDGE_CENTER: int
 GLFW_EDGE_NONE: int
 GLFW_FOCUS_NOT_ALLOWED: int
 GLFW_FOCUS_EXCLUSIVE: int
@@ -653,6 +654,9 @@ def set_default_window_icon(path: str) -> None:
     pass
 
 
+def set_os_window_icon(os_window_id: int, path: str | None | bytes = None) -> None: ...
+
+
 def set_custom_cursor(
     cursor_shape: str,
     images: Tuple[Tuple[bytes, int, int], ...],
@@ -889,6 +893,10 @@ def cocoa_set_app_icon(icon_path: str, app_path: Optional[str] = None) -> None:
 
 
 def cocoa_set_dock_icon(icon_path: str) -> None:
+    pass
+
+
+def cocoa_show_progress_bar_on_dock_icon(progress: float = -100) -> None:
     pass
 
 

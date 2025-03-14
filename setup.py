@@ -1441,6 +1441,11 @@ StartupNotify=true
 Exec=kitty
 Icon=kitty
 Categories=System;TerminalEmulator;
+X-TerminalArgExec=--
+X-TerminalArgTitle=--title
+X-TerminalArgAppId=--class
+X-TerminalArgDir=--working-directory
+X-TerminalArgHold=--hold
 ''')
     with open(os.path.join(deskdir, 'kitty-open.desktop'), 'w') as f:
         f.write(
@@ -1773,7 +1778,7 @@ def package(args: Options, bundle_type: str, do_build_all: bool = True) -> None:
             return raw
         tname = type(defval).__name__
         if tname == 'frozenset':
-            tname = 'typing.FrozenSet[str]'
+            tname = 'frozenset[str]'
         prefix = f'{name}: {tname} ='
         nraw = raw.replace(f'{prefix} {defval!r}', f'{prefix} {val!r}', 1)
         if nraw == raw:

@@ -1040,7 +1040,7 @@ typedef struct GLFWkeyevent
 
 typedef enum { GLFW_LAYER_SHELL_NONE, GLFW_LAYER_SHELL_BACKGROUND, GLFW_LAYER_SHELL_PANEL, GLFW_LAYER_SHELL_TOP, GLFW_LAYER_SHELL_OVERLAY } GLFWLayerShellType;
 
-typedef enum { GLFW_EDGE_TOP, GLFW_EDGE_BOTTOM, GLFW_EDGE_LEFT, GLFW_EDGE_RIGHT, GLFW_EDGE_NONE } GLFWEdge;
+typedef enum { GLFW_EDGE_TOP, GLFW_EDGE_BOTTOM, GLFW_EDGE_LEFT, GLFW_EDGE_RIGHT, GLFW_EDGE_CENTER, GLFW_EDGE_NONE } GLFWEdge;
 
 typedef enum { GLFW_FOCUS_NOT_ALLOWED, GLFW_FOCUS_EXCLUSIVE, GLFW_FOCUS_ON_DEMAND} GLFWFocusPolicy;
 
@@ -1169,6 +1169,7 @@ typedef void (* GLFWwindowclosefun)(GLFWwindow*);
  *  @ingroup window
  */
 typedef void (* GLFWapplicationclosefun)(int);
+
 
 /*! @brief The function pointer type for system color theme change callbacks.
  *
@@ -1552,6 +1553,7 @@ typedef enum {
 typedef GLFWDataChunk (* GLFWclipboarditerfun)(const char *mime_type, void *iter, GLFWClipboardType ctype);
 typedef bool (* GLFWclipboardwritedatafun)(void *object, const char *data, size_t sz);
 typedef bool (* GLFWimecursorpositionfun)(GLFWwindow *window, GLFWIMEUpdateEvent *ev);
+typedef void (* GLFWclipboardlostfun )(GLFWClipboardType);
 
 /*! @brief Video mode type.
  *
@@ -2016,6 +2018,10 @@ GFW_EXTERN glfwSetApplicationCloseCallback_func glfwSetApplicationCloseCallback_
 typedef GLFWsystemcolorthemechangefun (*glfwSetSystemColorThemeChangeCallback_func)(GLFWsystemcolorthemechangefun);
 GFW_EXTERN glfwSetSystemColorThemeChangeCallback_func glfwSetSystemColorThemeChangeCallback_impl;
 #define glfwSetSystemColorThemeChangeCallback glfwSetSystemColorThemeChangeCallback_impl
+
+typedef GLFWclipboardlostfun (*glfwSetClipboardLostCallback_func)(GLFWclipboardlostfun);
+GFW_EXTERN glfwSetClipboardLostCallback_func glfwSetClipboardLostCallback_impl;
+#define glfwSetClipboardLostCallback glfwSetClipboardLostCallback_impl
 
 typedef GLFWColorScheme (*glfwGetCurrentSystemColorTheme_func)(bool);
 GFW_EXTERN glfwGetCurrentSystemColorTheme_func glfwGetCurrentSystemColorTheme_impl;

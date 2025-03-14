@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
+import json
 import os
 import re
 import subprocess
@@ -71,6 +72,9 @@ flag_codepoints = frozenset(range(0x1F1E6, 0x1F1E6 + 26))
 marks = set(emoji_skin_tone_modifiers) | flag_codepoints
 not_assigned = set(range(0, sys.maxunicode))
 property_maps: dict[str, set[int]] = defaultdict(set)
+grapheme_segmentation_maps: dict[str, set[int]] = defaultdict(set)
+incb_map: dict[str, set[int]] = defaultdict(set)
+extended_pictographic: set[int] = set()
 
 
 def parse_prop_list() -> None:
@@ -259,6 +263,26 @@ def parse_eaw() -> None:
     doublewidth |= set(range(0x30000, 0x3FFFD + 1)) - seen
 
 
+def parse_grapheme_segmentation() -> None:
+    global extended_pictographic
+    for line in get_data('ucd/auxiliary/GraphemeBreakProperty.txt'):
+        chars, category = split_two(line)
+        grapheme_segmentation_maps[category] |= chars
+    for line in get_data('ucd/DerivedCoreProperties.txt'):
+        spec, rest = line.split(';', 1)
+        category = rest.strip().split(' ', 1)[0].strip().rstrip(';')
+        chars = parse_range_spec(spec.strip())
+        if category == 'InCB':
+            # Most InCB chars also have a GBP categorization, but not all,
+            # there exist some InCB chars that do not have a GBP category
+            subcat = rest.strip().split(';')[1].strip().split()[0].strip()
+            incb_map[subcat] |= chars
+    for line in get_data('ucd/emoji/emoji-data.txt'):
+        chars, category = split_two(line)
+        if 'Extended_Pictographic#' == category:
+            extended_pictographic |= chars
+
+
 def get_ranges(items: list[int]) -> Generator[Union[int, tuple[int, int]], None, None]:
     items.sort()
     for k, g in groupby(enumerate(items), lambda m: m[0]-m[1]):
@@ -362,21 +386,6 @@ def category_test(
     p('\treturn false;\n}\n')
 
 
-def codepoint_to_mark_map(p: Callable[..., None], mark_map: list[int]) -> dict[int, int]:
-    p('\tswitch(c) { // {{{')
-    rmap = {c: m for m, c in enumerate(mark_map)}
-    for spec in get_ranges(mark_map):
-        if isinstance(spec, tuple):
-            s = rmap[spec[0]]
-            cases = ' '.join(f'case {i}:' for i in range(spec[0], spec[1]+1))
-            p(f'\t\t{cases} return {s} + c - {spec[0]};')
-        else:
-            p(f'\t\tcase {spec}: return {rmap[spec]};')
-    p('default: return 0;')
-    p('\t} // }}}')
-    return rmap
-
-
 def classes_to_regex(classes: Iterable[str], exclude: str = '', for_go: bool = True) -> Iterable[str]:
     chars: set[int] = set()
     for c in classes:
@@ -451,6 +460,89 @@ def gen_names() -> None:
             print(cp, *words, end=end, file=f)
 
 
+def gofmt(*files: str) -> None:
+    subprocess.check_call(['gofmt', '-w', '-s'] + list(files))
+
+
+def gen_grapheme_segmentation() -> None:
+    with create_header('kitty/grapheme-segmentation-data.h') as p, open('tools/wcswidth/grapheme-segmentation-data.go', 'w') as gof:
+        gp = partial(print, file=gof)
+        gp('package wcswidth\n\n')
+        def enum(name: str, *items: str, prefix: str = '') -> None:
+            p(f'typedef enum {name} {{')  # }}
+            gp(f'type {name} uint8\n')
+            gp('const (')  # )
+            for i, x in enumerate(items):
+                x = prefix + x
+                p(f'\t{x},')
+                if i == 0:
+                    gp(f'{x} {name} = iota')
+                else:
+                    gp(x)
+            p(f'}} {name};')
+            gp(')')
+            p('')
+            gp('')
+
+        enum('GraphemeBreakProperty', 'AtStart', 'None', *grapheme_segmentation_maps, prefix='GBP_')
+        enum('IndicConjunctBreak', 'None', *incb_map, prefix='ICB_')
+
+        def get_cat(name: str, c_func_name: str, go_func_name: str, prefix: str, m: dict[str, set[int]]) -> None:
+            p(f'static inline {name}')
+            p(f'{c_func_name}(const char_type c) {{')  # }}
+            p('\tswitch(c) {')  # }
+            gp(f'func {go_func_name}(code rune) {name} {{')  # }}
+            gp('\tswitch code {')  # }
+            for category, codepoints in m.items():
+                p(f'\t\t // {category} ({len(codepoints)} codepoints ''{{''{')
+                gp(f'\t\t // {category} ({len(codepoints)} codepoints ''{{''{')
+                category = prefix + category
+                for spec in get_ranges(list(codepoints)):
+                    write_case(spec, p)
+                    p(f'\t\t\treturn {category};')
+                    write_case(spec, gp, for_go=True)
+                    gp(f'\t\t\treturn {category}')
+                p('\t\t // }}''}')
+                p('')
+                gp('\t\t // }}''}')
+                gp('')
+            p('\t}')  # }
+            gp('\t}')  # }
+            p(f'\treturn {prefix + "None"};')  # }
+            gp(f'\treturn {prefix + "None"}')  # }
+            p('}')
+            gp('}')
+        get_cat('GraphemeBreakProperty', 'grapheme_break_property', 'GraphemeBreakPropertyFor', 'GBP_', grapheme_segmentation_maps)
+        p('')
+        gp('')
+        get_cat('IndicConjunctBreak', 'indic_conjunct_break', 'IndicConjunctBreakFor', 'ICB_', incb_map)
+
+        p('''
+static inline bool
+is_extended_pictographic(char_type c) {
+    switch (c) {
+        default: return false;
+''')
+        gp('''
+func IsExtendedPictographic(c rune) bool {
+    switch c {
+        default: return false;
+''')
+
+        for spec in get_ranges(list(extended_pictographic)):
+            write_case(spec, p)
+            p('\t\t\treturn true;')
+            write_case(spec, gp, for_go=True)
+            gp('\t\t\treturn true')
+        p('''
+    }
+}''')
+        gp('''
+    }
+}''')
+    gofmt(gof.name)
+
+
 def gen_wcwidth() -> None:
     seen: set[int] = set()
     non_printing = class_maps['Cc'] | class_maps['Cf'] | class_maps['Cs']
@@ -515,7 +607,7 @@ def gen_wcwidth() -> None:
         p(f'#define UNICODE_MINOR_VERSION {uv[1]}')
         p(f'#define UNICODE_PATCH_VERSION {uv[2]}')
         gop('var UnicodeDatabaseVersion [3]int = [3]int{' f'{uv[0]}, {uv[1]}, {uv[2]}' + '}')
-    subprocess.check_call(['gofmt', '-w', '-s', gof.name])
+    gofmt(gof.name)
 
 
 def gen_rowcolumn_diacritics() -> None:
@@ -561,7 +653,31 @@ def gen_rowcolumn_diacritics() -> None:
         p('\t}')
         p('\treturn 0;')
         p('}')
-    subprocess.check_call(['gofmt', '-w', '-s', go_file])
+    gofmt(go_file)
+
+
+def gen_test_data() -> None:
+    tests = []
+    for line in get_data('ucd/auxiliary/GraphemeBreakTest.txt'):
+        t, comment = line.split('#')
+        t = t.lstrip('÷').strip().rstrip('÷').strip()
+        chars: list[list[str]] = [[]]
+        for x in re.split(r'([÷×])', t):
+            x = x.strip()
+            match x:
+                case '÷':
+                    chars.append([])
+                case '×':
+                    pass
+                case '':
+                    pass
+                case _:
+                    ch = chr(int(x, 16))
+                    chars[-1].append(ch)
+        c = [''.join(c) for c in chars]
+        tests.append({'data': c, 'comment': comment.strip()})
+    with open('kitty_tests/GraphemeBreakTest.json', 'wb') as f:
+        f.write(json.dumps(tests, indent=2, ensure_ascii=False).encode())
 
 
 def main(args: list[str]=sys.argv) -> None:
@@ -569,11 +685,14 @@ def main(args: list[str]=sys.argv) -> None:
     parse_prop_list()
     parse_emoji()
     parse_eaw()
+    parse_grapheme_segmentation()
     gen_ucd()
     gen_wcwidth()
     gen_emoji()
     gen_names()
     gen_rowcolumn_diacritics()
+    gen_grapheme_segmentation()
+    gen_test_data()
 
 
 if __name__ == '__main__':

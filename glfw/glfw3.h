@@ -1302,7 +1302,7 @@ typedef struct GLFWkeyevent
 
 typedef enum { GLFW_LAYER_SHELL_NONE, GLFW_LAYER_SHELL_BACKGROUND, GLFW_LAYER_SHELL_PANEL, GLFW_LAYER_SHELL_TOP, GLFW_LAYER_SHELL_OVERLAY } GLFWLayerShellType;
 
-typedef enum { GLFW_EDGE_TOP, GLFW_EDGE_BOTTOM, GLFW_EDGE_LEFT, GLFW_EDGE_RIGHT, GLFW_EDGE_NONE } GLFWEdge;
+typedef enum { GLFW_EDGE_TOP, GLFW_EDGE_BOTTOM, GLFW_EDGE_LEFT, GLFW_EDGE_RIGHT, GLFW_EDGE_CENTER, GLFW_EDGE_NONE } GLFWEdge;
 
 typedef enum { GLFW_FOCUS_NOT_ALLOWED, GLFW_FOCUS_EXCLUSIVE, GLFW_FOCUS_ON_DEMAND} GLFWFocusPolicy;
 
@@ -1431,6 +1431,7 @@ typedef void (* GLFWwindowclosefun)(GLFWwindow*);
  *  @ingroup window
  */
 typedef void (* GLFWapplicationclosefun)(int);
+
 
 /*! @brief The function pointer type for system color theme change callbacks.
  *
@@ -1814,6 +1815,7 @@ typedef enum {
 typedef GLFWDataChunk (* GLFWclipboarditerfun)(const char *mime_type, void *iter, GLFWClipboardType ctype);
 typedef bool (* GLFWclipboardwritedatafun)(void *object, const char *data, size_t sz);
 typedef bool (* GLFWimecursorpositionfun)(GLFWwindow *window, GLFWIMEUpdateEvent *ev);
+typedef void (* GLFWclipboardlostfun )(GLFWClipboardType);
 
 /*! @brief Video mode type.
  *
@@ -3000,10 +3002,6 @@ GLFWAPI void glfwSetWindowTitle(GLFWwindow* window, const char* title);
  *  [Bundle Programming Guide](https://developer.apple.com/library/mac/documentation/CoreFoundation/Conceptual/CFBundles/)
  *  in the Mac Developer Library.
  *
- *  @remark @wayland There is no existing protocol to change an icon, the
- *  window will thus inherit the one defined in the application's desktop file.
- *  This function will emit @ref GLFW_FEATURE_UNAVAILABLE.
- *
  *  @thread_safety This function must only be called from the main thread.
  *
  *  @sa @ref window_icon
@@ -3989,6 +3987,7 @@ GLFWAPI GLFWwindowsizefun glfwSetWindowSizeCallback(GLFWwindow* window, GLFWwind
 GLFWAPI GLFWwindowclosefun glfwSetWindowCloseCallback(GLFWwindow* window, GLFWwindowclosefun callback);
 GLFWAPI GLFWapplicationclosefun glfwSetApplicationCloseCallback(GLFWapplicationclosefun callback);
 GLFWAPI GLFWsystemcolorthemechangefun glfwSetSystemColorThemeChangeCallback(GLFWsystemcolorthemechangefun callback);
+GLFWAPI GLFWclipboardlostfun glfwSetClipboardLostCallback(GLFWclipboardlostfun callback);
 GLFWAPI GLFWColorScheme glfwGetCurrentSystemColorTheme(bool query_if_unintialized);
 
 /*! @brief Sets the refresh callback for the specified window.

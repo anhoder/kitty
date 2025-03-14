@@ -32,6 +32,12 @@ A terminal PDF viewer
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 A terminal PDF viewer
 
+.. _tool_meowpdf:
+
+`meowpdf <https://github.com/monoamine11231/meowpdf>`_
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+A terminal PDF viewer with GUI-like usage and Vim-like keybindings written in Rust
+
 .. _tool_mdcat:
 
 `mdcat <https://github.com/lunaryorn/mdcat>`_
@@ -58,6 +64,13 @@ graphics protocol.
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 Blazing fast terminal file manager, with built-in kitty graphics protocol support
 (implemented both Classic protocol and Unicode placeholders).
+
+.. _tool_clifm:
+
+`clifm <https://github.com/leo-arch/clifm>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The shell-like, command line terminal file manager, uses the kitty graphics and
+keyboard protocols.
 
 .. _tool_hunter:
 
@@ -226,6 +239,13 @@ A tool to display weather information in your terminal with curl
 `wl-clipboard-manager <https://github.com/maximbaz/wl-clipboard-manager>`_
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 View and manage the system clipboard under Wayland in your kitty terminal
+
+.. tool_nemu:
+
+`NEMU <https://github.com/nemuTUI/nemu>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TUI for QEMU used to manage virtual machines, can display the Virtual Machine
+in the terminal using the kitty graphics protocol.
 
 Editor integration
 -----------------------

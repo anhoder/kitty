@@ -66,6 +66,11 @@ on_system_color_scheme_change(GLFWColorScheme appearance, bool is_initial_value)
 }
 
 static void
+on_clipboard_lost(GLFWClipboardType which) {
+    call_boss(on_clipboard_lost, "s", which == GLFW_CLIPBOARD ? "clipboard" : "primary");
+}
+
+static void
 strip_csi_(const char *title, char *buf, size_t bufsz) {
     enum { NORMAL, IN_ESC, IN_CSI} state = NORMAL;
     char *dest = buf, *last = &buf[bufsz-1];
@@ -451,7 +456,7 @@ cursor_enter_callback(GLFWwindow *w, int entered) {
         global_state.callback_os_window->last_mouse_activity_at = now;
         global_state.callback_os_window->mouse_x = x * global_state.callback_os_window->viewport_x_ratio;
         global_state.callback_os_window->mouse_y = y * global_state.callback_os_window->viewport_y_ratio;
-        if (is_window_ready_for_callbacks()) enter_event();
+        if (is_window_ready_for_callbacks()) enter_event(mods_at_last_key_or_button_event);
         request_tick_callback();
     } else debug_input("Mouse cursor left window: %llu\n", global_state.callback_os_window->id);
     global_state.callback_os_window = NULL;
@@ -767,6 +772,45 @@ set_default_window_icon(PyObject UNUSED *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static PyObject*
+set_os_window_icon(PyObject UNUSED *self, PyObject *args) {
+    size_t sz;
+    unsigned int width, height;
+    PyObject *what = NULL;
+    uint8_t *data;
+    unsigned long long id;
+    if(!PyArg_ParseTuple(args, "K|O", &id, &what)) return NULL;
+    OSWindow *os_window = os_window_for_id(id);
+    if (!os_window) { PyErr_Format(PyExc_KeyError, "No OS Window with id: %llu", id); return NULL; }
+    if (!what || what == Py_None) {
+        glfwSetWindowIcon(os_window->handle, 0, NULL);
+        Py_RETURN_NONE;
+    }
+    if (PyUnicode_Check(what)) {
+        const char *path = PyUnicode_AsUTF8(what);
+        if (png_path_to_bitmap(path, &data, &width, &height, &sz)) {
+            GLFWimage img = { .pixels = data, .width = width, .height = height };
+            glfwSetWindowIcon(os_window->handle, 1, &img);
+            free(data);
+        } else {
+            PyErr_Format(PyExc_ValueError, "%s is not a valid PNG image", path);
+            return NULL;
+        }
+        Py_RETURN_NONE;
+    }
+    RAII_PY_BUFFER(buf);
+    if(!PyArg_ParseTuple(args, "Ky*", &id, &buf)) return NULL;
+    if (png_from_data(buf.buf, buf.len, "<data>", &data, &width, &height, &sz)) {
+        GLFWimage img = { .pixels = data, .width = width, .height = height };
+        glfwSetWindowIcon(os_window->handle, 1, &img);
+    } else {
+        PyErr_Format(PyExc_ValueError, "The supplied data of %lu bytes is not a valid PNG image", (unsigned long)buf.len);
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+
 
 void*
 make_os_window_context_current(OSWindow *w) {
@@ -1041,7 +1085,7 @@ edge_spacing(GLFWEdge which) {
         case GLFW_EDGE_BOTTOM: edge = "bottom"; break;
         case GLFW_EDGE_LEFT: edge = "left"; break;
         case GLFW_EDGE_RIGHT: edge = "right"; break;
-        case GLFW_EDGE_NONE: edge = "left"; break; // GLFW_EDGE_NONE is considered as "top left"
+        case GLFW_EDGE_CENTER: case GLFW_EDGE_NONE: return 0;
     }
     if (!edge_spacing_func) {
         log_error("Attempt to call edge_spacing() without first setting edge_spacing_func");
@@ -1080,11 +1124,14 @@ calculate_layer_shell_window_size(
         spacing *= ydpi / 72.;
         spacing += (fonts_data->fcm.cell_height * config->y_size_in_cells) / yscale;
         *height = (uint32_t)(1. + spacing);
+    } else if (config->edge == GLFW_EDGE_CENTER) {
+        if (!*width) *width = monitor_width;
+        if (!*height) *height = monitor_height;
     } else {
-        double spacing_x = edge_spacing(GLFW_EDGE_LEFT);
+        double spacing_x = edge_spacing(GLFW_EDGE_LEFT) + edge_spacing(GLFW_EDGE_RIGHT);
         spacing_x *= xdpi / 72.;
         spacing_x += (fonts_data->fcm.cell_width * config->x_size_in_cells) / xscale;
-        double spacing_y = edge_spacing(GLFW_EDGE_TOP);
+        double spacing_y = edge_spacing(GLFW_EDGE_TOP) + edge_spacing(GLFW_EDGE_BOTTOM);
         spacing_y *= ydpi / 72.;
         spacing_y += (fonts_data->fcm.cell_height * config->y_size_in_cells) / yscale;
         *width = (uint32_t)(1. + spacing_x);
@@ -1153,6 +1200,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         glfwSetHasCurrentSelectionCallback(has_current_selection);
         glfwSetIMECursorPositionCallback(get_ime_cursor_position);
         glfwSetSystemColorThemeChangeCallback(on_system_color_scheme_change);
+        glfwSetClipboardLostCallback(on_clipboard_lost);
         // Request SRGB output buffer
         // Prevents kitty from starting on Wayland + NVIDIA, sigh: https://github.com/kovidgoyal/kitty/issues/7021
         // Remove after https://github.com/NVIDIA/egl-wayland/issues/85 is fixed.
@@ -2372,6 +2420,7 @@ static PyMethodDef module_methods[] = {
     METHODB(pointer_name_to_css_name, METH_O),
     {"create_os_window", (PyCFunction)(void (*) (void))(create_os_window), METH_VARARGS | METH_KEYWORDS, NULL},
     METHODB(set_default_window_icon, METH_VARARGS),
+    METHODB(set_os_window_icon, METH_VARARGS),
     METHODB(set_clipboard_data_types, METH_VARARGS),
     METHODB(get_clipboard_mime, METH_VARARGS),
     METHODB(toggle_secure_input, METH_NOARGS),
@@ -2436,7 +2485,7 @@ init_glfw(PyObject *m) {
     ADDC(GLFW_PRIMARY_SELECTION); ADDC(GLFW_CLIPBOARD);
     ADDC(GLFW_LAYER_SHELL_NONE); ADDC(GLFW_LAYER_SHELL_PANEL); ADDC(GLFW_LAYER_SHELL_BACKGROUND); ADDC(GLFW_LAYER_SHELL_TOP); ADDC(GLFW_LAYER_SHELL_OVERLAY);
     ADDC(GLFW_FOCUS_NOT_ALLOWED); ADDC(GLFW_FOCUS_EXCLUSIVE); ADDC(GLFW_FOCUS_ON_DEMAND);
-    ADDC(GLFW_EDGE_TOP); ADDC(GLFW_EDGE_BOTTOM); ADDC(GLFW_EDGE_LEFT); ADDC(GLFW_EDGE_RIGHT); ADDC(GLFW_EDGE_NONE)
+    ADDC(GLFW_EDGE_TOP); ADDC(GLFW_EDGE_BOTTOM); ADDC(GLFW_EDGE_LEFT); ADDC(GLFW_EDGE_RIGHT); ADDC(GLFW_EDGE_CENTER); ADDC(GLFW_EDGE_NONE);
     ADDC(GLFW_COLOR_SCHEME_NO_PREFERENCE); ADDC(GLFW_COLOR_SCHEME_DARK); ADDC(GLFW_COLOR_SCHEME_LIGHT);
 
     /* start glfw functional keys (auto generated by gen-key-constants.py do not edit) */

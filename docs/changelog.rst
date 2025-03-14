@@ -94,7 +94,25 @@ consumption to do the same tasks.
 Detailed list of changes
 -------------------------------------
 
-0.40.0 [future]
+0.40.1 [future]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Do not count background processes by default for :opt:`confirm_os_window_close` (:iss:`8358`)
+
+- A new option :opt:`clear_selection_on_clipboard_loss` to clear selections when they no longer reflect the contents of the clipboard
+
+- Fix a regression in the previous release that caused empty lines to be skipped when copying text from a selection (:iss:`8435`)
+
+- Fix flickering of hyperlink underline when client program continuously
+  redraws on mouse movement (:iss:`8414`)
+
+- Wayland: Allow overriding the kitty OS Window icon on compositors that implement the xdg-toplevel-icon protocol
+
+- macOS: When the program running in kitty reports progress information for a task, show a progress bar on the kitty dock icon
+
+- macOS: Fix a regression causing a crash when using :opt:`focus_follows_mouse` (:iss:`8437`)
+
+0.40.0 [2025-03-08]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - :doc:`Allow terminal programs to use text in different font sizes <text-sizing-protocol>` (:iss:`8226`)
@@ -141,7 +159,12 @@ Detailed list of changes
 
 - macOS: notify kitten: Fix waiting for result from desktop notification not working (:disc:`8379`)
 
-- Wayland: Fix mouse pointer position update not being sent when focus regained (:iss`8397`)
+- Wayland: Fix mouse pointer position update not being sent when focus regained (:iss`8397`, :iss:`8398`)
+
+- Fix cursor blink animation when :opt:`background_opacity` is less than one (:iss:`8401`)
+
+- Wayland: panel kitten: Add a :code:`center` mode for creating panels to ease
+  creation of centered popups in Wayland (:pull:`8411`)
 
 
 0.39.1 [2025-02-01]

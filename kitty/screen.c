@@ -49,6 +49,10 @@ clear_selection(Selections *selections) {
 }
 
 static void
+clear_all_selections(Screen *self) { clear_selection(&self->selections); clear_selection(&self->url_ranges); }
+
+
+static void
 init_tabstops(bool *tabstops, index_type count) {
     // In terminfo we specify the number of initial tabstops (it) as 8
     for (unsigned int t=0; t < count; t++) {
@@ -202,8 +206,7 @@ screen_reset(Screen *self) {
     init_tabstops(self->alt_tabstops, self->columns);
     cursor_reset(self->cursor);
     self->is_dirty = true;
-    clear_selection(&self->selections);
-    clear_selection(&self->url_ranges);
+    clear_all_selections(self);
     screen_cursor_position(self, 1, 1);
     set_dynamic_color(self, 110, NULL);
     set_dynamic_color(self, 111, NULL);
@@ -542,8 +545,7 @@ screen_resize(Screen *self, unsigned int lines, unsigned int columns) {
     init_tabstops(self->main_tabstops, self->columns);
     init_tabstops(self->alt_tabstops, self->columns);
     self->is_dirty = true;
-    clear_selection(&self->selections);
-    clear_selection(&self->url_ranges);
+    clear_all_selections(self);
     self->last_visited_prompt.is_set = false;
 #define S(c, w) c->x = MIN(w.after.x, self->columns - 1); c->y = MIN(w.after.y, self->lines - 1);
     S(self->cursor, cursor);
@@ -688,9 +690,15 @@ selection_intersects_screen_lines(const Selections *selections, int a, int b) {
 
 
 static void
+clear_intersecting_selections(Screen *self, index_type y) {
+    if (selection_has_screen_line(&self->selections, y)) clear_selection(&self->selections);
+    if (selection_has_screen_line(&self->url_ranges, y)) clear_selection(&self->url_ranges);
+}
+
+static void
 init_text_loop_line(Screen *self, text_loop_state *s) {
     linebuf_init_cells(self->linebuf, self->cursor->y, &s->cp, &s->gp);
-    if (selection_has_screen_line(&self->selections, self->cursor->y)) clear_selection(&self->selections);
+    clear_intersecting_selections(self, self->cursor->y);
     linebuf_mark_line_dirty(self->linebuf, self->cursor->y);
     s->image_placeholder_marked = false;
 }
@@ -1501,7 +1509,7 @@ screen_toggle_screen_buffer(Screen *self, bool save_cursor, bool clear_alt_scree
     screen_history_scroll(self, SCROLL_FULL, false);
     self->is_dirty = true;
     grman_mark_layers_dirty(self->grman);
-    clear_selection(&self->selections);
+    clear_all_selections(self);
     global_state.check_for_active_animated_images = true;
 }
 
@@ -2328,7 +2336,7 @@ screen_erase_in_line(Screen *self, unsigned int how, bool private) {
             line_apply_cursor(self->linebuf->line, self->cursor, s, n, true);
         }
         self->is_dirty = true;
-        if (selection_has_screen_line(&self->selections, self->cursor->y)) clear_selection(&self->selections);
+        clear_intersecting_selections(self, self->cursor->y);
         linebuf_mark_line_dirty(self->linebuf, self->cursor->y);
     }
 }
@@ -2428,6 +2436,7 @@ screen_erase_in_display(Screen *self, unsigned int how, bool private) {
         if (nuke_multicell_chars) nuke_multicell_char_intersecting_with(self, 0, self->columns, a, b, false);
         self->is_dirty = true;
         if (selection_intersects_screen_lines(&self->selections, a, b)) clear_selection(&self->selections);
+        if (selection_intersects_screen_lines(&self->url_ranges, a, b)) clear_selection(&self->url_ranges);
     }
     if (how < 2) {
         screen_erase_in_line(self, how, private);
@@ -2451,7 +2460,7 @@ screen_insert_lines(Screen *self, unsigned int count) {
         screen_dirty_line_graphics(self, top, bottom, self->linebuf == self->main_linebuf);
         linebuf_insert_lines(self->linebuf, count, self->cursor->y, bottom);
         self->is_dirty = true;
-        clear_selection(&self->selections);
+        clear_all_selections(self);
         screen_carriage_return(self);
         // remove split multiline chars at bottom of screen
         cells = linebuf_cpu_cells_for_line(self->linebuf, bottom);
@@ -2496,7 +2505,7 @@ screen_delete_lines(Screen *self, unsigned int count) {
         screen_dirty_line_graphics(self, top, bottom, self->linebuf == self->main_linebuf);
         linebuf_delete_lines(self->linebuf, count, self->cursor->y, bottom);
         self->is_dirty = true;
-        clear_selection(&self->selections);
+        clear_all_selections(self);
         screen_carriage_return(self);
     }
 }
@@ -2513,7 +2522,7 @@ screen_insert_characters(Screen *self, unsigned int count) {
         line_apply_cursor(self->linebuf->line, self->cursor, x, num, true);
         linebuf_mark_line_dirty(self->linebuf, self->cursor->y);
         self->is_dirty = true;
-        if (selection_has_screen_line(&self->selections, self->cursor->y)) clear_selection(&self->selections);
+        clear_intersecting_selections(self, self->cursor->y);
     }
 }
 
@@ -2557,7 +2566,7 @@ screen_delete_characters(Screen *self, unsigned int count) {
         line_apply_cursor(self->linebuf->line, self->cursor, self->columns - num, num, true);
         linebuf_mark_line_dirty(self->linebuf, self->cursor->y);
         self->is_dirty = true;
-        if (selection_has_screen_line(&self->selections, self->cursor->y)) clear_selection(&self->selections);
+        clear_intersecting_selections(self, self->cursor->y);
     }
 }
 
@@ -2572,7 +2581,7 @@ screen_erase_characters(Screen *self, unsigned int count) {
     line_apply_cursor(self->linebuf->line, self->cursor, x, num, true);
     linebuf_mark_line_dirty(self->linebuf, self->cursor->y);
     self->is_dirty = true;
-    if (selection_has_screen_line(&self->selections, self->cursor->y)) clear_selection(&self->selections);
+    clear_intersecting_selections(self, self->cursor->y);
 }
 
 // }}}
@@ -2990,6 +2999,7 @@ copy_selections(Selections *dest, const Selections *src) {
     }
     dest->count = src->count;
     for (unsigned i = 0; i < dest->count; i++) memcpy(dest->items + i, src->items + i, sizeof(dest->items[0]));
+    dest->last_rendered_count = src->last_rendered_count;
     return true;
 }
 
@@ -3247,7 +3257,6 @@ screen_update_cell_data(Screen *self, void *address, FONTS_DATA_HANDLE fonts_dat
     const bool is_overlay_active = screen_is_overlay_active(self);
     unsigned int history_line_added_count = self->history_line_added_count;
     index_type lnum;
-    bool was_dirty = self->is_dirty;
     screen_reset_dirty(self);
     update_overlay_position(self);
     if (self->scrolled_by) self->scrolled_by = MIN(self->scrolled_by + history_line_added_count, self->historybuf->count);
@@ -3286,7 +3295,6 @@ screen_update_cell_data(Screen *self, void *address, FONTS_DATA_HANDLE fonts_dat
         }
         update_overlay_line_data(self, address);
     }
-    if (was_dirty) clear_selection(&self->url_ranges);
 }
 
 static bool
@@ -3572,7 +3580,8 @@ text_for_range(Screen *self, const Selection *sel, bool insert_newlines, bool st
         const bool is_first_line = y == min_y, is_last_line = y + 1 >= y_limit;
         const bool add_trailing_newline = insert_newlines && !is_last_line;
         PyObject *text = NULL;
-        if (x_limit <= x_start && is_only_whitespace_line) {  // we want a newline on only whitespace lines even if they are continued
+        if (x_limit <= x_start && (is_only_whitespace_line || line_is_empty(line))) {
+            // we want a newline on only whitespace lines even if they are continued
             text = add_trailing_newline ? nl : empty;
             text = Py_NewRef(text);
         } else {
@@ -3619,7 +3628,8 @@ ansi_for_range(Screen *self, const Selection *sel, bool insert_newlines, bool st
             }
         }
 
-        if (x_limit <= x_start && is_only_whitespace_line) {  // we want a newline on only whitespace lines even if they are continued
+        if (x_limit <= x_start && (is_only_whitespace_line || line_is_empty(line))) {
+            // we want a newline on only whitespace lines even if they are continued
             if (insert_newlines) need_newline = true;
         } else {
             char_type prefix_char = need_newline ? '\n' : 0;
@@ -4683,6 +4693,7 @@ scroll_to_prompt(Screen *self, PyObject *args) {
 bool
 screen_is_selection_dirty(Screen *self) {
     IterationData q;
+    if (self->paused_rendering.expires_at) return false;
     if (self->scrolled_by != self->last_rendered.scrolled_by) return true;
     if (self->selections.last_rendered_count != self->selections.count || self->url_ranges.last_rendered_count != self->url_ranges.count) return true;
     for (size_t i = 0; i < self->selections.count; i++) {

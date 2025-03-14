@@ -101,6 +101,19 @@ get_activation_token(
 #undef fail
 }
 
+static void
+convert_glfw_image_to_wayland_image(const GLFWimage* image, unsigned char *target) {
+    // convert RGBA non-premultiplied to ARGB pre-multiplied
+    unsigned char* source = (unsigned char*) image->pixels;
+    for (int i = 0;  i < image->width * image->height;  i++, source += 4) {
+        unsigned int alpha = source[3];
+        *target++ = (unsigned char) ((source[2] * alpha) / 255);
+        *target++ = (unsigned char) ((source[1] * alpha) / 255);
+        *target++ = (unsigned char) ((source[0] * alpha) / 255);
+        *target++ = (unsigned char) alpha;
+    }
+}
+
 static struct wl_buffer* createShmBuffer(const GLFWimage* image, bool is_opaque, bool init_data)
 {
     struct wl_shm_pool* pool;
@@ -108,7 +121,7 @@ static struct wl_buffer* createShmBuffer(const GLFWimage* image, bool is_opaque,
     int stride = image->width * 4;
     int length = image->width * image->height * 4;
     void* data;
-    int fd, i;
+    int fd;
 
     fd = createAnonymousFile(length);
     if (fd < 0)
@@ -131,19 +144,7 @@ static struct wl_buffer* createShmBuffer(const GLFWimage* image, bool is_opaque,
     pool = wl_shm_create_pool(_glfw.wl.shm, fd, length);
 
     close(fd);
-    if (init_data) {
-        unsigned char* source = (unsigned char*) image->pixels;
-        unsigned char* target = data;
-        for (i = 0;  i < image->width * image->height;  i++, source += 4)
-        {
-            unsigned int alpha = source[3];
-
-            *target++ = (unsigned char) ((source[2] * alpha) / 255);
-            *target++ = (unsigned char) ((source[1] * alpha) / 255);
-            *target++ = (unsigned char) ((source[0] * alpha) / 255);
-            *target++ = (unsigned char) alpha;
-        }
-    }
+    if (init_data) convert_glfw_image_to_wayland_image(image, data);
 
     buffer =
         wl_shm_pool_create_buffer(pool, 0,
@@ -1009,8 +1010,11 @@ layer_set_properties(_GLFWwindow *window) {
                     panel_width = window->wl.width;
                     if (!window->wl.layer_shell.config.override_exclusive_zone) exclusive_zone = window->wl.width;
                     break;
+                case GLFW_EDGE_CENTER:
+                    which_anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT | ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM;
+                    break;
                 case GLFW_EDGE_NONE:
-                    which_anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM; // None is anchored to "top left"
+                    which_anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP;
                     panel_width = window->wl.width;
                     panel_height = window->wl.height;
                     break;
@@ -1462,11 +1466,54 @@ void _glfwPlatformSetWindowTitle(_GLFWwindow* window, const char* title)
     }
 }
 
-void _glfwPlatformSetWindowIcon(_GLFWwindow* window UNUSED,
-                                int count UNUSED, const GLFWimage* images UNUSED)
-{
-    _glfwInputError(GLFW_FEATURE_UNAVAILABLE,
-                    "Wayland: The platform does not support setting the window icon");
+void
+_glfwPlatformSetWindowIcon(_GLFWwindow* window, int count, const GLFWimage* images) {
+    if (!_glfw.wl.xdg_toplevel_icon_manager_v1) {
+        static bool warned_once = false;
+        if (!warned_once) {
+            _glfwInputError(GLFW_FEATURE_UNAVAILABLE, "Wayland: The compositor does not support changing window icons");
+            warned_once = true;
+        }
+    }
+    if (!count) {
+        xdg_toplevel_icon_manager_v1_set_icon(_glfw.wl.xdg_toplevel_icon_manager_v1, window->wl.xdg.toplevel, NULL);
+        return;
+    }
+    struct wl_buffer* *buffers = malloc(sizeof(struct wl_buffer*) * count);
+    if (!buffers) return;
+    size_t total_data_size = 0;
+    for (int i = 0; i < count; i++) total_data_size += images[i].width * images[i].height * 4;
+    int fd = createAnonymousFile(total_data_size);
+    if (fd < 0) {
+        _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: Creating a buffer file for %ld B failed: %s", (long)total_data_size, strerror(errno));
+        free(buffers);
+        return;
+    }
+    unsigned char *data = mmap(NULL, total_data_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (data == MAP_FAILED) {
+        _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: mmap failed: %s", strerror(errno));
+        free(buffers);
+        close(fd);
+        return;
+    }
+    struct wl_shm_pool* pool = wl_shm_create_pool(_glfw.wl.shm, fd, total_data_size);
+    struct xdg_toplevel_icon_v1 *icon = xdg_toplevel_icon_manager_v1_create_icon(_glfw.wl.xdg_toplevel_icon_manager_v1);
+    size_t pos = 0;
+    for (int i = 0; i < count; i++) {
+        const size_t sz = images[i].width * images[i].height * 4;
+        convert_glfw_image_to_wayland_image(images + i, data + pos);
+        buffers[i] = wl_shm_pool_create_buffer(
+                pool, pos, images[i].width, images[i].height, images[i].width * 4, WL_SHM_FORMAT_ARGB8888);
+        xdg_toplevel_icon_v1_add_buffer(icon, buffers[i], 1);
+        pos += sz;
+    }
+    xdg_toplevel_icon_manager_v1_set_icon(_glfw.wl.xdg_toplevel_icon_manager_v1, window->wl.xdg.toplevel, icon);
+    xdg_toplevel_icon_v1_destroy(icon);
+    for (int i = 0; i < count; i++) wl_buffer_destroy(buffers[i]);
+    free(buffers);
+    wl_shm_pool_destroy(pool);
+    munmap(data, total_data_size);
+    close(fd);
 }
 
 void _glfwPlatformGetWindowPos(_GLFWwindow* window UNUSED, int* xpos UNUSED, int* ypos UNUSED)
@@ -2157,6 +2204,7 @@ static void data_source_canceled(void *data UNUSED, struct wl_data_source *wl_da
     if (_glfw.wl.dataSourceForClipboard == wl_data_source) {
         _glfw.wl.dataSourceForClipboard = NULL;
         _glfw_free_clipboard_data(&_glfw.clipboard);
+        _glfwInputClipboardLost(GLFW_CLIPBOARD);
     }
     wl_data_source_destroy(wl_data_source);
 }
@@ -2165,6 +2213,7 @@ static void primary_selection_source_canceled(void *data UNUSED, struct zwp_prim
     if (_glfw.wl.dataSourceForPrimarySelection == primary_selection_source) {
         _glfw.wl.dataSourceForPrimarySelection = NULL;
         _glfw_free_clipboard_data(&_glfw.primary);
+        _glfwInputClipboardLost(GLFW_PRIMARY_SELECTION);
     }
     zwp_primary_selection_source_v1_destroy(primary_selection_source);
 }
