@@ -99,15 +99,25 @@ func KittyToolEntryPoints(root *cli.Command) {
 			return
 		},
 	})
-	// __confirm_and_run_shebang__
+	// __shebang__
 	root.AddSubCommand(&cli.Command{
-		Name:            "__confirm_and_run_shebang__",
+		Name:            "__shebang__",
 		Hidden:          true,
 		OnlyArgsAllowed: true,
 		Run: func(cmd *cli.Command, args []string) (rc int, err error) {
-			return confirm_and_run_shebang(args)
+			return run_shebang(args)
 		},
 	})
+	// __confirm_and_run_exe__
+	root.AddSubCommand(&cli.Command{
+		Name:            "__confirm_and_run_exe__",
+		Hidden:          true,
+		OnlyArgsAllowed: true,
+		Run: func(cmd *cli.Command, args []string) (rc int, err error) {
+			return confirm_and_run_exe(args)
+		},
+	})
+
 	// __convert_image__
 	images.ConvertEntryPoint(root)
 	// __atexit__

@@ -94,7 +94,31 @@ consumption to do the same tasks.
 Detailed list of changes
 -------------------------------------
 
-0.40.1 [future]
+0.41.0 [future]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- A new mode of operation for :opt:`text_fg_override_threshold` to override
+  foreground colors so as to maintain a minimum contrast between foreground and
+  background text colors. Works in a perceptual color for best color accuracy
+  (:pull:`8420`)
+
+- :ref:`kitty +open <launch_actions>`: Ask for confirmation by default when running executables
+  to work around some badly designed programs that try to open links in
+  documents that point to executable files. Can be overridden by specifying
+  your own :file:`launch-actions.conf`.
+
+- Fix a regression in version 0.40.0 causing a crash when the underline
+  thickness of the font is zero (:iss:`8443`)
+
+- Fix a regression in version 0.40.0 causing a hang on resizing with a wide
+  character at the right edge of a line that needs to be moved onto the next
+  line (:iss:`8464`)
+
+- Fix a regression in 0.40.1 that caused copying to clipboard via OSC 52 from
+  applications that dont specify a destination in the escape code not working
+  (:iss:`8459`)
+
+0.40.1 [2025-03-18]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - Do not count background processes by default for :opt:`confirm_os_window_close` (:iss:`8358`)
@@ -111,6 +135,8 @@ Detailed list of changes
 - macOS: When the program running in kitty reports progress information for a task, show a progress bar on the kitty dock icon
 
 - macOS: Fix a regression causing a crash when using :opt:`focus_follows_mouse` (:iss:`8437`)
+
+- OSC 52: Fix specifying both clipboard and primary in OSC 52 requests not supported
 
 0.40.0 [2025-03-08]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

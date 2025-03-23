@@ -76,11 +76,15 @@ TARGETS_MIME = '.'
 class ClipboardType(IntEnum):
     clipboard = GLFW_CLIPBOARD
     primary_selection = GLFW_PRIMARY_SELECTION
+    unknown = -311
 
     @staticmethod
     def from_osc52_where_field(where: str) -> 'ClipboardType':
-        where = where or 's0'
-        return ClipboardType.clipboard if 'c' in where or 's' in where else ClipboardType.primary_selection
+        if where in ('c', 's'):
+            return ClipboardType.clipboard
+        if where == 'p':
+            return ClipboardType.primary_selection
+        return ClipboardType.unknown
 
 
 class Clipboard:
@@ -318,6 +322,7 @@ class ClipboardRequestManager:
         self.window_id = window_id
         self.currently_asking_permission_for: ReadRequest | None = None
         self.in_flight_write_request: WriteRequest | None = None
+        self.osc52_in_flight_write_requests: dict[ClipboardType, WriteRequest] = {}
 
     def parse_osc_5522(self, data: memoryview) -> None:
         import base64
@@ -394,18 +399,22 @@ class ClipboardRequestManager:
         else:
             where = str(data, "utf-8", 'replace')
             data = data[len(data):]
+        destinations = {ClipboardType.from_osc52_where_field(where) for where in where or 's0'}
+        destinations.discard(ClipboardType.unknown)
         if len(data) == 1 and data.tobytes() == b'?':
-            rr = ReadRequest(is_primary_selection=ClipboardType.from_osc52_where_field(where) is ClipboardType.primary_selection)
-            self.handle_read_request(rr)
+            for d in destinations:
+                rr = ReadRequest(is_primary_selection=d is ClipboardType.primary_selection)
+                self.handle_read_request(rr)
         else:
-            wr = self.in_flight_write_request
-            if wr is None:
-                wr = self.in_flight_write_request = WriteRequest(ClipboardType.from_osc52_where_field(where) is ClipboardType.primary_selection)
-            wr.add_base64_data(data)
-            if is_partial:
-                return
-            self.in_flight_write_request = None
-            self.handle_write_request(wr)
+            for d in destinations:
+                wr = self.osc52_in_flight_write_requests.get(d)
+                if wr is None:
+                    wr = self.osc52_in_flight_write_requests[d] = WriteRequest(d is ClipboardType.primary_selection)
+                wr.add_base64_data(data)
+                if is_partial:
+                    return
+                self.osc52_in_flight_write_requests.pop(d, None)
+                self.handle_write_request(wr)
 
     def handle_write_request(self, wr: WriteRequest) -> None:
         wr.flush_base64_data()
@@ -523,3 +532,4 @@ class ClipboardRequestManager:
     def close(self) -> None:
         if self.in_flight_write_request is not None:
             self.in_flight_write_request = None
+        self.osc52_in_flight_write_requests.clear()
