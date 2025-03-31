@@ -28,7 +28,7 @@
 #include <fcntl.h>
 #include "unicode-data.h"
 #include "modes.h"
-#include "wcwidth-std.h"
+#include "char-props.h"
 #include "wcswidth.h"
 #include <stdalign.h>
 #include "keys.h"
@@ -782,7 +782,8 @@ static bool
 range_line_is_continued(Screen *self, int y) {
     if (!(-(int)self->historybuf->count <= y && y < (int)self->lines)) return false;
     if (y < 0) return historybuf_is_line_continued(self->historybuf, -(y + 1));
-    return visual_line_is_continued(self, y);
+    if (y) return linebuf_is_line_continued(self->linebuf, y);
+    return self->linebuf == self->main_linebuf ? history_buf_endswith_wrap(self->historybuf) : false;
 }
 
 static void
@@ -934,6 +935,11 @@ move_widened_char_past_multiline_chars(Screen *self, CPUCell* cpu_cell, GPUCell 
     *cpu_cell = (CPUCell){0}; *gpu_cell = (GPUCell){0};
 }
 
+static bool
+is_emoji_presentation_base(char_type ch) {
+    return char_props_for(ch).is_emoji_presentation_base == 1;
+}
+
 static void
 draw_combining_char(Screen *self, text_loop_state *s, char_type ch) {
     bool has_prev_char = false;
@@ -1082,7 +1088,7 @@ draw_text_loop(Screen *self, const uint32_t *chars, size_t num_chars, text_loop_
             draw_control_char(self, s, ch);
             continue;
         }
-        if (self->cursor->x < self->columns && s->cp[self->cursor->x].is_multicell && !is_combining_char(ch)) {
+        if (self->cursor->x < self->columns && s->cp[self->cursor->x].is_multicell && !char_props_for(ch).is_combining_char) {
             if (s->cp[self->cursor->x].y) {
                 move_cursor_past_multicell(self, 1);
                 init_text_loop_line(self, s);
@@ -1091,8 +1097,9 @@ draw_text_loop(Screen *self, const uint32_t *chars, size_t num_chars, text_loop_
 
         int char_width = 1;
         if (ch > DEL) {  // not printable ASCII
-            if (is_ignored_char(ch)) continue;
-            if (UNLIKELY(is_combining_char(ch))) {
+            CharProps cp = char_props_for(ch);
+            if (cp.is_invalid) continue;
+            if (UNLIKELY(cp.is_combining_char)) {
                 if (UNLIKELY(is_flag_codepoint(ch))) {
                     if (draw_second_flag_codepoint(self, ch)) continue;
                 } else {
@@ -1100,7 +1107,7 @@ draw_text_loop(Screen *self, const uint32_t *chars, size_t num_chars, text_loop_
                     continue;
                 }
             }
-            char_width = wcwidth_std(ch);
+            char_width = wcwidth_std(cp);
             if (UNLIKELY(char_width < 1)) {
                 if (char_width == 0) continue;
                 char_width = 1;
@@ -1276,8 +1283,9 @@ screen_handle_multicell_command(Screen *self, const MultiCellCommand *cmd, const
         mcd.natural_width = true;
         for (unsigned i = 0; i < self->lc->count; i++) {
             char_type ch = self->lc->chars[i];
-            if (is_ignored_char(ch)) continue;
-            if (is_combining_char(ch)) {
+            CharProps cp = char_props_for(ch);
+            if (cp.is_invalid) continue;
+            if (cp.is_combining_char) {
                 if (is_flag_codepoint(ch)) {
                     if (lc.count == 1) {
                         if (is_flag_pair(lc.chars[0], ch)) {
@@ -4115,7 +4123,8 @@ find_cmd_output(Screen *self, OutputOffset *oo, index_type start_screen_y, unsig
         }
         if (y1 < upward_limit) {
             oo->reached_upper_limit = true;
-            found_output = true; start = upward_limit;
+            found_output = direction != 0; start = upward_limit;
+            found_prompt = direction != 0;
         }
     }
 
@@ -4125,8 +4134,13 @@ find_cmd_output(Screen *self, OutputOffset *oo, index_type start_screen_y, unsig
             if (on_screen_only && !found_output && y2 > screen_limit) break;
             line = checked_range_line(self, y2);
             if (line && line->attrs.prompt_kind == PROMPT_START) {
-                if (!found_prompt) found_prompt = true;
-                else if (found_prompt && !found_output) {
+                if (!found_prompt) {
+                    if (direction == 0) {
+                        found_next_prompt = true; end = y2;
+                        break;
+                    }
+                    found_prompt = true;
+                } else if (found_prompt && !found_output) {
                     // skip fetching wrapped prompt lines
                     while (range_line_is_continued(self, y2)) {
                         y2++;
@@ -4272,7 +4286,7 @@ screen_truncate_point_for_length(PyObject UNUSED *self, PyObject *args) {
                 prev_width = 2;
             } else prev_width = 0;
         } else {
-            int w = wcwidth_std(ch);
+            int w = wcwidth_std(char_props_for(ch));
             switch(w) {
                 case -1:
                 case 0:
@@ -4604,7 +4618,7 @@ is_opt_word_char(char_type ch, bool forward) {
 static bool
 is_char_ok_for_word_extension(Line* line, index_type x, bool forward) {
     char_type ch = cell_first_char(line->cpu_cells + x, line->text_cache);
-    if (is_word_char(ch) || is_opt_word_char(ch, forward)) return true;
+    if (char_props_for(ch).is_word_char || is_opt_word_char(ch, forward)) return true;
     // pass : from :// so that common URLs are matched
     return ch == ':' && x + 2 < line->xnum && cell_is_char(line->cpu_cells + x + 1, '/') && cell_is_char(line->cpu_cells + x + 2,  '/');
 }
@@ -4689,6 +4703,13 @@ scroll_to_prompt(Screen *self, PyObject *args) {
     Py_RETURN_FALSE;
 }
 
+static PyObject*
+set_last_visited_prompt(Screen *self, PyObject *args) {
+    index_type visual_y = 0;
+    if (!PyArg_ParseTuple(args, "|I", &visual_y)) return NULL;
+    if (screen_set_last_visited_prompt(self, visual_y)) { Py_RETURN_TRUE; }
+    Py_RETURN_FALSE;
+}
 
 bool
 screen_is_selection_dirty(Screen *self) {
@@ -5537,6 +5558,7 @@ static PyMethodDef methods[] = {
     MND(is_rectangle_select, METH_NOARGS)
     MND(scroll, METH_VARARGS)
     MND(scroll_to_prompt, METH_VARARGS)
+    MND(set_last_visited_prompt, METH_VARARGS)
     MND(send_escape_code_to_child, METH_VARARGS)
     MND(pause_rendering, METH_VARARGS)
     MND(hyperlink_at, METH_VARARGS)

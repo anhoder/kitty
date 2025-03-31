@@ -22,7 +22,6 @@
 #include "cleanup.h"
 #include "safe-wrappers.h"
 #include "control-codes.h"
-#include "wcwidth-std.h"
 #include "wcswidth.h"
 #include "modes.h"
 #include <stddef.h>
@@ -428,7 +427,7 @@ py_shm_unlink(PyObject UNUSED *self, PyObject *args) {
 
 static PyObject*
 wcwidth_wrap(PyObject UNUSED *self, PyObject *chr) {
-    return PyLong_FromLong(wcwidth_std(PyLong_AsLong(chr)));
+    return PyLong_FromLong(wcwidth_std(char_props_for(PyLong_AsLong(chr))));
 }
 
 static PyObject*
@@ -633,13 +632,25 @@ py_run_atexit_cleanup_functions(PyObject *self UNUSED, PyObject *args UNUSED) {
     Py_RETURN_NONE;
 }
 
+static PyObject*
+py_char_props_for(PyObject *self UNUSED, PyObject *ch) {
+    if (!PyUnicode_Check(ch) || PyUnicode_GET_LENGTH(ch) != 1) { PyErr_SetString(PyExc_TypeError, "must suply a single character"); return NULL; }
+    char_type c = PyUnicode_READ_CHAR(ch, 0);
+    CharProps cp = char_props_for(c);
+#define B(x) #x, cp.x ? Py_True : Py_False
+    return Py_BuildValue("{si sO sB sB ss sO sO}",
+        "width", wcwidth_std(cp), B(is_extended_pictographic), "grapheme_break", cp.grapheme_break,
+        "indic_conjunct_break", cp.indic_conjunct_break, "category", char_category(cp), B(is_emoji), B(is_emoji_presentation_base)
+    );
+#undef B
+}
+
 static PyMethodDef module_methods[] = {
     METHODB(replace_c0_codes_except_nl_space_tab, METH_O),
     {"wcwidth", (PyCFunction)wcwidth_wrap, METH_O, ""},
     {"expand_ansi_c_escapes", (PyCFunction)expand_ansi_c_escapes, METH_O, ""},
     {"get_docs_ref_map", (PyCFunction)get_docs_ref_map, METH_NOARGS, ""},
     {"wcswidth", (PyCFunction)wcswidth_std, METH_O, ""},
-    {"unicode_database_version", (PyCFunction)unicode_database_version, METH_NOARGS, ""},
     {"open_tty", open_tty, METH_VARARGS, ""},
     {"normal_tty", normal_tty, METH_VARARGS, ""},
     {"raw_tty", raw_tty, METH_VARARGS, ""},
@@ -649,6 +660,7 @@ static PyMethodDef module_methods[] = {
     {"base64_encode_into", (PyCFunction)base64_encode_into, METH_VARARGS, ""},
     {"base64_decode", (PyCFunction)(void (*) (void))(pybase64_decode), METH_O, ""},
     {"base64_decode_into", (PyCFunction)base64_decode_into, METH_VARARGS, ""},
+    {"char_props_for", py_char_props_for, METH_O, ""},
     {"split_into_graphemes", (PyCFunction)split_into_graphemes, METH_O, ""},
     {"thread_write", (PyCFunction)cm_thread_write, METH_VARARGS, ""},
     {"redirect_std_streams", (PyCFunction)redirect_std_streams, METH_VARARGS, ""},

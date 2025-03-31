@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
+# Imports {{{
 import json
 import os
 import re
@@ -11,16 +12,18 @@ from collections.abc import Generator, Hashable, Iterable
 from contextlib import contextmanager
 from functools import lru_cache, partial
 from html.entities import html5
-from itertools import groupby
-from operator import itemgetter
+from io import StringIO
+from math import ceil, log
 from typing import (
     Callable,
     DefaultDict,
+    Iterator,
     Literal,
     NamedTuple,
     Optional,
     Protocol,
     Sequence,
+    TypedDict,
     Union,
 )
 from urllib.request import urlopen
@@ -29,8 +32,9 @@ if __name__ == '__main__' and not __package__:
     import __main__
     __main__.__package__ = 'gen'
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# }}}
 
-
+# Fetching data {{{
 non_characters = frozenset(range(0xfffe, 0x10ffff, 0x10000))
 non_characters |= frozenset(range(0xffff, 0x10ffff + 1, 0x10000))
 non_characters |= frozenset(range(0xfdd0, 0xfdf0))
@@ -63,8 +67,9 @@ def unicode_version() -> tuple[int, int, int]:
         if m is not None:
             return int(m.group(1)), int(m.group(2)), int(m.group(3))
     raise ValueError('Could not find Unicode Version')
+# }}}
 
-
+# Parsing Unicode databases {{{
 # Map of class names to set of codepoints in class
 class_maps: dict[str, set[int]] = {}
 all_symbols: set[int] = set()
@@ -77,6 +82,10 @@ marks = set(emoji_skin_tone_modifiers) | flag_codepoints
 not_assigned = set(range(0, sys.maxunicode))
 property_maps: dict[str, set[int]] = defaultdict(set)
 grapheme_segmentation_maps: dict[str, set[int]] = defaultdict(set)
+grapheme_break_as_int: dict[str, int] = {}
+int_as_grapheme_break: tuple[str, ...] = ()
+incb_as_int: dict[str, int] = {}
+int_as_incb: tuple[str, ...] = ()
 incb_map: dict[str, set[int]] = defaultdict(set)
 extended_pictographic: set[int] = set()
 
@@ -268,10 +277,16 @@ def parse_eaw() -> None:
 
 
 def parse_grapheme_segmentation() -> None:
-    global extended_pictographic
+    global extended_pictographic, grapheme_break_as_int, incb_as_int, int_as_grapheme_break, int_as_incb
+    grapheme_segmentation_maps['AtStart']  # this is used by the segmentation algorithm, no character has it
+    grapheme_segmentation_maps['None']  # this is used by the segmentation algorithm, no character has it
     for line in get_data('ucd/auxiliary/GraphemeBreakProperty.txt'):
         chars, category = split_two(line)
         grapheme_segmentation_maps[category] |= chars
+    grapheme_segmentation_maps['Private_Expecting_RI']  # this is used by the segmentation algorithm, no character has it
+    grapheme_break_as_int = {x: i for i, x in enumerate(grapheme_segmentation_maps)}
+    int_as_grapheme_break = tuple(grapheme_break_as_int)
+    incb_map['None']   # used by segmentation algorithm no character has it
     for line in get_data('ucd/DerivedCoreProperties.txt'):
         spec, rest = line.split(';', 1)
         category = rest.strip().split(' ', 1)[0].strip().rstrip(';')
@@ -281,21 +296,42 @@ def parse_grapheme_segmentation() -> None:
             # there exist some InCB chars that do not have a GBP category
             subcat = rest.strip().split(';')[1].strip().split()[0].strip()
             incb_map[subcat] |= chars
+    incb_as_int = {x: i for i, x in enumerate(incb_map)}
+    int_as_incb = tuple(incb_as_int)
     for line in get_data('ucd/emoji/emoji-data.txt'):
         chars, category = split_two(line)
         if 'Extended_Pictographic#' == category:
             extended_pictographic |= chars
 
 
-def get_ranges(items: list[int]) -> Generator[Union[int, tuple[int, int]], None, None]:
-    items.sort()
-    for k, g in groupby(enumerate(items), lambda m: m[0]-m[1]):
-        group = tuple(map(itemgetter(1), g))
-        a, b = group[0], group[-1]
-        if a == b:
-            yield a
-        else:
-            yield a, b
+class GraphemeSegmentationTest(TypedDict):
+    data: tuple[str, ...]
+    comment: str
+
+
+grapheme_segmentation_tests: list[GraphemeSegmentationTest] = []
+
+
+def parse_test_data() -> None:
+    for line in get_data('ucd/auxiliary/GraphemeBreakTest.txt'):
+        t, comment = line.split('#')
+        t = t.lstrip('÷').strip().rstrip('÷').strip()
+        chars: list[list[str]] = [[]]
+        for x in re.split(r'([÷×])', t):
+            x = x.strip()
+            match x:
+                case '÷':
+                    chars.append([])
+                case '×':
+                    pass
+                case '':
+                    pass
+                case _:
+                    ch = chr(int(x, 16))
+                    chars[-1].append(ch)
+        c = tuple(''.join(c) for c in chars)
+        grapheme_segmentation_tests.append({'data': c, 'comment': comment.strip()})
+# }}}
 
 
 def write_case(spec: Union[tuple[int, ...], int], p: Callable[..., None], for_go: bool = False) -> None:
@@ -327,124 +363,6 @@ def create_header(path: str, include_data_types: bool = True) -> Generator[Calla
             p('END_ALLOW_CASE_RANGE')
 
 
-def gen_emoji() -> None:
-    with create_header('kitty/emoji.h') as p:
-        p('static inline bool\nis_emoji(char_type code) {')
-        p('\tswitch(code) {')
-        for spec in get_ranges(list(all_emoji)):
-            write_case(spec, p)
-            p('\t\t\treturn true;')
-        p('\t\tdefault: return false;')
-        p('\t}')
-        p('\treturn false;\n}')
-
-        p('static inline bool\nis_symbol(char_type code) {')
-        p('\tswitch(code) {')
-        for spec in get_ranges(list(all_symbols)):
-            write_case(spec, p)
-            p('\t\t\treturn true;')
-        p('\t\tdefault: return false;')
-        p('\t}')
-        p('\treturn false;\n}')
-
-        p('static inline bool\nis_narrow_emoji(char_type code) {')
-        p('\tswitch(code) {')
-        for spec in get_ranges(list(narrow_emoji)):
-            write_case(spec, p)
-            p('\t\t\treturn true;')
-        p('\t\tdefault: return false;')
-        p('\t}')
-        p('\treturn false;\n}')
-
-
-
-def category_test(
-    name: str,
-    p: Callable[..., None],
-    classes: Iterable[str],
-    comment: str,
-    use_static: bool = False,
-    extra_chars: Union[frozenset[int], set[int]] = frozenset(),
-    exclude: Union[set[int], frozenset[int]] = frozenset(),
-    least_check_return: Optional[str] = None,
-    ascii_range: Optional[str] = None
-) -> None:
-    static = 'static inline ' if use_static else ''
-    chars: set[int] = set()
-    for c in classes:
-        chars |= class_maps[c]
-    chars |= extra_chars
-    chars -= exclude
-    p(f'{static}bool\n{name}(char_type code) {{')
-    p(f'\t// {comment} ({len(chars)} codepoints)' + ' {{' '{')
-    if least_check_return is not None:
-        least = min(chars)
-        p(f'\tif (LIKELY(code < {least})) return {least_check_return};')
-    if ascii_range is not None:
-        p(f'\tif (LIKELY(0x20 <= code && code <= 0x7e)) return {ascii_range};')
-    p('\tswitch(code) {')
-    for spec in get_ranges(list(chars)):
-        write_case(spec, p)
-        p('\t\t\treturn true;')
-    p('\t} // }}}\n')
-    p('\treturn false;\n}\n')
-
-
-def classes_to_regex(classes: Iterable[str], exclude: str = '', for_go: bool = True) -> Iterable[str]:
-    chars: set[int] = set()
-    for c in classes:
-        chars |= class_maps[c]
-    for x in map(ord, exclude):
-        chars.discard(x)
-
-    if for_go:
-        def as_string(codepoint: int) -> str:
-            if codepoint < 256:
-                return fr'\x{codepoint:02x}'
-            return fr'\x{{{codepoint:x}}}'
-    else:
-        def as_string(codepoint: int) -> str:
-            if codepoint < 256:
-                return fr'\x{codepoint:02x}'
-            if codepoint <= 0xffff:
-                return fr'\u{codepoint:04x}'
-            return fr'\U{codepoint:08x}'
-
-    for spec in get_ranges(list(chars)):
-        if isinstance(spec, tuple):
-            yield '{}-{}'.format(*map(as_string, (spec[0], spec[1])))
-        else:
-            yield as_string(spec)
-
-
-def gen_ucd() -> None:
-    cz = {c for c in class_maps if c[0] in 'CZ'}
-    with create_header('kitty/unicode-data.c') as p:
-        p('#include "unicode-data.h"')
-        p('START_ALLOW_CASE_RANGE')
-        category_test(
-                'is_combining_char', p,
-                (),
-                'Combining and default ignored characters',
-                extra_chars=marks,
-                least_check_return='false'
-        )
-        category_test(
-            'is_ignored_char', p, 'Cc Cs'.split(),
-            'Control characters and non-characters',
-            extra_chars=non_characters,
-            ascii_range='false'
-        )
-        category_test(
-            'is_non_rendered_char', p, 'Cc Cs Cf'.split(),
-            'Other_Default_Ignorable_Code_Point and soft hyphen',
-            extra_chars=property_maps['Other_Default_Ignorable_Code_Point'] | set(range(0xfe00, 0xfe0f + 1)),
-            ascii_range='false'
-        )
-        category_test('is_word_char', p, {c for c in class_maps if c[0] in 'LN'}, 'L and N categories')
-        category_test('is_CZ_category', p, cz, 'C and Z categories')
-        category_test('is_P_category', p, {c for c in class_maps if c[0] == 'P'}, 'P category (punctuation)')
-
 def gen_names() -> None:
     aliases_map: dict[int, set[str]] = {}
     for word, codepoints in word_search_map.items():
@@ -466,73 +384,6 @@ def gen_names() -> None:
 
 def gofmt(*files: str) -> None:
     subprocess.check_call(['gofmt', '-w', '-s'] + list(files))
-
-
-def gen_wcwidth() -> None:
-    seen: set[int] = set()
-    non_printing = class_maps['Cc'] | class_maps['Cf'] | class_maps['Cs']
-
-    def add(p: Callable[..., None], comment: str, chars_: Union[set[int], frozenset[int]], ret: int, for_go: bool = False) -> None:
-        chars = chars_ - seen
-        seen.update(chars)
-        p(f'\t\t// {comment} ({len(chars)} codepoints)' + ' {{' '{')
-        for spec in get_ranges(list(chars)):
-            write_case(spec, p, for_go)
-            p(f'\t\t\treturn {ret};')
-        p('\t\t// }}}\n')
-
-    def add_all(p: Callable[..., None], for_go: bool = False) -> None:
-        seen.clear()
-        add(p, 'Flags', flag_codepoints, 2, for_go)
-        add(p, 'Marks', marks | {0}, 0, for_go)
-        add(p, 'Non-printing characters', non_printing, -1, for_go)
-        add(p, 'Private use', class_maps['Co'], -3, for_go)
-        add(p, 'Text Presentation', narrow_emoji, 1, for_go)
-        add(p, 'East Asian ambiguous width', ambiguous, -2, for_go)
-        add(p, 'East Asian double width', doublewidth, 2, for_go)
-        add(p, 'Emoji Presentation', wide_emoji, 2, for_go)
-
-        add(p, 'Not assigned in the unicode character database', not_assigned, -4, for_go)
-
-        p('\t\tdefault:\n\t\t\treturn 1;')
-        p('\t}')
-        if for_go:
-            p('\t}')
-        else:
-            p('\treturn 1;\n}')
-
-    with create_header('kitty/wcwidth-std.h') as p, open('tools/wcswidth/std.go', 'w') as gof:
-        gop = partial(print, file=gof)
-        gop('package wcswidth\n\n')
-        gop('func Runewidth(code rune) int {')
-        p('static inline int\nwcwidth_std(int32_t code) {')
-        p('\tif (LIKELY(0x20 <= code && code <= 0x7e)) { return 1; }')
-        p('\tswitch(code) {')
-        gop('\tswitch(code) {')
-        add_all(p)
-        add_all(gop, True)
-
-        p('static inline bool\nis_emoji_presentation_base(uint32_t code) {')
-        gop('func IsEmojiPresentationBase(code rune) bool {')
-        p('\tswitch(code) {')
-        gop('\tswitch(code) {')
-        for spec in get_ranges(list(emoji_presentation_bases)):
-            write_case(spec, p)
-            write_case(spec, gop, for_go=True)
-            p('\t\t\treturn true;')
-            gop('\t\t\treturn true;')
-        p('\t\tdefault: return false;')
-        p('\t}')
-        gop('\t\tdefault:\n\t\t\treturn false')
-        gop('\t}')
-        p('\treturn true;\n}')
-        gop('\n}')
-        uv = unicode_version()
-        p(f'#define UNICODE_MAJOR_VERSION {uv[0]}')
-        p(f'#define UNICODE_MINOR_VERSION {uv[1]}')
-        p(f'#define UNICODE_PATCH_VERSION {uv[2]}')
-        gop('var UnicodeDatabaseVersion [3]int = [3]int{' f'{uv[0]}, {uv[1]}, {uv[2]}' + '}')
-    gofmt(gof.name)
 
 
 def gen_rowcolumn_diacritics() -> None:
@@ -582,27 +433,8 @@ def gen_rowcolumn_diacritics() -> None:
 
 
 def gen_test_data() -> None:
-    tests = []
-    for line in get_data('ucd/auxiliary/GraphemeBreakTest.txt'):
-        t, comment = line.split('#')
-        t = t.lstrip('÷').strip().rstrip('÷').strip()
-        chars: list[list[str]] = [[]]
-        for x in re.split(r'([÷×])', t):
-            x = x.strip()
-            match x:
-                case '÷':
-                    chars.append([])
-                case '×':
-                    pass
-                case '':
-                    pass
-                case _:
-                    ch = chr(int(x, 16))
-                    chars[-1].append(ch)
-        c = [''.join(c) for c in chars]
-        tests.append({'data': c, 'comment': comment.strip()})
     with open('kitty_tests/GraphemeBreakTest.json', 'wb') as f:
-        f.write(json.dumps(tests, indent=2, ensure_ascii=False).encode())
+        f.write(json.dumps(grapheme_segmentation_tests, indent=2, ensure_ascii=False).encode())
 
 
 def getsize(data: Iterable[int]) -> Literal[1, 2, 4]:
@@ -615,7 +447,11 @@ def getsize(data: Iterable[int]) -> Literal[1, 2, 4]:
     return 4
 
 
-def splitbins[T: Hashable](t: tuple[T, ...], property_size: int, use_fixed_shift: int = 0) -> tuple[list[int], list[T], int, int, int]:
+def mask_for(bits: int) -> int:
+    return ~((~0) << bits)
+
+
+def splitbins[T: Hashable](t: tuple[T, ...], property_size: int, use_fixed_shift: int = 0) -> tuple[list[int], list[int], list[T], int, int]:
     if use_fixed_shift:
         candidates = range(use_fixed_shift, use_fixed_shift + 1)
     else:
@@ -626,14 +462,23 @@ def splitbins[T: Hashable](t: tuple[T, ...], property_size: int, use_fixed_shift
                 n >>= 1
                 maxshift += 1
         candidates = range(maxshift + 1)
+    t3: list[T] = []
+    tmap: dict[T, int] = {}
+    seen = set()
+    for x in t:
+        if x not in seen:
+            seen.add(x)
+            tmap[x] = len(t3)
+            t3.append(x)
+    t_int = tuple(tmap[x] for x in t)
     bytesz = sys.maxsize
     for shift in candidates:
         t1: list[int] = []
-        t2: list[T] = []
+        t2: list[int] = []
         size = 2**shift
-        bincache: dict[tuple[T, ...], int] = {}
-        for i in range(0, len(t), size):
-            bin = t[i:i+size]
+        bincache: dict[tuple[int, ...], int] = {}
+        for i in range(0, len(t_int), size):
+            bin = t_int[i:i+size]
             index = bincache.get(bin)
             if index is None:
                 index = len(t2)
@@ -641,13 +486,12 @@ def splitbins[T: Hashable](t: tuple[T, ...], property_size: int, use_fixed_shift
                 t2.extend(bin)
             t1.append(index >> shift)
         # determine memory size
-        b = len(t1)*getsize(t1) + len(t2)*property_size
+        b = len(t1)*getsize(t1) + len(t3)*property_size + len(t2)*getsize(t2)
         if b < bytesz:
             best = t1, t2, shift
             bytesz = b
     t1, t2, shift = best
-    mask = ~((~0) << shift)
-    return t1, t2, shift, mask, bytesz
+    return t1, t2, t3, shift, bytesz
 
 
 class Property(Protocol):
@@ -660,53 +504,385 @@ class Property(Protocol):
         return ''
 
 
+def get_types(sz: int) -> tuple[str, str]:
+    sz *= 8
+    return f'uint{sz}_t', f'uint{sz}'
+
+
 def gen_multistage_table(
-    c: Callable[..., None], g: Callable[..., None], t1: Sequence[int], t2: Sequence[Property], shift: int, mask: int
+    c: Callable[..., None], g: Callable[..., None], t1: Sequence[int], t2: Sequence[int], t3: Sequence[Property], shift: int,
 ) -> None:
-    sz = getsize(t1)
-    name = t2[0].__class__.__name__
-    match sz:
-        case 1:
-            ctype = 'unsigned char'
-            gotype = 'uint8'
-        case 2:
-            ctype = 'unsigned short'
-            gotype = 'uint16'
-        case 4:
-            ctype = 'uint32_t'
-            gotype = 'uint32'
+    ctype_t1, gotype_t1 = get_types(getsize(t1))
+    mask = mask_for(shift)
+    name = t3[0].__class__.__name__
+    ctype_t2, gotype_t2 = get_types(getsize(tuple(range(len(t3)))))
     c(f'static const char_type {name}_mask = {mask}u;')
     c(f'static const char_type {name}_shift = {shift}u;')
-    c(f'static const {ctype} {name}_t1[{len(t1)}] = ''{')
+    c(f'static const {ctype_t1} {name}_t1[{len(t1)}] = ''{')
     c(f'\t{", ".join(map(str, t1))}')
     c('};')
-    items = '\n\t'.join(x.as_c + ',' for x in t2)
-    c(f'static const {name} {name}_t2[{len(t2)}] = ''{')
+    c(f'static const {ctype_t2} {name}_t2[{len(t2)}] = ''{')
+    c(f'\t{", ".join(map(str, t2))}')
+    c('};')
+    items = '\n\t'.join(x.as_c + ',' for x in t3)
+    c(f'static const {name} {name}_t3[{len(t3)}] = ''{')
     c(f'\t{items}')
     c('};')
 
     lname = name.lower()
     g(f'const {lname}_mask = {mask}')
     g(f'const {lname}_shift = {shift}')
-    g(f'var {lname}_t1 = [{len(t1)}]{gotype}''{')
+    g(f'var {lname}_t1 = [{len(t1)}]{gotype_t1}''{')
     g(f'\t{", ".join(map(str, t1))},')
     g('}')
-    items = '\n\t'.join(x.as_go + ',' for x in t2)
-    g(f'var {lname}_t2 = [{len(t2)}]{name}''{')
+    g(f'var {lname}_t2 = [{len(t2)}]{gotype_t2}''{')
+    g(f'\t{", ".join(map(str, t2))},')
+    g('}')
+    items = '\n\t'.join(x.as_go + ',' for x in t3)
+    g(f'var {lname}_t3 = [{len(t3)}]{name}''{')
     g(f'\t{items}')
     g('}')
 
 
 width_shift = 4
 
+
+def bitsize(maxval: int) -> int:  # number of bits needed to store maxval
+    return ceil(log(maxval, 2))
+
+
+def clamped_bitsize(val: int) -> int:
+    if val <= 8:
+        return 8
+    if val <= 16:
+        return 16
+    if val <= 32:
+        return 32
+    if val <= 64:
+        return 64
+    raise ValueError('Too many fields')
+
+
+def bitfield_from_int(
+    fields: dict[str, int], x: int, int_to_str: dict[str, tuple[str, ...]]
+) -> dict[str, str | bool]:
+    # first field is most significant, last field is least significant
+    args: dict[str, str | bool] = {}
+    for f, shift in fields.items():
+        mask = mask_for(shift)
+        val = x & mask
+        if shift == 1:
+            args[f] = bool(val)
+        else:
+            args[f] = int_to_str[f][val]
+        x >>= shift
+    return args
+
+
+def bit_field_as_int(
+    field_name: str, fields: dict[str, int], for_go: bool = False, function_name_suffix: str = '_as_integer',
+) -> str:
+    # first field is most significant, last field is least significant
+    bsz = clamped_bitsize(sum(fields.values()))
+    parts = []
+    total_shift = 0
+    base_type = f'uint{bsz}_t'
+    for f, shift in reversed(fields.items()):
+        parts.append(f'(({base_type})((x).{f}) << {shift})')
+        total_shift += shift
+    expr = ' | '.join(parts)
+    return f'''\
+static inline {base_type} {field_name}{function_name_suffix}({field_name} x) {{
+    return {expr};
+}}
+    '''
+
+
+seg_props_as_int = {'grapheme_break': int_as_grapheme_break, 'indic_conjunct_break': int_as_incb}
+
+
+class GraphemeSegmentationProps(NamedTuple):
+
+    grapheme_break: str = ''  # set at runtime
+    indic_conjunct_break: str = ''  # set at runtime
+    is_extended_pictographic: bool = True
+
+    @classmethod
+    def used_bits(cls) -> int:
+        return sum(int(cls._field_defaults[f]) for f in cls._fields)
+
+    @classmethod
+    def bitsize(cls) -> int:
+        return clamped_bitsize(cls.used_bits())
+
+    @classmethod
+    def fields(cls) -> dict[str, int]:
+        return {f: int(cls._field_defaults[f]) for f in cls._fields}
+
+    @classmethod
+    def from_int(cls, x: int) -> 'GraphemeSegmentationProps':
+        args = bitfield_from_int(cls.fields(), x, seg_props_as_int)
+        return cls(**args)  # type: ignore
+
+    def __int__(self) -> int:
+        gbwidth = int(self._field_defaults['grapheme_break'])
+        incbwidth = int(self._field_defaults['indic_conjunct_break'])
+        return grapheme_break_as_int[self.grapheme_break] | incb_as_int[self.indic_conjunct_break] << gbwidth | int(
+                self.is_extended_pictographic) << (gbwidth + incbwidth)
+
+
+control_grapheme_breaks = 'CR', 'LF', 'Control'
+linker_or_extend = 'Linker', 'Extend'
+
+
+def bitfield_declaration_as_c(name: str, fields: dict[str, int], *alternate_fields: dict[str, int]) -> str:
+    # empty in MSB, then top to bottom with bottom at LSB
+    base_size = clamped_bitsize(sum(fields.values()))
+    base_type = f'uint{base_size}_t'
+    ans = [f'// {name}Declaration: uses {sum(fields.values())} bits {{''{{', f'typedef union {name} {{']
+    def struct(fields: dict[str, int]) -> Iterator[str]:
+        if not fields:
+            return
+        empty = base_size - sum(fields.values())
+        yield '    struct __attribute__((packed)) {'
+        yield '#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__'
+        for f, width in reversed(fields.items()):
+            yield f'        uint{clamped_bitsize(width)}_t {f} : {width};'
+        if empty:
+            yield f'        uint{clamped_bitsize(empty)}_t : {empty};'
+        yield '#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__'
+        if empty:
+            yield f'        uint{clamped_bitsize(empty)}_t : {empty};'
+        for f, width in fields.items():
+            yield f'        uint{clamped_bitsize(width)}_t {f} : {width};'
+        yield '#else'
+        yield '#error "Unsupported endianness"'
+        yield '#endif'
+        yield '    };'
+    ans.extend(struct(fields))
+    for fields in alternate_fields:
+        ans.extend(struct(fields))
+    ans.append(f'    {base_type} val;')
+    ans.append(f'}} {name};')
+    ans.append(f'static_assert(sizeof({name}) == sizeof({base_type}), "Fix the ordering of {name}");')
+    ans.append(f'// End{name}Declaration }}''}}')
+    return '\n'.join(ans)
+
+
+class GraphemeSegmentationState(NamedTuple):
+    grapheme_break: str = ''  # set at runtime
+    # True if the last character ends a sequence of Indic_Conjunct_Break values:  consonant {extend|linker}*
+    incb_consonant_extended: bool = True
+    # True if the last character ends a sequence of Indic_Conjunct_Break values:  consonant {extend|linker}* linker
+    incb_consonant_extended_linker: bool = True
+    # True if the last character ends a sequence of Indic_Conjunct_Break values:  consonant {extend|linker}* linker {extend|linker}*
+    incb_consonant_extended_linker_extended: bool = True
+    # True if the last character ends an emoji modifier sequence \p{Extended_Pictographic} Extend*
+    emoji_modifier_sequence: bool = True
+    # True if the last character was immediately preceded by an emoji modifier sequence   \p{Extended_Pictographic} Extend*
+    emoji_modifier_sequence_before_last_char: bool = True
+
+    @classmethod
+    def make(cls) -> 'GraphemeSegmentationState':
+        return GraphemeSegmentationState('AtStart', False, False, False, False, False)
+
+    @classmethod
+    def fields(cls) -> dict[str, int]:
+        return {f: int(cls._field_defaults[f]) for f in cls._fields}
+
+    @classmethod
+    def from_int(cls, x: int) -> 'GraphemeSegmentationState':
+        args = bitfield_from_int(cls.fields(), x, {'grapheme_break': int_as_grapheme_break})
+        return cls(**args)  # type: ignore
+
+    @classmethod
+    def c_declaration(cls) -> str:
+        return bitfield_declaration_as_c(cls.__name__, cls.fields())
+
+    @classmethod
+    def used_bits(cls) -> int:
+        return sum(int(cls._field_defaults[f]) for f in cls._fields)
+
+    @classmethod
+    def bitsize(cls) -> int:
+        return clamped_bitsize(cls.used_bits())
+
+    def add_to_current_cell(self, p: GraphemeSegmentationProps) -> 'GraphemeSegmentationResult':
+        prev = self.grapheme_break
+        prop = p.grapheme_break
+        incb = p.indic_conjunct_break
+        add_to_cell = False
+        if self.grapheme_break == 'AtStart':
+            add_to_cell = True
+            if prop == 'Regional_Indicator':
+                prop = 'Private_Expecting_RI'
+        else:
+            # No break between CR and LF (GB3).
+            if prev == 'CR' and prop == 'LF':
+                add_to_cell = True
+            # Break before and after controls (GB4, GB5).
+            elif prev in control_grapheme_breaks or prop in control_grapheme_breaks:
+                pass
+            # No break between Hangul syllable sequences (GB6, GB7, GB8).
+            elif (
+                (prev == 'L' and prop in ('L', 'V', 'LV', 'LVT')) or
+                (prev in ('LV', 'V') and prop in ('V', 'T')) or
+                (prev in ('LVT', 'T') and prop == 'T')
+            ):
+                add_to_cell = True
+            # No break before: extending characters or ZWJ (GB9), SpacingMarks (GB9a), Prepend characters (GB9b).
+            elif prop in ('Extend', 'ZWJ', 'SpacingMark') or prev in 'Prepend':
+                add_to_cell = True
+            # No break within certain combinations of Indic_Conjunct_Break values
+            # Between consonant {extend|linker}* linker {extend|linker}* and consonant (GB9c).
+            elif self.incb_consonant_extended_linker_extended and incb == 'Consonant':
+                add_to_cell = True
+            # No break within emoji modifier sequences or emoji zwj sequences (GB11).
+            elif prev == 'ZWJ' and self.emoji_modifier_sequence_before_last_char and p.is_extended_pictographic:
+                add_to_cell = True
+            # No break between RI if there is an odd number of RI characters before (GB12, GB13).
+            elif prop == 'Regional_Indicator':
+                if prev == 'Private_Expecting_RI':
+                    add_to_cell = True
+                else:
+                    prop = 'Private_Expecting_RI'
+            # Break everywhere else GB999
+
+        incb_consonant_extended_linker = self.incb_consonant_extended and incb == 'Linker'
+        incb_consonant_extended_linker_extended = incb_consonant_extended_linker or (
+                self.incb_consonant_extended_linker_extended and incb in linker_or_extend)
+        incb_consonant_extended = incb == 'Consonant' or (
+            self.incb_consonant_extended and incb in linker_or_extend)
+        emoji_modifier_sequence_before_last_char = self.emoji_modifier_sequence
+        emoji_modifier_sequence = (self.emoji_modifier_sequence and prop == 'Extend') or p.is_extended_pictographic
+
+        return GraphemeSegmentationResult(GraphemeSegmentationState(
+            grapheme_break=prop, incb_consonant_extended=incb_consonant_extended,
+            incb_consonant_extended_linker=incb_consonant_extended_linker,
+            incb_consonant_extended_linker_extended=incb_consonant_extended_linker_extended,
+            emoji_modifier_sequence=emoji_modifier_sequence, emoji_modifier_sequence_before_last_char=emoji_modifier_sequence_before_last_char
+        ), add_to_cell)
+
+
+def split_into_graphemes(text: str, props: Sequence[GraphemeSegmentationProps]) -> Iterator[str]:
+    s = GraphemeSegmentationState.make()
+    pos = 0
+    for i, ch in enumerate(text):
+        p = props[ord(ch)]
+        s, add_to_cell = s.add_to_current_cell(p)
+        if not add_to_cell:
+            yield text[pos:i]
+            pos = i
+    if pos < len(text):
+        yield text[pos:]
+
+
+def test_grapheme_segmentation(props: Sequence[GraphemeSegmentationProps]) -> None:
+    for test in grapheme_segmentation_tests:
+        expected = test['data']
+        actual = tuple(split_into_graphemes(''.join(test['data']), props))
+        if expected != actual:
+            def as_codepoints(text: str) -> str:
+                return ' '.join(hex(ord(x))[2:] for x in text)
+            qe = tuple(map(as_codepoints, expected))
+            qa = tuple(map(as_codepoints, actual))
+            raise SystemExit(f'Failed to split graphemes for: {test["comment"]}\n{expected!r} {qe} != {actual!r} {qa}')
+
+
+class GraphemeSegmentationKey(NamedTuple):
+    state: GraphemeSegmentationState
+    char: GraphemeSegmentationProps
+
+    @classmethod
+    def from_int(cls, x: int) -> 'GraphemeSegmentationKey':
+        shift = cls.char.used_bits()
+        mask = mask_for(shift)
+        state = GraphemeSegmentationState.from_int(x >> shift)
+        char = GraphemeSegmentationProps.from_int(x & mask)
+        return GraphemeSegmentationKey(state, char)
+
+    @classmethod
+    def as_int(cls, for_go: bool = False) -> str:
+        lines = []
+        shift = cls.char.used_bits()
+        base_type = f'uint{cls.state.bitsize()}_t'
+        lines.append(f'static inline {base_type} {cls.__name__}(GraphemeSegmentation state, CharProps ch)' '{')
+        lines.append(f'\treturn (state.val << {shift}) | ch.grapheme_segmentation_property;')
+        lines.append('}')
+        return '\n'.join(lines)
+
+
+class GraphemeSegmentationResult(NamedTuple):
+    new_state: GraphemeSegmentationState
+    add_to_current_cell: bool
+
+    @classmethod
+    def used_bits(cls) -> int:
+        return sum(int(cls.new_state._field_defaults[f]) for f in cls.new_state._fields) + 1
+
+    @classmethod
+    def bitsize(cls) -> int:
+        return clamped_bitsize(cls.used_bits())
+
+    @property
+    def as_c(self) -> str:
+        parts = []
+        for f in self.new_state._fields:
+            x = getattr(self.new_state, f)
+            match f:
+                case 'grapheme_break':
+                    x = f'GBP_{x}'
+                case _:
+                    x = int(x)
+            parts.append(f'.{f}={x}')
+        parts.append(f'.add_to_current_cell={self.add_to_current_cell}')
+        return '{' + ', '.join(parts) + '}'
+
+    @classmethod
+    def c_declaration(cls) -> str:
+        base_type = f'uint{cls.bitsize()}_t'
+        leftover = cls.bitsize() - cls.used_bits()
+        bits = sum(int(cls._field_defaults[f]) for f in cls._fields)
+        ans = ['// GraphemeSegmentationResultDeclaration', f'// Uses {bits} bits', 'typedef union GraphemeSegmentationResult {',
+               '    struct {']
+        for f in cls.new_state._fields:
+            ans.append(f'        uint8_t {f} : {int(cls.new_state._field_defaults[f])};')
+        ans.append('        uint8_t add_to_current_cell : 1;')
+        ans.append(f'        uint8_t : {leftover};')
+        ans.append('    };')
+        ans.append(f'    struct {{ uint16_t state : 9; uint16_t : {1 + leftover}; }};')
+        ans.append(f'    {base_type} val;')
+        ans.append('} GraphemeSegmentationResult;')
+        ans.append(f'static_assert(sizeof(GraphemeSegmentationResult) == sizeof({base_type}), "Fix the ordering of GraphemeSegmentationResult");')
+        ans.append('// EndGraphemeSegmentationResultDeclaration')
+        return '\n'.join(ans)
+
+
+
 class CharProps(NamedTuple):
 
     width: int = 3
-    grapheme_break: str = '2'
-    indic_conjunct_break: str = '2'
+    is_emoji: bool = True
+    category: str = ''  # set at runtime
+    is_emoji_presentation_base: bool = True
+
+    # derived properties for fast lookup
     is_invalid: bool = True
-    is_extended_pictographic: bool = True
     is_non_rendered: bool = True
+    is_symbol: bool = True
+    is_combining_char: bool = True
+    is_word_char: bool = True
+    is_punctuation: bool = True
+
+    # needed for grapheme segmentation set as LSB bits for easy conversion to GraphemeSegmentationProps
+    grapheme_break: str = ''  # set at runtime
+    indic_conjunct_break: str = ''  # set at runtime
+    is_extended_pictographic: bool = True
+
+    @classmethod
+    def bitsize(cls) -> int:
+        ans = sum(int(cls._field_defaults[f]) for f in cls._fields)
+        return clamped_bitsize(ans)
 
     @property
     def go_fields(self) -> Iterable[str]:
@@ -731,6 +907,8 @@ class CharProps(NamedTuple):
                     x = f'CharProps(GBP_{x})'
                 case 'indic_conjunct_break':
                     x = f'CharProps(ICB_{x})'
+                case 'category':
+                    x = f'CharProps(UC_{x})'
                 case _:
                     x = int(x)
             bits = int(self._field_defaults[f])
@@ -741,12 +919,34 @@ class CharProps(NamedTuple):
 
     @property
     def as_c(self) -> str:
-        return ('{'
-            f' .shifted_width={self.width + width_shift}, .grapheme_break=GBP_{self.grapheme_break},'
-            f' .indic_conjunct_break=ICB_{self.indic_conjunct_break},'
-            f' .is_invalid={int(self.is_invalid)}, .is_extended_pictographic={int(self.is_extended_pictographic)},'
-            f' .is_non_rendered={int(self.is_non_rendered)},'
-        ' }')
+        parts = []
+        for f in self._fields:
+            x = getattr(self, f)
+            match f:
+                case 'width':
+                    x += width_shift
+                    f = 'shifted_width'
+                case 'grapheme_break':
+                    x = f'GBP_{x}'
+                case 'indic_conjunct_break':
+                    x = f'ICB_{x}'
+                case 'category':
+                    x = f'UC_{x}'
+                case _:
+                    x = int(x)
+            parts.append(f'.{f}={x}')
+        return '{' + ', '.join(parts) + '}'
+
+    @classmethod
+    def fields(cls) -> dict[str, int]:
+        return {'shifted_width' if f == 'width' else f: int(cls._field_defaults[f]) for f in cls._fields}
+
+    @classmethod
+    def c_declaration(cls) -> str:
+        alternate = {
+            'grapheme_segmentation_property': sum(int(cls._field_defaults[f]) for f in GraphemeSegmentationProps._fields)
+        }
+        return bitfield_declaration_as_c(cls.__name__, cls.fields(), alternate)
 
 
 def generate_enum(p: Callable[..., None], gp: Callable[..., None], name: str, *items: str, prefix: str = '') -> None:
@@ -766,10 +966,41 @@ def generate_enum(p: Callable[..., None], gp: Callable[..., None], name: str, *i
     gp('')
 
 
+def category_set(predicate: Callable[[str], bool]) -> set[int]:
+    ans = set()
+    for c, chs in class_maps.items():
+        if predicate(c):
+            ans |= chs
+    return ans
+
+
+def top_level_category(q: str) -> set[int]:
+    return category_set(lambda x: x[0] in q)
+
+
+def patch_declaration(name: str, decl: str, raw: str) -> str:
+    begin = f'// {name}Declaration'
+    end = f'// End{name}Declaration }}''}}'
+    return re.sub(rf'{begin}.+?{end}', decl.rstrip(), raw, flags=re.DOTALL)
+
+
 def gen_char_props() -> None:
-    invalid = class_maps['Cc'] | class_maps['Cs']
+    CharProps._field_defaults['grapheme_break'] = str(bitsize(len(grapheme_segmentation_maps)))
+    CharProps._field_defaults['indic_conjunct_break'] = str(bitsize(len(incb_map)))
+    CharProps._field_defaults['category'] = str(bitsize(len(class_maps) + 1))
+    GraphemeSegmentationProps._field_defaults['grapheme_break'] = CharProps._field_defaults['grapheme_break']
+    GraphemeSegmentationProps._field_defaults['indic_conjunct_break'] = CharProps._field_defaults['indic_conjunct_break']
+    GraphemeSegmentationState._field_defaults['grapheme_break'] = GraphemeSegmentationProps._field_defaults['grapheme_break']
+    invalid = class_maps['Cc'] | class_maps['Cs'] | non_characters
     non_printing = invalid | class_maps['Cf']
+    non_rendered = non_printing | property_maps['Other_Default_Ignorable_Code_Point'] | set(range(0xfe00, 0xfe0f + 1))
+    is_word_char = top_level_category('LN')
+    is_punctuation = top_level_category('P')
     width_map: dict[int, int] = {}
+    cat_map: dict[int, str] = {}
+    for cat, chs in class_maps.items():
+        for ch in chs:
+            cat_map[ch] = cat
     def aw(s: Iterable[int], width: int) -> None:
         nonlocal width_map
         d = dict.fromkeys(s, width)
@@ -794,25 +1025,46 @@ def gen_char_props() -> None:
     prop_array = tuple(
         CharProps(
             width=width_map.get(ch, 1), grapheme_break=gs_map.get(ch, 'None'), indic_conjunct_break=icb_map.get(ch, 'None'),
-            is_invalid=ch in invalid, is_non_rendered=ch in non_printing,
-            is_extended_pictographic=ch in extended_pictographic
+            is_invalid=ch in invalid, is_non_rendered=ch in non_rendered, is_emoji=ch in all_emoji, is_symbol=ch in all_symbols,
+            is_extended_pictographic=ch in extended_pictographic, is_emoji_presentation_base=ch in emoji_presentation_bases,
+            is_combining_char=ch in marks, category=cat_map.get(ch, 'Cn'), is_word_char=ch in is_word_char,
+            is_punctuation=ch in is_punctuation,
         ) for ch in range(sys.maxunicode + 1))
-    t1, t2, shift, mask, bytesz = splitbins(prop_array, 2)
+    gsprops = tuple(GraphemeSegmentationProps(
+        grapheme_break=x.grapheme_break, indic_conjunct_break=x.indic_conjunct_break,
+        is_extended_pictographic=x.is_extended_pictographic) for x in prop_array)
+    test_grapheme_segmentation(gsprops)
+    t1, t2, t3, shift, bytesz = splitbins(prop_array, CharProps.bitsize() // 8)
     print(f'Size of character properties table: {bytesz/1024:.1f}KB')
+
     from .bitfields import make_bitfield
+    buf = StringIO()
+    cen = partial(print, file=buf)
     with create_header('kitty/char-props-data.h', include_data_types=False) as c, open('tools/wcswidth/char-props-data.go', 'w') as gof:
         gp = partial(print, file=gof)
         gp('package wcswidth')
-        generate_enum(c, gp, 'GraphemeBreakProperty', 'AtStart', 'None', *grapheme_segmentation_maps, prefix='GBP_')
-        generate_enum(c, gp, 'IndicConjunctBreak', 'None', *incb_map, prefix='ICB_')
+        generate_enum(c, gp, 'GraphemeBreakProperty', *grapheme_segmentation_maps, prefix='GBP_')
+        generate_enum(c, gp, 'IndicConjunctBreak', *incb_map, prefix='ICB_')
+        cen('// UCBDeclaration')
+        generate_enum(cen, gp, 'UnicodeCategory', 'Cn', *class_maps, prefix='UC_')
+        cen('// EndUCBDeclaration')
         bf = make_bitfield('tools/wcswidth', 'CharProps', *CharProps().go_fields, add_package=False)[1]
         gp(bf)
         gp(f'''
 func (s CharProps) Width() int {{
 	return int(s.Shifted_width()) - {width_shift}
 }}''')
-        gen_multistage_table(c, gp, t1, t2, shift, mask)
+        gen_multistage_table(c, gp, t1, t2, t3, shift)
     gofmt(gof.name)
+    with open('kitty/char-props.h', 'r+') as f:
+        raw = f.read()
+        nraw = re.sub(r'\d+/\*=width_shift\*/', f'{width_shift}/*=width_shift*/', raw)
+        nraw = patch_declaration('CharProps', CharProps.c_declaration(), nraw)
+        nraw = patch_declaration('UCB', buf.getvalue(), nraw)
+        if nraw != raw:
+            f.seek(0)
+            f.truncate()
+            f.write(nraw)
 
 
 def main(args: list[str]=sys.argv) -> None:
@@ -821,9 +1073,7 @@ def main(args: list[str]=sys.argv) -> None:
     parse_emoji()
     parse_eaw()
     parse_grapheme_segmentation()
-    gen_ucd()
-    gen_wcwidth()
-    gen_emoji()
+    parse_test_data()
     gen_names()
     gen_rowcolumn_diacritics()
     gen_test_data()

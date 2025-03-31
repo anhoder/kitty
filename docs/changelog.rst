@@ -94,13 +94,29 @@ consumption to do the same tasks.
 Detailed list of changes
 -------------------------------------
 
-0.41.0 [future]
+0.41.1 [future]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Fix a regression in the previous release that caused rendering of emoji using
+  the VS16 variation selector to fail with some fonts (:iss:`8495`)
+
+- Fix a regression that caused tab bar margins to not be properly blanked when
+  the tab bar is at the bottom (:iss:`8494`)
+
+- Wayland: panel kitten: Fix incorrect initial font size on compositors such as Hyprland
+  that set scale late in the window creation process (:iss:`8496`)
+
+
+0.41.0 [2025-03-29]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - A new mode of operation for :opt:`text_fg_override_threshold` to override
   foreground colors so as to maintain a minimum contrast between foreground and
-  background text colors. Works in a perceptual color for best color accuracy
+  background text colors. Works in a perceptual color space for best color accuracy
   (:pull:`8420`)
+
+- A 15% improvement in throughput when processing text thanks to using a
+  multi-stage table for Unicode property lookups
 
 - :ref:`kitty +open <launch_actions>`: Ask for confirmation by default when running executables
   to work around some badly designed programs that try to open links in
@@ -115,8 +131,12 @@ Detailed list of changes
   line (:iss:`8464`)
 
 - Fix a regression in 0.40.1 that caused copying to clipboard via OSC 52 from
-  applications that dont specify a destination in the escape code not working
+  applications that don't specify a destination in the escape code not working
   (:iss:`8459`)
+
+- Wayland: Fix a regression in the previous release that caused crashes on
+  compositors that don't support the xdg-toplevel-icon protocol and the user has
+  set a custom kitty icon (:iss:`8471`)
 
 0.40.1 [2025-03-18]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

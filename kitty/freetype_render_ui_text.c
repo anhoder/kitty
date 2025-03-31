@@ -9,8 +9,7 @@
 #include <hb.h>
 #include <hb-ft.h>
 #include "charsets.h"
-#include "unicode-data.h"
-#include "wcwidth-std.h"
+#include "char-props.h"
 #include "wcswidth.h"
 #include FT_BITMAP_H
 #define ELLIPSIS 0x2026
@@ -268,7 +267,7 @@ find_fallback_font_for(RenderCtx *ctx, char_type codep, char_type next_codep) {
     FontConfigFace q;
     bool prefer_color = false;
     char_type string[3] = {codep, next_codep, 0};
-    if (wcswidth_string(string) >= 2 && is_emoji_presentation_base(codep)) prefer_color = true;
+    if (wcswidth_string(string) >= 2 && char_props_for(codep).is_emoji_presentation_base) prefer_color = true;
     if (!fallback_font(codep, main_face_family.name, main_face_family.bold, main_face_family.italic, prefer_color, &q)) return NULL;
     ensure_space_for(&main_face, fallbacks, Face, main_face.count + 1, capacity, 8, true);
     Face *ans = main_face.fallbacks + main_face.count;
@@ -409,7 +408,7 @@ static bool
 process_codepoint(RenderCtx *ctx, RenderState *rs, char_type codep, char_type next_codep) {
     bool add_to_current_buffer = false;
     Face *fallback_font = NULL;
-    if (is_combining_char(codep)) {
+    if (char_props_for(codep).is_combining_char) {
         add_to_current_buffer = true;
     } else if (glyph_id_for_codepoint(&main_face, codep) > 0) {
         add_to_current_buffer = rs->current_face == &main_face;

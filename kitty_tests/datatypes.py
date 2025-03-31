@@ -11,6 +11,7 @@ from kitty.fast_data_types import (
     Color,
     HistoryBuf,
     LineBuf,
+    char_props_for,
     expand_ansi_c_escapes,
     parse_input_from_terminal,
     replace_c0_codes_except_nl_space_tab,
@@ -636,6 +637,7 @@ class TestDataTypes(BaseTest):
             self.ae(expected, actual, f'Failed for text: {q!r}')
 
     def test_split_into_graphemes(self):
+        self.assertEqual(char_props_for('\ue000')['category'], 'Co')
         for i, test in enumerate(json.loads(read_kitty_resource('GraphemeBreakTest.json', __name__.rpartition('.')[0]))):
             expected = test['data']
             actual = split_into_graphemes(''.join(expected))
