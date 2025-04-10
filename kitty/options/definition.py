@@ -271,14 +271,14 @@ Useful when working with applications that use colors that do not contrast
 well with your preferred color scheme. The default value is :code:`0`, which means no color overriding is performed.
 There are two modes of operation:
 
-A value with the suffix :code:` ratio` represents the minimum accepted contrast ratio between the foreground and background color.
+A value with the suffix :code:`ratio` represents the minimum accepted contrast ratio between the foreground and background color.
 Possible values range from :code:`0.0 ratio` to :code:`21.0 ratio`.
 For example, to meet :link:`WCAG level AA <https://en.wikipedia.org/wiki/Web_Content_Accessibility_Guidelines>`
 a value of :code:`4.5 ratio` can be provided.
 The algorithm is implemented using :link:`HSLuv <https://www.hsluv.org/>` which enables it to change
 the perceived lightness of a color just as much as needed without really changing its hue and saturation.
 
-A value with the suffix :code:` %` represents the minimum accepted difference in luminance
+A value with the suffix :code:`%` represents the minimum accepted difference in luminance
 between the foreground and background color, below which kitty will override the foreground color.
 It is percentage ranging from :code:`0 %` to :code:`100 %`. If the difference in luminance of the
 foreground and background is below this threshold, the foreground color will be set
@@ -511,13 +511,50 @@ agr('mouse', 'Mouse')
 
 opt('mouse_hide_wait', '3.0',
     macos_default='0.0',
-    option_type='float', ctype='time',
+    option_type='mouse_hide_wait', ctype='!mouse_hide_wait',
     long_text='''
 Hide mouse cursor after the specified number of seconds of the mouse not being
 used. Set to zero to disable mouse cursor hiding. Set to a negative value to
 hide the mouse cursor immediately when typing text. Disabled by default on macOS
 as getting it to work robustly with the ever-changing sea of bugs that is Cocoa
 is too much effort.
+
+By default, once the cursor is hidden, it is immediately unhidden on any
+further mouse events.
+
+Two formats are supported:
+ - :code:`<hide-wait>`
+ - :code:`<hide-wait> <unhide-wait> <unhide-threshold> <scroll-unhide>`
+
+To change the unhide behavior, the optional parameters :code:`<unhide-wait>`,
+:code:`<unhide-threshold>`, and :code:`<scroll-unhide>` may be set.
+
+:code:`<unhide-wait>`
+    Waits for the specified number of seconds after mouse events before unhiding the
+    mouse cursor. Set to zero to unhide mouse cursor immediately on mouse activity.
+    This is useful to prevent the mouse cursor from unhiding on accidental swipes on
+    the trackpad.
+
+:code:`<unhide-threshold>`
+    Sets the threshold of mouse activity required to unhide the mouse cursor, when
+    the <unhide-wait> option is non-zero. When <unhide-wait> is zero, this has no
+    effect.
+
+    For example, if :code:`<unhide-threshold>` is 40 and :code:`<unhide-wait>` is 2.5, when kitty
+    detects a mouse event, it records the number of mouse events in the next 2.5
+    seconds, and checks if that exceeds 40 * 2.5 = 100. If it does, then the mouse
+    cursor is unhidden, otherwise nothing happens.
+
+:code:`<scroll-unhide>`
+    Controls what mouse events may unhide the mouse cursor. If enabled, both scroll
+    and movement events may unhide the cursor. If disabled, only mouse movements can
+    unhide the cursor.
+
+Examples of valid values:
+ - :code:`0.0`
+ - :code:`1.0`
+ - :code:`-1.0`
+ - :code:`0.1 3.0 40 yes`
 '''
     )
 

@@ -2,21 +2,23 @@ module kitty
 
 go 1.23.0
 
+toolchain go1.24.1
+
 require (
 	github.com/ALTree/bigfloat v0.2.0
-	github.com/alecthomas/chroma/v2 v2.15.0
+	github.com/alecthomas/chroma/v2 v2.16.0
 	github.com/bmatcuk/doublestar/v4 v4.8.1
 	github.com/dlclark/regexp2 v1.11.5
 	github.com/edwvee/exiffix v0.0.0-20240229113213-0dbb146775be
 	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/kovidgoyal/imaging v1.6.4
-	github.com/seancfoley/ipaddress-go v1.7.0
+	github.com/seancfoley/ipaddress-go v1.7.1
 	github.com/shirou/gopsutil/v3 v3.24.5
 	github.com/zeebo/xxh3 v1.0.2
 	golang.org/x/exp v0.0.0-20230801115018-d63ba01acd4b
-	golang.org/x/image v0.25.0
-	golang.org/x/sys v0.31.0
+	golang.org/x/image v0.26.0
+	golang.org/x/sys v0.32.0
 	howett.net/plist v1.0.1
 )
 

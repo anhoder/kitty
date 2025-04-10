@@ -270,10 +270,42 @@ is_selection_empty(const Selection *s) {
     return s->start.x == s->end.x && s->start.in_left_half_of_cell == s->end.in_left_half_of_cell && start_y == end_y;
 }
 
+static bool
+selection_intersects_screen_lines(const Selections *selections, int a, int b) {
+    if (a > b) SWAP(a, b);
+    for (size_t i = 0; i < selections->count; i++) {
+        const Selection *s = selections->items + i;
+        if (!is_selection_empty(s)) {
+            int start = (int)s->start.y - s->start_scrolled_by;
+            int end = (int)s->end.y - s->end_scrolled_by;
+            int top = MIN(start, end);
+            int bottom = MAX(start, end);
+            if ((top <= a && bottom >= a) || (top >= a && top <= b)) return true;
+        }
+    }
+    return false;
+}
+
+
 static void
-index_selection(const Screen *self, Selections *selections, bool up) {
+index_selection(const Screen *self, Selections *selections, bool up, index_type top, index_type bottom) {
+    const bool needs_special_handling = self->linebuf == self->alt_linebuf && (top > 0 || bottom < self->lines - 1);
     for (size_t i = 0; i < selections->count; i++) {
         Selection *s = selections->items + i;
+        if (needs_special_handling) {
+            if (is_selection_empty(s)) continue;
+            int start = (int)s->start.y - s->start_scrolled_by;
+            int end = (int)s->end.y - s->end_scrolled_by;
+            int stop = MIN(start, end);
+            int sbottom = MAX(start, end);
+            if (stop < (int)top) {
+                if (sbottom < (int)top) continue;
+                clear_selection(selections); return;
+            } else {
+                if (stop > (int)bottom) continue;
+                if (sbottom > (int)bottom) { clear_selection(selections); return; }
+            }
+        }
         if (up) {
             if (s->start.y == 0) s->start_scrolled_by += 1;
             else {
@@ -319,7 +351,9 @@ index_selection(const Screen *self, Selections *selections, bool up) {
     } \
     INDEX_GRAPHICS(1) \
     self->is_dirty = true; \
-    index_selection(self, &self->selections, false);
+    index_selection(self, &self->selections, false, top, bottom); \
+    clear_selection(&self->url_ranges);
+
 
 static void
 nuke_in_line(CPUCell *cp, GPUCell *gp, index_type start, index_type x_limit, char_type ch) {
@@ -671,23 +705,6 @@ selection_has_screen_line(const Selections *selections, const int y) {
     }
     return false;
 }
-
-static bool
-selection_intersects_screen_lines(const Selections *selections, int a, int b) {
-    if (a > b) SWAP(a, b);
-    for (size_t i = 0; i < selections->count; i++) {
-        const Selection *s = selections->items + i;
-        if (!is_selection_empty(s)) {
-            int start = (int)s->start.y - s->start_scrolled_by;
-            int end = (int)s->end.y - s->end_scrolled_by;
-            int top = MIN(start, end);
-            int bottom = MAX(start, end);
-            if ((top <= a && bottom >= a) || (top >= a && top <= b)) return true;
-        }
-    }
-    return false;
-}
-
 
 static void
 clear_intersecting_selections(Screen *self, index_type y) {
@@ -1996,7 +2013,8 @@ screen_cursor_to_column(Screen *self, unsigned int column) {
     } \
     linebuf_clear_line(self->linebuf, bottom, true); \
     self->is_dirty = true; \
-    index_selection(self, &self->selections, true);
+    index_selection(self, &self->selections, true, top, bottom); \
+    clear_selection(&self->url_ranges);
 
 void
 screen_index(Screen *self) {
@@ -2976,7 +2994,9 @@ screen_request_capabilities(Screen *self, char c, const char *query) {
                 shape = snprintf(buf, sizeof(buf), "1$r%d q", shape);
             } else if (strcmp("m", query) == 0) {
                 // SGR
-                shape = snprintf(buf, sizeof(buf), "1$r%sm", cursor_as_sgr(self->cursor));
+                const char *s = cursor_as_sgr(self->cursor);
+                if (s && s[0]) shape = snprintf(buf, sizeof(buf), "1$r0;%sm", s);
+                else shape = snprintf(buf, sizeof(buf), "1$rm");
             } else if (strcmp("r", query) == 0) { // DECSTBM
                 shape = snprintf(buf, sizeof(buf), "1$r%u;%ur", self->margin_top + 1, self->margin_bottom + 1);
             } else if (strcmp("*x", query) == 0) { // DECSACE

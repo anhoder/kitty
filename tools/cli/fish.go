@@ -4,6 +4,7 @@ package cli
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"kitty/tools/cli/markup"
@@ -31,6 +32,7 @@ func fish_completion_script(commands []string) (string, error) {
 end
 
 `)
+	slices.Sort(commands)
 	for _, cmd := range commands {
 		if all_commands[cmd] {
 			fmt.Fprintf(&script, "complete -f -c %s -a \"(__ksi_completions)\"\n", cmd)

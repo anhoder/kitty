@@ -94,17 +94,27 @@ consumption to do the same tasks.
 Detailed list of changes
 -------------------------------------
 
-0.41.1 [future]
+0.42.0 [future]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Allow configuring the mouse unhide behavior when using :opt:`mouse_hide_wait` (:pull:`8508`)
+
+- diff kitten: Add half page and full page scroll vim-like bindings (:pull:`8514`)
+
+0.41.1 [2025-04-03]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - Fix a regression in the previous release that caused rendering of emoji using
   the VS16 variation selector to fail with some fonts (:iss:`8495`)
 
-- Fix a regression that caused tab bar margins to not be properly blanked when
+- Fix a regression in 0.40.0 that caused tab bar margins to not be properly blanked when
   the tab bar is at the bottom (:iss:`8494`)
 
 - Wayland: panel kitten: Fix incorrect initial font size on compositors such as Hyprland
   that set scale late in the window creation process (:iss:`8496`)
+
+- Fix a regression in 0.40.1 that caused hyperlink underline on hover to remain
+  on screen when the screen is scrolled
 
 
 0.41.0 [2025-03-29]
