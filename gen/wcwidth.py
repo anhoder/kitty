@@ -334,6 +334,14 @@ def parse_test_data() -> None:
                     chars[-1].append(ch)
         c = tuple(''.join(c) for c in chars)
         grapheme_segmentation_tests.append({'data': c, 'comment': comment.strip()})
+    grapheme_segmentation_tests.append({
+        'data': (' ', '\xad', ' '),
+        'comment': '÷ [0.2] SPACE (Other) ÷ [0.4] SOFT HYPHEN ÷ [999.0] SPACE (Other) ÷ [0.3]'
+    })
+    grapheme_segmentation_tests.append({
+        'data': ('\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466',),
+        'comment': '÷ [0.2] MAN × [9.0] ZERO WIDTH JOINER × [11.0] WOMAN × [9.0] ZERO WIDTH JOINER × [11.0] GIRL × [9.0] ZERO WIDTH JOINER × [11.0] BOY ÷ [0.3]'
+    })
 # }}}
 
 
@@ -1164,6 +1172,7 @@ def gen_char_props() -> None:
         is_extended_pictographic=x.is_extended_pictographic) for x in prop_array)
     test_grapheme_segmentation(partial(split_into_graphemes, gsprops))
     gseg_results = tuple(GraphemeSegmentationKey.from_int(i).result() for i in range(1 << 16))
+
     test_grapheme_segmentation(partial(split_into_graphemes_with_table, gsprops, gseg_results))
     t1, t2, t3, t_shift = splitbins(prop_array, CharProps.bitsize() // 8)
     g1, g2, g3, g_shift = splitbins(gseg_results, GraphemeSegmentationResult.bitsize() // 8)
@@ -1177,10 +1186,10 @@ def gen_char_props() -> None:
         gp('import "unsafe"')
         gp(f'const MAX_UNICODE = {sys.maxunicode}')
         gp(f'const UNICODE_LIMIT = {sys.maxunicode + 1}')
-        generate_enum(c, gp, 'GraphemeBreakProperty', *grapheme_segmentation_maps, prefix='GBP_')
-        generate_enum(c, gp, 'IndicConjunctBreak', *incb_map, prefix='ICB_')
         cen('// UCBDeclaration {{''{')
         cen(f'#define MAX_UNICODE ({sys.maxunicode}u)')
+        generate_enum(cen, gp, 'GraphemeBreakProperty', *grapheme_segmentation_maps, prefix='GBP_')
+        generate_enum(c, gp, 'IndicConjunctBreak', *incb_map, prefix='ICB_')
         generate_enum(cen, gp, 'UnicodeCategory', 'Cn', *class_maps, prefix='UC_')
         cen('// EndUCBDeclaration }}''}')
         gp(make_bitfield('tools/wcswidth', 'CharProps', *CharProps.go_fields(), add_package=False)[1])

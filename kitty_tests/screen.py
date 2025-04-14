@@ -71,6 +71,16 @@ class TestScreen(BaseTest):
         self.ae(s.cursor.x, 5), self.ae(s.cursor.y, 2)
         s.draw('c' * 15)
         self.ae(str(s.line(0)), 'ニチ')
+        s.reset()
+        qt = 'a' * s.columns + '\u0306'
+        s.draw(qt)
+        self.ae(str(s.line(0)), qt)
+        s.reset()
+        s.draw(qt[:-1]), s.draw(qt[-1])
+        self.ae(str(s.line(0)), qt)
+        s.reset()
+        s.draw(qt[:-1]), s.linefeed(), s.carriage_return(), s.draw(qt[-1])
+        self.ae(str(s.line(0)), qt[:-1])
 
         # Now test without line-wrap
         s.reset(), s.reset_dirty()
@@ -84,8 +94,10 @@ class TestScreen(BaseTest):
 
         # Now test in insert mode
         s.reset(), s.reset_dirty()
+        text = '1\u03062345'
         s.set_mode(IRM)
-        s.draw('1\u03062345' * 5)
+        s.draw(text * 5)
+        self.ae(str(s.line(0)), text)
         s.cursor_back(5)
         self.ae(s.cursor.x, 0), self.ae(s.cursor.y, 4)
         s.reset_dirty()
@@ -127,9 +139,9 @@ class TestScreen(BaseTest):
         q = '\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466'
         s.draw(q)
         self.ae(q, str(s.line(0)))
-        self.ae(s.cursor.x, 8)
+        self.ae(s.cursor.x, 2)
         for x in '\u200b\u200c\u200d':
-            s = self.create_screen()
+            s.reset()
             q = f'X{x}Y'
             s.draw(q)
             self.ae(q, str(s.line(0)))
