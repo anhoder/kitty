@@ -3,17 +3,24 @@
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 
-from kitty.constants import read_kitty_resource
+from kitty.constants import is_macos, kitty_exe, read_kitty_resource
 from kitty.fast_data_types import (
     Color,
     HistoryBuf,
     LineBuf,
+    abspath,
     char_props_for,
     expand_ansi_c_escapes,
+    expanduser,
+    get_config_dir,
+    makedirs,
     parse_input_from_terminal,
+    read_file,
     replace_c0_codes_except_nl_space_tab,
     split_into_graphemes,
     strip_csi,
@@ -23,7 +30,7 @@ from kitty.fast_data_types import (
 )
 from kitty.fast_data_types import Cursor as C
 from kitty.rgb import to_color
-from kitty.utils import is_ok_to_read_image_file, is_path_in_temp_dir, sanitize_title, sanitize_url_for_dispay_to_user, shlex_split_with_positions
+from kitty.utils import is_ok_to_read_image_file, is_path_in_temp_dir, sanitize_title, sanitize_url_for_dispay_to_user, shlex_split, shlex_split_with_positions
 
 from . import BaseTest, filled_cursor, filled_history_buf, filled_line_buf
 
@@ -461,6 +468,70 @@ class TestDataTypes(BaseTest):
                 self.assertTrue(is_ok_to_read_image_file(tf.name, tf.fileno()), fifo)
         self.ae(sanitize_url_for_dispay_to_user(
             'h://a\u0430b.com/El%20Ni%C3%B1o/'), 'h://xn--ab-7kc.com/El Niño/')
+        for x in ('~', '~/', '', '~root', '~root/~', '/~', '/a/b/', '~xx/a', '~~'):
+           self.assertEqual(os.path.expanduser(x), expanduser(x), x)
+        for x in (
+            '/', '', '/a', '/ab', '/ab/', '/ab/c', 'a', 'ab', 'ab/', 'ab///c', 'ab/././..', '.', '..', '../', './', '../..', '../.',
+            '/a/../..', '/a/../../', '/a/..', '/ab/../../../cd/.', '///',
+        ):
+           self.assertEqual(os.path.abspath(x), abspath(x), repr(x))
+        self.assertEqual('/', abspath('//'))
+        with tempfile.TemporaryDirectory() as tdir:
+            for x, ex in {
+                'a': None, 'a/b/c': None, 'a/..': None, 'a/../a': None,
+                'a/f': NotADirectoryError, 'a/f/d': NotADirectoryError, 'a/b/c/f/g': NotADirectoryError,
+            }.items():
+                q = os.path.join(tdir, x)
+                if ex is None:
+                    makedirs(q)
+                    open(os.path.join(q, 'f'), 'wb').close()
+                else:
+                    with self.assertRaises(ex, msg=x):
+                        makedirs(q)
+        saved = {x: os.environ.get(x) for x in 'KITTY_CONFIG_DIRECTORY XDG_CONFIG_DIRS XDG_CONFIG_HOME'.split()}
+        try:
+            dot_config = os.path.expanduser('~/.config')
+            if os.path.exists(dot_config):
+                shutil.rmtree(dot_config)
+            with tempfile.TemporaryDirectory() as tdir:
+                with open(tdir + '/macos-launch-services-cmdline', 'w') as f:
+                    print('kitty +runpy "import sys; print(sys.argv[-1])"', file=f)
+                    print('next-line', file=f)
+                    print()
+                if is_macos:
+                    env = os.environ.copy()
+                    env['KITTY_CONFIG_DIRECTORY'] = tdir
+                    env['KITTY_LAUNCHED_BY_LAUNCH_SERVICES'] = '1'
+                    actual = subprocess.check_output([kitty_exe(), '+runpy', 'import json, sys; print(json.dumps(sys.argv))'], env=env).strip().decode()
+                    self.ae('next-line', actual)
+                os.makedirs(tdir + '/good/kitty')
+                open(tdir + '/good/kitty/kitty.conf', 'w').close()
+                data = os.urandom(32879)
+                with open(tdir + '/f', 'wb') as f:
+                    f.write(data)
+                self.ae(data, read_file(f.name))
+                for x in (
+                    (f'KITTY_CONFIG_DIRECTORY={tdir}', f'{tdir}'),
+                    (f'XDG_CONFIG_HOME={tdir}/good', f'{tdir}/good/kitty'),
+                    (f'XDG_CONFIG_DIRS={tdir}:{tdir}/good', f'{tdir}/good/kitty'),
+                    (f'XDG_CONFIG_DIRS={tdir}:{tdir}/bad:{tdir}/f', f'{dot_config}/kitty'),
+                    (f'{dot_config}/kitty',),
+                ):
+                    for k in saved:
+                        os.environ.pop(k, None)
+                    for e in x[:-1]:
+                        k, v = e.partition('=')[::2]
+                        os.environ[k] = v
+                    self.assertEqual(x[-1], get_config_dir(), str(x))
+        finally:
+            if os.path.exists(dot_config):
+                shutil.rmtree(dot_config)
+            for k in saved:
+                os.environ.pop(k, None)
+                if saved[k] is not None:
+                    os.environ[k] = saved[k]
+
+
 
     def test_historybuf(self):
         lb = filled_line_buf()
@@ -608,15 +679,30 @@ class TestDataTypes(BaseTest):
         ):
             with self.assertRaises(ValueError, msg=f'Failed to raise exception for {bad!r}'):
                 tuple(shlex_split_with_positions(bad))
+            with self.assertRaises(ValueError, msg=f'Failed to raise exception for {bad!r}'):
+                tuple(shlex_split(bad))
 
         for q, expected in {
+            'a""': ((0, 'a'),),
+            'a""b': ((0, 'ab'),),
+            '-1 "" 2': ((0, '-1'), (3, ''), (6, '2')),
+            "-1 '' 2": ((0, '-1'), (3, ''), (6, '2')),
+            'a ""': ((0, 'a'), (2, '')),
+            '""': ((0, ''),),
             '"ab"': ((0, 'ab'),),
             r'x "ab"y \m': ((0, 'x'), (2, 'aby'), (8, 'm')),
             r'''x'y"\z'1''': ((0, 'xy"\\z1'),),
             r'\abc\ d': ((0, 'abc d'),),
             '': ((0, ''),), '   ': ((0, ''),), ' \tabc\n\t\r ': ((2, 'abc'),),
             "$'ab'": ((0, '$ab'),),
+            '😀': ((0, '😀'),),
+            '"a😀"': ((0, 'a😀'),),
+            '😀 a': ((0, '😀'), (2, 'a')),
+            ' \t😀a': ((2, '😀a'),),
         }.items():
+            ex = tuple(x[1] for x in expected)
+            actual = tuple(shlex_split(q))
+            self.ae(ex, actual, f'Failed for text: {q!r}')
             actual = tuple(shlex_split_with_positions(q))
             self.ae(expected, actual, f'Failed for text: {q!r}')
 
@@ -636,6 +722,9 @@ class TestDataTypes(BaseTest):
         }.items():
             actual = tuple(shlex_split_with_positions(q, True))
             self.ae(expected, actual, f'Failed for text: {q!r}')
+            actual = tuple(shlex_split(q, True))
+            ex = tuple(x[1] for x in expected)
+            self.ae(ex, actual, f'Failed for text: {q!r}')
 
     def test_split_into_graphemes(self):
         self.assertEqual(char_props_for('\ue000')['category'], 'Co')

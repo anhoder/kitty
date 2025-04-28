@@ -16,12 +16,8 @@
 #else
 #include <limits.h>
 #endif
-#include <stdbool.h>
-#include <stdint.h>
-#include <string.h>
-#include <wchar.h>
-#include <fcntl.h>
 #include "launcher.h"
+#include "utils.h"
 
 #ifndef KITTY_LIB_PATH
 #define KITTY_LIB_PATH "../.."
@@ -39,15 +35,16 @@ static bool
 safe_realpath(const char* src, char *buf, size_t buf_sz) {
     RAII_ALLOC(char, ans, realpath(src, NULL));
     if (ans == NULL) return false;
-    snprintf(buf, buf_sz, "%s", ans);
+    safe_snprintf(buf, buf_sz, "%s", ans);
     return true;
 }
 #endif
 
 typedef struct {
-    const char *exe, *exe_dir, *lc_ctype, *lib_dir;
+    const char *exe, *exe_dir, *lc_ctype, *lib_dir, *config_dir;
     char **argv;
     int argc;
+    bool launched_by_launch_services, is_quick_access_terminal;
 } RunData;
 
 static bool
@@ -70,6 +67,23 @@ set_kitty_run_data(RunData *run_data, bool from_source, wchar_t *extensions_dir)
         PyObject *ed = PyUnicode_FromWideChar(extensions_dir, -1);
         S(extensions_dir, ed);
     }
+    PyObject *lbls = run_data->launched_by_launch_services ? Py_True : Py_False;
+    Py_INCREF(lbls);
+    S(launched_by_launch_services, lbls);
+    lbls = run_data->is_quick_access_terminal ? Py_True : Py_False;
+    Py_INCREF(lbls);
+    S(is_quick_access_terminal_app, lbls);
+
+    char buf[PATH_MAX + 1];
+    if (run_data->config_dir == NULL) {
+        if (get_config_dir(buf, sizeof(buf))) run_data->config_dir = buf;
+    }
+    if (run_data->config_dir) {
+        PyObject *cdir = PyUnicode_DecodeFSDefaultAndSize(run_data->config_dir, strlen(run_data->config_dir));
+        if (!cdir) { PyErr_Print(); return false; }
+        S(config_dir, cdir);
+    }
+
 #undef S
     int ret = PySys_SetObject("kitty_run_data", ans);
     Py_CLEAR(ans);
@@ -81,67 +95,13 @@ set_kitty_run_data(RunData *run_data, bool from_source, wchar_t *extensions_dir)
 #ifdef FOR_BUNDLE
 #include <bypy-freeze.h>
 
-static bool
-canonicalize_path(const char *srcpath, char *dstpath, size_t sz) {
-    // remove . and .. path segments
-    bool ok = false;
-    size_t plen = strlen(srcpath) + 1, chk;
-    RAII_ALLOC(char, wtmp, malloc(plen));
-    RAII_ALLOC(char*, tokv, malloc(sizeof(char*) * plen));
-    if (!wtmp || !tokv) goto end;
-    char *s, *tok, *sav;
-    bool relpath = *srcpath != '/';
-
-    // use a buffer as strtok modifies its input
-    memcpy(wtmp, srcpath, plen);
-
-    tok = strtok_r(wtmp, "/", &sav);
-    int ti = 0;
-    while (tok != NULL) {
-        if (strcmp(tok, "..") == 0) {
-            if (ti > 0) ti--;
-        } else if (strcmp(tok, ".") != 0) {
-            tokv[ti++] = tok;
-        }
-        tok = strtok_r(NULL, "/", &sav);
-    }
-
-    chk = 0;
-    s = dstpath;
-    for (int i = 0; i < ti; i++) {
-        size_t token_sz = strlen(tokv[i]);
-
-        if (i > 0 || !relpath) {
-            if (++chk >= sz) goto end;
-            *s++ = '/';
-        }
-
-        chk += token_sz;
-        if (chk >= sz) goto end;
-
-        memcpy(s, tokv[i], token_sz);
-        s += token_sz;
-    }
-
-    if (s == dstpath) {
-        if (++chk >= sz) goto end;
-        *s++ = relpath ? '.' : '/';
-    }
-    *s = '\0';
-    ok = true;
-
-end:
-    return ok;
-}
-
-static bool
+static void
 canonicalize_path_wide(const char *srcpath, wchar_t *dest, size_t sz) {
     char buf[sz + 1];
-    bool ret = canonicalize_path(srcpath, buf, sz);
+    lexical_absolute_path(srcpath, buf, sz);
     buf[sz] = 0;
     mbstowcs(dest, buf, sz - 1);
     dest[sz-1] = 0;
-    return ret;
 }
 
 static int
@@ -153,18 +113,12 @@ run_embedded(RunData *run_data) {
 #else
     const char *python_relpath = "../" KITTY_LIB_DIR_NAME;
 #endif
-    int num = snprintf(extensions_dir_full, PATH_MAX, "%s/%s/kitty-extensions", run_data->exe_dir, python_relpath);
-    if (num < 0 || num >= PATH_MAX) { fprintf(stderr, "Failed to create path to extensions_dir: %s/%s\n", run_data->exe_dir, python_relpath); return 1; }
-    wchar_t extensions_dir[num+2];
-    if (!canonicalize_path_wide(extensions_dir_full, extensions_dir, num+1)) {
-        fprintf(stderr, "Failed to canonicalize the path: %s\n", extensions_dir_full); return 1; }
-
-    num = snprintf(python_home_full, PATH_MAX, "%s/%s/python%s", run_data->exe_dir, python_relpath, PYVER);
-    if (num < 0 || num >= PATH_MAX) { fprintf(stderr, "Failed to create path to python home: %s/%s\n", run_data->exe_dir, python_relpath); return 1; }
-    wchar_t python_home[num+2];
-    if (!canonicalize_path_wide(python_home_full, python_home, num+1)) {
-        fprintf(stderr, "Failed to canonicalize the path: %s\n", python_home_full); return 1; }
-
+    safe_snprintf(extensions_dir_full, PATH_MAX, "%s/%s/kitty-extensions", run_data->exe_dir, python_relpath);
+    wchar_t extensions_dir[PATH_MAX];
+    canonicalize_path_wide(extensions_dir_full, extensions_dir, PATH_MAX);
+    safe_snprintf(python_home_full, PATH_MAX, "%s/%s/python%s", run_data->exe_dir, python_relpath, PYVER);
+    wchar_t python_home[PATH_MAX];
+    canonicalize_path_wide(python_home_full, python_home, PATH_MAX);
     bypy_initialize_interpreter(
             L"kitty", python_home, L"kitty_main", extensions_dir, run_data->argc, run_data->argv);
     if (!set_kitty_run_data(run_data, false, extensions_dir)) return 1;
@@ -203,7 +157,7 @@ run_embedded(RunData *run_data) {
 #ifdef SET_PYTHON_HOME
 #ifndef __APPLE__
     char pyhome[256];
-    snprintf(pyhome, sizeof(pyhome), "%s/%s", run_data->lib_dir, SET_PYTHON_HOME);
+    safe_snprintf(pyhome, sizeof(pyhome), "%s/%s", run_data->lib_dir, SET_PYTHON_HOME);
     status = PyConfig_SetBytesString(&config, &config.home, pyhome);
     if (PyStatus_Exception(status)) goto fail;
 #endif
@@ -268,7 +222,7 @@ read_exe_path(char *exe, size_t buf_sz) {
     char *token = strtok(buf, ":");
     while (token != NULL) {
         char q[PATH_MAX + 1] = {0};
-        snprintf(q, PATH_MAX, "%s/kitty", token);
+        safe_snprintf(q, PATH_MAX, "%s/kitty", token);
         if (safe_realpath(q, exe, buf_sz)) return true;
         token = strtok(NULL, ":");
     }
@@ -334,14 +288,14 @@ ensure_working_stdio(void) {
 static bool
 is_wrapped_kitten(const char *arg) {
     char buf[64];
-    snprintf(buf, sizeof(buf)-1, " %s ", arg);
+    safe_snprintf(buf, sizeof(buf)-1, " %s ", arg);
     return strstr(" " WRAPPED_KITTENS " ", buf);
 }
 
 static void
 exec_kitten(int argc, char *argv[], char *exe_dir) {
     char exe[PATH_MAX+1] = {0};
-    snprintf(exe, PATH_MAX, "%s/kitten", exe_dir);
+    safe_snprintf(exe, PATH_MAX, "%s/kitten", exe_dir);
     char **newargv = malloc(sizeof(char*) * (argc + 1));
     memcpy(newargv, argv, sizeof(char*) * argc);
     newargv[argc] = 0;
@@ -352,23 +306,16 @@ exec_kitten(int argc, char *argv[], char *exe_dir) {
     exit(1);
 }
 
-static void
-delegate_to_kitten_if_possible(int argc, char *argv[], char* exe_dir) {
-    if (argc > 1 && argv[1][0] == '@') exec_kitten(argc, argv, exe_dir);
-    if (argc > 2 && strcmp(argv[1], "+kitten") == 0 && is_wrapped_kitten(argv[2])) exec_kitten(argc - 1, argv + 1, exe_dir);
-    if (argc > 3 && strcmp(argv[1], "+") == 0 && strcmp(argv[2], "kitten") == 0 && is_wrapped_kitten(argv[3])) exec_kitten(argc - 2, argv + 2, exe_dir);
-}
-
 static bool
 is_boolean_flag(const char *x) {
     static const char *all_boolean_options = KITTY_CLI_BOOL_OPTIONS;
     char buf[128];
-    snprintf(buf, sizeof(buf), " %s ", x);
+    safe_snprintf(buf, sizeof(buf), " %s ", x);
     return strstr(all_boolean_options, buf) != NULL;
 }
 
 static void
-handle_fast_commandline(int argc, char *argv[]) {
+handle_fast_commandline(int argc, char *argv[], const char *instance_group_prefix) {
     char current_option_expecting_argument[128] = {0};
     CLIOptions opts = {0};
     int first_arg = 1;
@@ -385,6 +332,8 @@ handle_option_value:
                 opts.session = arg;
             } else if (strcmp(current_option_expecting_argument, "instance-group") == 0) {
                 opts.instance_group = arg;
+            } else if (strcmp(current_option_expecting_argument, "detached-log") == 0) {
+                opts.detached_log = arg;
             }
             current_option_expecting_argument[0] = 0;
         } else {
@@ -397,27 +346,38 @@ handle_option_value:
             }
             if (arg[1] == '-') {  // long opt
                 const char *equal = strchr(arg, '=');
+                const char *q = arg + 2;
                 if (equal == NULL) {
-                    if (strcmp(arg+2, "version") == 0) {
+                    if (strcmp(q, "version") == 0) {
                         opts.version_requested = true;
-                    } else if (strcmp(arg+2, "single-instance") == 0) {
+                    } else if (strcmp(q, "single-instance") == 0) {
                         opts.single_instance = true;
-                    } else if (strcmp(arg+2, "wait-for-single-instance-window-close") == 0) {
+                    } else if (strcmp(q, "wait-for-single-instance-window-close") == 0) {
                         opts.wait_for_single_instance_window_close = true;
+                    } else if (strcmp(q, "detach") == 0) {
+                        opts.detach = true;
+                    } else if (strcmp(q, "help") == 0) {
+                        return;
                     } else if (!is_boolean_flag(arg+2)) {
-                        strncpy(current_option_expecting_argument, arg+2, sizeof(current_option_expecting_argument)-1);
+                        strncpy(current_option_expecting_argument, q, sizeof(current_option_expecting_argument)-1);
                     }
                 } else {
-                    memcpy(current_option_expecting_argument, arg+2, equal - (arg + 2));
+                    memcpy(current_option_expecting_argument, q, equal - q);
+                    current_option_expecting_argument[equal - q] = 0;
                     arg = equal + 1;
                     goto handle_option_value;
                 }
             } else {
                 char buf[2] = {0};
+                current_option_expecting_argument[0] = 0;
                 for (int i = 1; arg[i] != 0; i++) {
                     switch(arg[i]) {
+                        case '=':
+                            arg = arg + i + 1;
+                            goto handle_option_value;
                         case 'v': opts.version_requested = true; break;
                         case '1': opts.single_instance = true; break;
+                        case 'h': return;
                         default:
                             buf[0] = arg[i]; buf[1] = 0;
                             if (!is_boolean_flag(buf)) { current_option_expecting_argument[0] = arg[i]; current_option_expecting_argument[1] = 0; }
@@ -435,36 +395,108 @@ handle_option_value:
         }
         exit(0);
     }
+    if (opts.detach) {
+#define reopen_or_fail(path, mode, which) { errno = 0; if (freopen(path, mode, which) == NULL) { int s = errno; fprintf(stderr, "Failed to redirect %s to %s with error: ", #which, path); errno = s; perror(NULL); exit(1); } }
+        if (!(opts.session && ((opts.session[0] == '-' && opts.session[1] == 0) || strcmp(opts.session, "/dev/stdin") == 0))
+                ) reopen_or_fail("/dev/null", "rb", stdin);
+        if (!opts.detached_log || !opts.detached_log[0]) opts.detached_log = "/dev/null";
+        reopen_or_fail(opts.detached_log, "ab", stdout);
+        reopen_or_fail(opts.detached_log, "ab", stderr);
+#undef reopen_or_fail
+        if (fork() != 0) exit(0);
+        setsid();
+    }
     unsetenv("KITTY_SI_DATA");
-    if (opts.single_instance) single_instance_main(argc, argv, &opts);
+    if (opts.single_instance) {
+        char igbuf[256];
+        if (instance_group_prefix && instance_group_prefix[0]) {
+            if (opts.instance_group && opts.instance_group[0]) {
+                safe_snprintf(igbuf, sizeof(igbuf), "%s-%s", instance_group_prefix, opts.instance_group ? opts.instance_group : "");
+                opts.instance_group = igbuf;
+            } else {
+                opts.instance_group = instance_group_prefix;
+            }
+        }
+        single_instance_main(argc, argv, &opts);
+    }
 }
 
-int main(int argc, char *argv[], char* envp[]) {
-    if (argc < 1 || !argv) { fprintf(stderr, "Invalid argc/argv\n"); return 1; }
+static bool
+delegate_to_kitten_if_possible(int argc, char *argv[], char* exe_dir) {
+    if (argc > 1 && argv[1][0] == '@') exec_kitten(argc, argv, exe_dir);
+    if (argc > 2 && strcmp(argv[1], "+kitten") == 0) {
+        if (is_wrapped_kitten(argv[2])) exec_kitten(argc - 1, argv + 1, exe_dir);
+        if (strcmp(argv[2], "panel") == 0) {
+            handle_fast_commandline(argc - 2, argv + 2, "panel");
+            return true;
+        }
+    }
+    if (argc > 3 && strcmp(argv[1], "+") == 0 && strcmp(argv[2], "kitten") == 0) {
+        if (is_wrapped_kitten(argv[3])) exec_kitten(argc - 2, argv + 2, exe_dir);
+        if (strcmp(argv[3], "panel") == 0) {
+            handle_fast_commandline(argc - 3, argv + 3, "panel");
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool
+endswith(const char *str, const char *suffix) {
+    size_t strLen = strlen(str);
+    size_t suffixLen = strlen(suffix);
+    if (suffixLen > strLen) return false;
+    return strcmp(str + strLen - suffixLen, suffix) == 0;
+}
+
+int main(int argc_, char *argv_[], char* envp[]) {
+    if (argc_ < 1 || !argv_) { fprintf(stderr, "Invalid argc/argv\n"); return 1; }
     if (!ensure_working_stdio()) return 1;
     char exe[PATH_MAX+1] = {0};
+    if (!read_exe_path(exe, sizeof(exe))) return 1;
     char exe_dir_buf[PATH_MAX+1] = {0};
+    strncpy(exe_dir_buf, exe, sizeof(exe_dir_buf));
+    char *exe_dir = dirname(exe_dir_buf);
+
     RAII_ALLOC(const char, lc_ctype, NULL);
+    bool launched_by_launch_services = false;
+    const char *config_dir = NULL;
+    bool is_quick_access_terminal = false;
+    argv_array argva = {.argv = argv_, .count = argc_};
 #ifdef __APPLE__
     lc_ctype = getenv("LC_CTYPE");
     if (lc_ctype) lc_ctype = strdup(lc_ctype);
+    char abuf[PATH_MAX+1];
+    is_quick_access_terminal = endswith(exe, "/kitty-quick-access");
+    if (getenv("KITTY_LAUNCHED_BY_LAUNCH_SERVICES")) {
+        launched_by_launch_services = true;
+        unsetenv("KITTY_LAUNCHED_BY_LAUNCH_SERVICES");
+        if (!get_config_dir(abuf, sizeof(abuf))) abuf[0] = 0;
+        config_dir = abuf;
+        if (launched_by_launch_services && config_dir[0]) {
+            char cbuf[PATH_MAX];
+            safe_snprintf(cbuf, sizeof(cbuf), "%s/macos-launch-services-cmdline", config_dir);
+            if (!get_argv_from(cbuf, argva.argv[0], &argva)) exit(1);
+        }
+    }
+#else
+    (void)endswith;
 #endif
-    if (!read_exe_path(exe, sizeof(exe))) return 1;
-    strncpy(exe_dir_buf, exe, sizeof(exe_dir_buf));
-    char *exe_dir = dirname(exe_dir_buf);
-    delegate_to_kitten_if_possible(argc, argv, exe_dir);
-    handle_fast_commandline(argc, argv);
-    int num, ret=0;
+    (void)read_full_file;
+    if (!delegate_to_kitten_if_possible(argva.count, argva.argv, exe_dir)) handle_fast_commandline(argva.count, argva.argv, NULL);
+    int ret=0;
     char lib[PATH_MAX+1] = {0};
     if (KITTY_LIB_PATH[0] == '/') {
-        num = snprintf(lib, PATH_MAX, "%s", KITTY_LIB_PATH);
+        safe_snprintf(lib, PATH_MAX, "%s", KITTY_LIB_PATH);
     } else {
-        num = snprintf(lib, PATH_MAX, "%s/%s", exe_dir, KITTY_LIB_PATH);
+        safe_snprintf(lib, PATH_MAX, "%s/%s", exe_dir, KITTY_LIB_PATH);
     }
-
-    if (num < 0 || num >= PATH_MAX) { fprintf(stderr, "Failed to create path to kitty lib\n"); return 1; }
-    RunData run_data = {.exe = exe, .exe_dir = exe_dir, .lib_dir = lib, .argc = argc, .argv = argv, .lc_ctype = lc_ctype};
+    RunData run_data = {
+        .exe = exe, .exe_dir = exe_dir, .lib_dir = lib, .argc = argva.count, .argv = argva.argv, .lc_ctype = lc_ctype,
+        .launched_by_launch_services=launched_by_launch_services, .config_dir = config_dir, .is_quick_access_terminal=is_quick_access_terminal,
+    };
     ret = run_embedded(&run_data);
+    free_argv_array(&argva);
     single_instance_main(-1, NULL, NULL);
     Py_FinalizeEx();
     return ret;

@@ -709,14 +709,12 @@ void _glfwPlatformTerminateJoysticks(void);
 int _glfwPlatformPollJoystick(_GLFWjoystick* js, int mode);
 void _glfwPlatformUpdateGamepadGUID(char* guid);
 
-int _glfwPlatformCreateWindow(_GLFWwindow* window,
-                              const _GLFWwndconfig* wndconfig,
-                              const _GLFWctxconfig* ctxconfig,
-                              const _GLFWfbconfig* fbconfig);
+int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconfig, const _GLFWctxconfig* ctxconfig, const _GLFWfbconfig* fbconfig, const GLFWLayerShellConfig *lsc);
 void _glfwPlatformDestroyWindow(_GLFWwindow* window);
 void _glfwPlatformSetWindowTitle(_GLFWwindow* window, const char* title);
 void _glfwPlatformSetWindowIcon(_GLFWwindow* window,
                                 int count, const GLFWimage* images);
+bool _glfwPlatformSetLayerShellConfig(_GLFWwindow* window, const GLFWLayerShellConfig *value);
 void _glfwPlatformGetWindowPos(_GLFWwindow* window, int* xpos, int* ypos);
 void _glfwPlatformSetWindowPos(_GLFWwindow* window, int xpos, int ypos);
 void _glfwPlatformGetWindowSize(_GLFWwindow* window, int* width, int* height);

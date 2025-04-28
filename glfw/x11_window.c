@@ -1867,11 +1867,9 @@ void _glfwPushSelectionToManagerX11(void)
 //////                       GLFW platform API                      //////
 //////////////////////////////////////////////////////////////////////////
 
-int _glfwPlatformCreateWindow(_GLFWwindow* window,
-                              const _GLFWwndconfig* wndconfig,
-                              const _GLFWctxconfig* ctxconfig,
-                              const _GLFWfbconfig* fbconfig)
+int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconfig, const _GLFWctxconfig* ctxconfig, const _GLFWfbconfig* fbconfig, const GLFWLayerShellConfig *lsc)
 {
+    (void)lsc;
     Visual* visual = NULL;
     int depth;
 
@@ -1963,6 +1961,11 @@ void _glfwPlatformDestroyWindow(_GLFWwindow* window)
     }
 
     XFlush(_glfw.x11.display);
+}
+
+bool _glfwPlatformSetLayerShellConfig(_GLFWwindow* window, const GLFWLayerShellConfig *value) {
+    (void)window; (void)value;
+    return false;
 }
 
 void _glfwPlatformSetWindowTitle(_GLFWwindow* window, const char* title)

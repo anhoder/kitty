@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
-import errno
 import os
 import pwd
 import sys
@@ -32,8 +31,12 @@ is_running_from_develop: bool = False
 RC_ENCRYPTION_PROTOCOL_VERSION = '1'
 website_base_url = 'https://sw.kovidgoyal.net/kitty/'
 default_pager_for_help = ('less', '-iRXF')
+kitty_run_data: dict[str, Any] = getattr(sys, 'kitty_run_data', {})
+launched_by_launch_services = kitty_run_data.get('launched_by_launch_services', False)
+is_quick_access_terminal_app = kitty_run_data.get('is_quick_access_terminal_app', False)
+
 if getattr(sys, 'frozen', False):
-    extensions_dir: str = getattr(sys, 'kitty_run_data')['extensions_dir']
+    extensions_dir: str = kitty_run_data['extensions_dir']
 
     def get_frozen_base() -> str:
         global is_running_from_develop
@@ -65,7 +68,7 @@ else:
 
 @run_once
 def kitty_exe() -> str:
-    rpath = getattr(sys, 'kitty_run_data').get('bundle_exe_dir')
+    rpath = kitty_run_data.get('bundle_exe_dir')
     if not rpath:
         items = os.environ.get('PATH', '').split(os.pathsep) + [os.path.join(kitty_base_dir, 'kitty', 'launcher')]
         seen: set[str] = set()
@@ -86,46 +89,17 @@ def kitten_exe() -> str:
 
 
 def _get_config_dir() -> str:
-    if 'KITTY_CONFIG_DIRECTORY' in os.environ:
-        return os.path.abspath(os.path.expanduser(os.environ['KITTY_CONFIG_DIRECTORY']))
-
-    locations = []
-    if 'XDG_CONFIG_HOME' in os.environ:
-        locations.append(os.path.abspath(os.path.expanduser(os.environ['XDG_CONFIG_HOME'])))
-    locations.append(os.path.expanduser('~/.config'))
-    if is_macos:
-        locations.append(os.path.expanduser('~/Library/Preferences'))
-    for loc in filter(None, os.environ.get('XDG_CONFIG_DIRS', '').split(os.pathsep)):
-        locations.append(os.path.abspath(os.path.expanduser(loc)))
-    for loc in locations:
-        if loc:
-            q = os.path.join(loc, appname)
-            if os.access(q, os.W_OK) and os.path.exists(os.path.join(q, 'kitty.conf')):
-                return q
-
-    def make_tmp_conf() -> None:
-        import atexit
-        import tempfile
-        ans = tempfile.mkdtemp(prefix='kitty-conf-')
-
-        def cleanup() -> None:
-            import shutil
-            with suppress(Exception):
-                shutil.rmtree(ans)
-        atexit.register(cleanup)
-
-    candidate = os.path.abspath(os.path.expanduser(os.environ.get('XDG_CONFIG_HOME') or '~/.config'))
-    ans = os.path.join(candidate, appname)
-    try:
-        os.makedirs(os.path.realpath(ans), exist_ok=True)
-    except FileExistsError:
-        raise SystemExit(f'A file {ans} already exists. It must be a directory, not a file.')
-    except PermissionError:
-        make_tmp_conf()
-    except OSError as err:
-        if err.errno != errno.EROFS:  # Error other than read-only file system
-            raise
-        make_tmp_conf()
+    cdir = kitty_run_data.get('config_dir', '')
+    if cdir:
+        return str(cdir)
+    import atexit
+    import tempfile
+    ans = tempfile.mkdtemp(prefix='kitty-conf-')
+    def cleanup() -> None:
+        import shutil
+        with suppress(Exception):
+            shutil.rmtree(ans)
+    atexit.register(cleanup)
     return ans
 
 
@@ -304,7 +278,7 @@ def clear_handled_signals(*a: Any) -> None:
 def local_docs() -> str:
     d = os.path.dirname
     base = d(d(kitty_exe()))
-    from_source = getattr(sys, 'kitty_run_data').get('from_source')
+    from_source = kitty_run_data.get('from_source')
     if is_macos and from_source and '/kitty.app/Contents/' in kitty_exe():
         base = d(d(d(base)))
     subdir = os.path.join('doc', 'kitty', 'html')

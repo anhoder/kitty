@@ -115,7 +115,7 @@ def serialize_as_go_string(x: str) -> str:
 
 
 go_type_map = {
-    'bool-set': 'bool', 'bool-reset': 'bool', 'int': 'int', 'float': 'float64',
+    'bool-set': 'bool', 'bool-reset': 'bool', 'bool-unset': 'bool', 'int': 'int', 'float': 'float64',
     '': 'string', 'list': '[]string', 'choices': 'string', 'str': 'string'}
 
 
@@ -146,9 +146,13 @@ class GoOption:
     def struct_declaration(self) -> str:
         return f'{self.go_var_name} {self.go_type}'
 
+    @property
+    def flags(self) -> list[str]:
+        return sorted(self.obj_dict['aliases'])
+
     def as_option(self, cmd_name: str = 'cmd', depth: int = 0, group: str = '') -> str:
         add = f'AddToGroup("{serialize_as_go_string(group)}", ' if group else 'Add('
-        aliases = ' '.join(sorted(self.obj_dict['aliases']))
+        aliases = ' '.join(self.flags)
         ans = f'''{cmd_name}.{add}cli.OptionSpec{{
             Name: "{serialize_as_go_string(aliases)}",
             Type: "{self.type}",
@@ -167,6 +171,22 @@ class GoOption:
         if self.default:
             ans += f'\nDefault: "{serialize_as_go_string(self.default)}",\n'
         return ans + '})'
+
+    def as_string_for_commandline(self) -> str:
+        flag = self.flags[0]
+        val = f'opts.{self.go_var_name}'
+        match self.go_type:
+            case 'bool':
+                val = f'fmt.Sprintf(`%#v`, {val})'
+            case 'int':
+                val = f'fmt.Sprintf(`%d`, {val})'
+            case 'string':
+                val = val
+            case 'float64':
+                val = f'fmt.Sprintf(`%f`, {val})'
+            case '[]string':
+                return f'for _, x := range {val} {{ ans = append(ans, `{flag}=` + x) }}'
+        return f'ans = append(ans, `{flag}=` + {val})'
 
     @property
     def sorted_choices(self) -> list[str]:
@@ -426,6 +446,10 @@ def parse_option_spec(spec: str | None = None) -> tuple[OptionSpecSeq, OptionSpe
                 k, v = m.group(1), m.group(2)
                 if k == 'choices':
                     vals = tuple(x.strip() for x in v.split(','))
+                    if not current_cmd['type']:
+                        current_cmd['type'] = 'choices'
+                    if current_cmd['type'] != 'choices':
+                        raise ValueError(f'Cannot specify choices for an option of type: {current_cmd["type"]}')
                     current_cmd['choices'] = frozenset(vals)
                     if current_cmd['default'] is None:
                         current_cmd['default'] = vals[0]
@@ -608,10 +632,14 @@ class PrintHelpForSeq:
                 continue  # hidden option
             a('  ' + ', '.join(map(green, sorted(opt['aliases'], reverse=True))))
             defval = opt.get('default')
-            if not opt.get('type', '').startswith('bool-'):
-                if defval:
-                    dt = f'=[{italic(defval)}]'
-                    blocks[-1] += dt
+            if (otype := opt.get('type', '')).startswith('bool-'):
+                if otype == 'bool-set':
+                    blocks[-1] += italic('[=no]')
+                else:
+                    blocks[-1] += italic('[=yes]')
+            else:
+                dt = f'''=[{italic(defval or '""')}]'''
+                blocks[-1] += dt
             if opt.get('help'):
                 t = help_text.replace('%default', str(defval)).strip()
                 # replace rst literal code block syntax
@@ -675,10 +703,13 @@ def seq_as_rst(
         if help_text == '!':
             continue  # hidden option
         defn = '.. option:: '
-        if not opt.get('type', '').startswith('bool-'):
-            val_name = ' <{}>'.format(opt['dest'].upper())
+        if (otype := opt.get('type', '')).startswith('bool-'):
+            if otype == 'bool-set':
+                val_name = ' [=yes]'
+            else:
+                val_name = ' [=no]'
         else:
-            val_name = ''
+            val_name = ' <{}>'.format(opt['dest'].upper())
         a(defn + ', '.join(o + val_name for o in sorted(opt['aliases'])))
         if opt.get('help'):
             defval = opt.get('default')
@@ -740,7 +771,19 @@ def defval_for_opt(opt: OptionDict) -> Any:
     return dv
 
 
+bool_map = {'y': True, 'yes': True, 'true': True, 'n': False, 'no': False, 'false': False}
+
+
+def to_bool(alias: str, x: str) -> bool:
+    try:
+        return bool_map[x]
+    except KeyError:
+        raise SystemExit(f'{x} is not a valid value for {alias}. Valid values are y, yes, true, n, no, false only')
+
+
 class Options:
+
+    do_print = True
 
     def __init__(self, seq: OptionSpecSeq, usage: str | None, message: str | None, appname: str | None):
         self.alias_map = {}
@@ -757,32 +800,39 @@ class Options:
             self.names_map[name] = opt
             self.values_map[name] = defval_for_opt(opt)
 
-    def opt_for_alias(self, alias: str) -> OptionDict:
+    def check_for_standard_flag(self, alias: str) -> None:
+        if alias in ('-h', '--help'):
+            if self.do_print:
+                print_help_for_seq(self.seq, self.usage, self.message, self.appname or appname)
+            raise SystemExit(0)
         opt = self.alias_map.get(alias)
         if opt is None:
             raise SystemExit(f'Unknown option: {emph(alias)}')
-        return opt
-
-    def needs_arg(self, alias: str) -> bool:
-        if alias in ('-h', '--help'):
-            print_help_for_seq(self.seq, self.usage, self.message, self.appname or appname)
-            raise SystemExit(0)
-        opt = self.opt_for_alias(alias)
         if opt['dest'] == 'version':
-            print(version())
+            if self.do_print:
+                print(version())
             raise SystemExit(0)
+
+    def is_bool(self, alias: str) -> bool:
+        opt = self.alias_map[alias]
         typ = opt.get('type', '')
-        return not typ.startswith('bool-')
+        return typ.startswith('bool-')
 
     def process_arg(self, alias: str, val: Any = None) -> None:
-        opt = self.opt_for_alias(alias)
+        opt = self.alias_map[alias]
         typ = opt.get('type', '')
         name = opt['dest']
         nmap = {'float': float, 'int': int}
         if typ == 'bool-set':
-            self.values_map[name] = True
+            if val is None:
+                self.values_map[name] = True
+            else:
+                self.values_map[name] = to_bool(alias, val)
         elif typ == 'bool-reset':
-            self.values_map[name] = False
+            if val is None:
+                self.values_map[name] = False
+            else:
+                self.values_map[name] = to_bool(alias, val)
         elif typ == 'list':
             self.values_map.setdefault(name, [])
             self.values_map[name].append(val)
@@ -809,26 +859,43 @@ def parse_cmdline(oc: Options, disabled: OptionSpecSeq, ans: Any, args: list[str
     dargs = deque(sys.argv[1:] if args is None else args)
     leftover_args: list[str] = []
     current_option = None
+    payload: str | None = None
 
     while dargs:
         arg = dargs.popleft()
         if state is NORMAL:
             if arg.startswith('-'):
-                if arg == '--':
+                is_long_opt = arg.startswith('--')
+                if is_long_opt and arg == '--':
                     leftover_args = list(dargs)
                     break
-                parts = arg.split('=', 1)
-                needs_arg = oc.needs_arg(parts[0])
-                if not needs_arg:
-                    if len(parts) != 1:
-                        raise SystemExit(f'The {emph(parts[0])} option does not accept arguments')
-                    oc.process_arg(parts[0])
-                    continue
-                if len(parts) == 1:
-                    current_option = parts[0]
-                    state = EXPECTING_ARG
-                    continue
-                oc.process_arg(parts[0], parts[1])
+                flag, has_equal, payload = arg.partition('=')
+                if not has_equal:
+                    payload = None
+                if is_long_opt:
+                    oc.check_for_standard_flag(flag)
+                    if oc.is_bool(flag):
+                        oc.process_arg(flag, payload)
+                        continue
+                    if not has_equal:
+                        current_option = flag
+                        state = EXPECTING_ARG
+                        continue
+                    oc.process_arg(flag, payload)
+                else:
+                    letters = flag[1:]
+                    for letter in letters[:-1]:
+                        flag = f'-{letter}'
+                        oc.check_for_standard_flag(flag)
+                        oc.process_arg(flag)
+                    flag = f'-{letters[-1]}'
+                    oc.check_for_standard_flag(flag)
+                    if oc.is_bool(flag) or payload is not None:
+                        oc.process_arg(flag, payload)
+                    else:
+                        current_option = flag
+                        state = EXPECTING_ARG
+                        continue
             else:
                 leftover_args = [arg] + list(dargs)
                 break
@@ -844,6 +911,25 @@ def parse_cmdline(oc: Options, disabled: OptionSpecSeq, ans: Any, args: list[str
         if not isinstance(opt, str):
             setattr(ans, opt['dest'], defval_for_opt(opt))
     return leftover_args
+
+
+listen_on_defn = f'''\
+--listen-on
+completion=type:special group:complete_kitty_listen_on
+Listen on the specified socket address for control messages. For example,
+:option:`{appname} --listen-on`=unix:/tmp/mykitty or :option:`{appname}
+--listen-on`=tcp:localhost:12345. On Linux systems, you can also use abstract
+UNIX sockets, not associated with a file, like this: :option:`{appname}
+--listen-on`=unix:@mykitty. Environment variables are expanded and relative
+paths are resolved with respect to the temporary directory. To control kitty,
+you can send commands to it with :italic:`kitten @` using the
+:option:`kitten @ --to` option to specify this address. Note that if you run
+:italic:`kitten @` within a kitty window, there is no need to specify the
+:option:`kitten @ --to` option as it will automatically read from the
+environment. Note that this will be ignored unless :opt:`allow_remote_control`
+is set to either: :code:`yes`, :code:`socket` or :code:`socket-only`. This can
+also be specified in :file:`kitty.conf`.
+'''
 
 
 def options_spec() -> str:
@@ -890,9 +976,12 @@ Change to the specified directory when launching.
 
 --detach
 type=bool-set
-condition=not is_macos
-Detach from the controlling terminal, if any. Not available on macOS. On macOS
+Detach from the controlling terminal, if any. On macOS
 use :code:`open -a kitty.app -n` instead.
+
+
+--detached-log
+Path to a log file to store STDOUT/STDERR when using :option:`--detach`
 
 
 --session
@@ -940,27 +1029,14 @@ previous instance is found, then :italic:`{appname}` will wait anyway,
 regardless of this option.
 
 
---listen-on
-completion=type:special group:complete_kitty_listen_on
-Listen on the specified socket address for control messages. For example,
-:option:`{appname} --listen-on`=unix:/tmp/mykitty or :option:`{appname}
---listen-on`=tcp:localhost:12345. On Linux systems, you can also use abstract
-UNIX sockets, not associated with a file, like this: :option:`{appname}
---listen-on`=unix:@mykitty. Environment variables are expanded and relative
-paths are resolved with respect to the temporary directory. To control kitty,
-you can send commands to it with :italic:`kitten @` using the
-:option:`kitten @ --to` option to specify this address. Note that if you run
-:italic:`kitten @` within a kitty window, there is no need to specify the
-:option:`kitten @ --to` option as it will automatically read from the
-environment. Note that this will be ignored unless :opt:`allow_remote_control`
-is set to either: :code:`yes`, :code:`socket` or :code:`socket-only`. This can
-also be specified in :file:`kitty.conf`.
+{listen_on_defn} To start in headless mode,
+without an actual window, use :option:`{appname} --start-as`=hidden.
 
 
 --start-as
 type=choices
 default=normal
-choices=normal,fullscreen,maximized,minimized
+choices=normal,fullscreen,maximized,minimized,hidden
 Control how the initial kitty window is created.
 
 
@@ -1018,7 +1094,7 @@ type=bool-set
 !
 '''
         setattr(options_spec, 'ans', OPTIONS.format(
-            appname=appname, conf_name=appname,
+            appname=appname, conf_name=appname, listen_on_defn=listen_on_defn,
             config_help=CONFIG_HELP.format(appname=appname, conf_name=appname),
         ))
     ans: str = getattr(options_spec, 'ans')

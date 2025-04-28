@@ -55,8 +55,10 @@ log_error(const char *fmt, ...) {
     if (!use_os_log) {  // Apple's os_log already records timestamps
         fprintf(stderr, "[%.3f] ", monotonic_t_to_s_double(monotonic()));
     }
+    // To see os_log messages from kitty, use:
+    // log show --predicate 'processImagePath contains "kitty" and messageType == error'
 #ifdef __APPLE__
-    if (use_os_log) os_log(OS_LOG_DEFAULT, "%{public}s", sanbuf);
+    if (use_os_log) os_log_error(OS_LOG_DEFAULT, "%{public}s", sanbuf);
 #endif
     if (!use_os_log) fprintf(stderr, "%s\n", sanbuf);
 #undef bufprint
@@ -85,9 +87,5 @@ static PyMethodDef module_methods[] = {
 bool
 init_logging(PyObject *module) {
     if (PyModule_AddFunctions(module, module_methods) != 0) return false;
-#ifdef __APPLE__
-    // This env var can be either 1 or 2
-    if (getenv("KITTY_LAUNCHED_BY_LAUNCH_SERVICES") != NULL) use_os_log = true;
-#endif
     return true;
 }

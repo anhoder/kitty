@@ -3,11 +3,13 @@
 
 import sys
 from collections.abc import Callable
-from typing import Any
+from contextlib import suppress
+from functools import partial
+from typing import Any, Mapping, Sequence
 
-from kitty.cli import parse_args
+from kitty.cli import listen_on_defn, parse_args
 from kitty.cli_stub import PanelCLIOptions
-from kitty.constants import appname, is_macos, is_wayland
+from kitty.constants import appname, is_macos, is_wayland, kitten_exe
 from kitty.fast_data_types import (
     GLFW_EDGE_BOTTOM,
     GLFW_EDGE_CENTER,
@@ -24,50 +26,59 @@ from kitty.fast_data_types import (
     GLFW_LAYER_SHELL_TOP,
     glfw_primary_monitor_size,
     make_x11_window_a_dock_window,
+    toggle_os_window_visibility,
 )
 from kitty.os_window_size import WindowSizeData, edge_spacing
 from kitty.types import LayerShellConfig
-from kitty.typing import EdgeLiteral
+from kitty.typing import BossType, EdgeLiteral
+from kitty.utils import log_error
+
+quake = (
+    'kitty +kitten panel --edge=top --layer=overlay --lines=25 --focus-policy=exclusive'
+    ' -o background_opacity=0.8 --toggle-visibility --single-instance --instance-group=quake'
+)
+default_quake_cmdline = f'{quake} --exclusive-zone=0 --override-exclusive-zone --detach'
+default_macos_quake_cmdline = f'{quake}'
 
 OPTIONS = r'''
 --lines
-type=int
 default=1
 The number of lines shown in the panel. Ignored for background, centered, and vertical panels.
+If it has the suffix :code:`px` then it sets the height of the panel in pixels instead of lines.
 
 
 --columns
-type=int
 default=1
 The number of columns shown in the panel. Ignored for background, centered, and horizontal panels.
+If it has the suffix :code:`px` then it sets the width of the panel in pixels instead of columns.
 
 
 --margin-top
 type=int
 default=0
-Request a given top margin to the compositor.
-Only works on a Wayland compositor that supports the wlr layer shell protocol.
+Set the top margin for the panel, in pixels. Has no effect for bottom edge panels.
+Only works on macOS and Wayland compositors that supports the wlr layer shell protocol.
 
 
 --margin-left
 type=int
 default=0
-Request a given left margin to the compositor.
-Only works on a Wayland compositor that supports the wlr layer shell protocol.
+Set the left margin for the panel, in pixels. Has no effect for right edge panels.
+Only works on macOS and Wayland compositors that supports the wlr layer shell protocol.
 
 
 --margin-bottom
 type=int
 default=0
-Request a given bottom margin to the compositor.
-Only works on a Wayland compositor that supports the wlr layer shell protocol.
+Set the bottom margin for the panel, in pixels. Has no effect for top edge panels.
+Only works on macOS and Wayland compositors that supports the wlr layer shell protocol.
 
 
 --margin-right
 type=int
 default=0
-Request a given right margin to the compositor.
-Only works on a Wayland compositor that supports the wlr layer shell protocol.
+Set the right margin for the panel, in pixels. Has no effect for left edge panels.
+Only works on macOS and Wayland compositors that supports the wlr layer shell protocol.
 
 
 --edge
@@ -76,14 +87,16 @@ default=top
 Which edge of the screen to place the panel on. Note that some window managers
 (such as i3) do not support placing docked windows on the left and right edges.
 The value :code:`background` means make the panel the "desktop wallpaper". This
-is only supported on Wayland, not X11 and note that when using sway if you set
+is not supported on X11 and note that when using sway if you set
 a background in your sway config it will cover the background drawn using this
 kitten.
-Additionally, there are two Wayland only values: :code:`center` and :code:`none`.
+Additionally, there are two more values: :code:`center` and :code:`none`.
 The value :code:`center` anchors the panel to all sides and covers the entire
-display by default. The panel can be shrunk using the margin parameters.
+display (on macOS the part of the display not covered by titlebar and dock).
+The panel can be shrunk and placed using the margin parameters.
 The value :code:`none` anchors the panel to the top left corner and should be
-placed using the margin parameters.
+placed and using the margin parameters. It's size is set bye :option:`--lines`
+and :option:`--columns`.
 
 
 --layer
@@ -91,7 +104,8 @@ choices=background,bottom,top,overlay
 default=bottom
 On a Wayland compositor that supports the wlr layer shell protocol, specifies the layer
 on which the panel should be drawn. This parameter is ignored and set to
-:code:`background` if :option:`--edge` is set to :code:`background`.
+:code:`background` if :option:`--edge` is set to :code:`background`. On macOS, maps
+these to appropriate NSWindow *levels*.
 
 
 --config -c
@@ -111,7 +125,7 @@ you to specify which output is used, by name. If not specified the compositor wi
 output automatically, typically the last output the user interacted with or the primary monitor.
 
 
---class
+--class --app-id
 dest=cls
 default={appname}-panel
 condition=not is_macos
@@ -128,6 +142,7 @@ choices=not-allowed,exclusive,on-demand
 default=not-allowed
 On a Wayland compositor that supports the wlr layer shell protocol, specify the focus policy for keyboard
 interactivity with the panel. Please refer to the wlr layer shell protocol documentation for more details.
+On macOS, :code:`exclusive` and :code:`on-demand` are currently the same. Ignored on X11.
 
 
 --exclusive-zone
@@ -138,23 +153,62 @@ Please refer to the wlr layer shell documentation for more details on the meanin
 If :option:`--edge` is set to anything other than :code:`center` or :code:`none`, this flag will not have any
 effect unless the flag :option:`--override-exclusive-zone` is also set.
 If :option:`--edge` is set to :code:`background`, this option has no effect.
+Ignored on X11 and macOS.
 
 
 --override-exclusive-zone
 type=bool-set
 On a Wayland compositor that supports the wlr layer shell protocol, override the default exclusive zone.
 This has effect only if :option:`--edge` is set to :code:`top`, :code:`left`, :code:`bottom` or :code:`right`.
+Ignored on X11 and macOS.
+
+
+--single-instance -1
+type=bool-set
+If specified only a single instance of the panel will run. New
+invocations will instead create a new top-level window in the existing
+panel instance.
+
+
+--instance-group
+Used in combination with the :option:`--single-instance` option. All
+panel invocations with the same :option:`--instance-group` will result
+in new panels being created in the first panel instance within that group.
+
+
+{listen_on_defn}
+
+
+--toggle-visibility
+type=bool-set
+When set and using :option:`--single-instance` will toggle the visibility of the
+existing panel rather than creating a new one.
+
+
+--start-as-hidden
+type=bool-set
+Start in hidden mode, useful with :option:`--toggle-visibility`.
+
+
+--detach
+type=bool-set
+Detach from the controlling terminal, if any, running in an independent child process,
+the parent process exits immediately.
+
+
+--detached-log
+Path to a log file to store STDOUT/STDERR when using :option:`--detach`
 
 
 --debug-rendering
 type=bool-set
 For internal debugging use.
-'''.format(appname=appname).format
+'''.format(appname=appname, listen_on_defn=listen_on_defn).format
 
 
 args = PanelCLIOptions()
-help_text = 'Use a command line program to draw a GPU accelerated panel on your X11 desktop'
-usage = 'program-to-run'
+help_text = 'Use a command line program to draw a GPU accelerated panel on your desktop'
+usage = '[cmdline-to-run ...]'
 
 
 def parse_panel_args(args: list[str]) -> tuple[PanelCLIOptions, list[str]]:
@@ -214,32 +268,48 @@ def initial_window_size_func(opts: WindowSizeData, cached_values: dict[str, Any]
             xscale = yscale = 1
         global window_width, window_height
         monitor_width, monitor_height = glfw_primary_monitor_size()
+        x = dual_distance(args.columns, min_cell_value_if_no_pixels=1)
+        rwidth = x[1] if x[1] else (x[0] * cell_width / xscale)
+        x = dual_distance(args.lines, min_cell_value_if_no_pixels=1)
+        rheight = x[1] if x[1] else (x[0] * cell_width / yscale)
 
         if args.edge in {'left', 'right'}:
             spacing = es('left') + es('right')
-            window_width = int(cell_width * args.columns / xscale + (dpi_x / 72) * spacing + 1)
+            window_width = int(rwidth + (dpi_x / 72) * spacing + 1)
             window_height = monitor_height
         elif args.edge in {'top', 'bottom'}:
             spacing = es('top') + es('bottom')
-            window_height = int(cell_height * args.lines / yscale + (dpi_y / 72) * spacing + 1)
+            window_height = int(rheight + (dpi_y / 72) * spacing + 1)
             window_width = monitor_width
         elif args.edge in {'background', 'center'}:
             window_width, window_height = monitor_width, monitor_height
         else:
             x_spacing = es('left') + es('right')
-            window_width = int(cell_width * args.columns / xscale + (dpi_x / 72) * x_spacing + 1)
+            window_width = int(rwidth + (dpi_x / 72) * x_spacing + 1)
             y_spacing = es('top') + es('bottom')
-            window_height = int(cell_height * args.lines / yscale + (dpi_y / 72) * y_spacing + 1)
+            window_height = int(rheight + (dpi_y / 72) * y_spacing + 1)
         return window_width, window_height
 
     return initial_window_size
 
 
+def dual_distance(spec: str, min_cell_value_if_no_pixels: int = 0) -> tuple[int, int]:
+    with suppress(Exception):
+        return int(spec), 0
+    if spec.endswith('px'):
+        return min_cell_value_if_no_pixels, int(spec[:-2])
+    if spec.endswith('c'):
+        return int(spec[:-1]), 0
+    return min_cell_value_if_no_pixels, 0
+
+
 def layer_shell_config(opts: PanelCLIOptions) -> LayerShellConfig:
-    ltype = {'background': GLFW_LAYER_SHELL_BACKGROUND,
-             'bottom': GLFW_LAYER_SHELL_PANEL,
-             'top': GLFW_LAYER_SHELL_TOP,
-             'overlay': GLFW_LAYER_SHELL_OVERLAY}.get(opts.layer, GLFW_LAYER_SHELL_PANEL)
+    ltype = {
+        'background': GLFW_LAYER_SHELL_BACKGROUND,
+        'bottom': GLFW_LAYER_SHELL_PANEL,
+        'top': GLFW_LAYER_SHELL_TOP,
+        'overlay': GLFW_LAYER_SHELL_OVERLAY
+    }.get(opts.layer, GLFW_LAYER_SHELL_PANEL)
     ltype = GLFW_LAYER_SHELL_BACKGROUND if opts.edge == 'background' else ltype
     edge = {
         'top': GLFW_EDGE_TOP, 'bottom': GLFW_EDGE_BOTTOM, 'left': GLFW_EDGE_LEFT, 'right': GLFW_EDGE_RIGHT, 'center': GLFW_EDGE_CENTER, 'none': GLFW_EDGE_NONE
@@ -247,10 +317,11 @@ def layer_shell_config(opts: PanelCLIOptions) -> LayerShellConfig:
     focus_policy = {
         'not-allowed': GLFW_FOCUS_NOT_ALLOWED, 'exclusive': GLFW_FOCUS_EXCLUSIVE, 'on-demand': GLFW_FOCUS_ON_DEMAND
     }.get(opts.focus_policy, GLFW_FOCUS_NOT_ALLOWED)
+    x, y = dual_distance(opts.columns, min_cell_value_if_no_pixels=1), dual_distance(opts.lines, min_cell_value_if_no_pixels=1)
     return LayerShellConfig(type=ltype,
                             edge=edge,
-                            x_size_in_cells=max(1, opts.columns),
-                            y_size_in_cells=max(1, opts.lines),
+                            x_size_in_cells=x[0], x_size_in_pixels=x[1],
+                            y_size_in_cells=y[0], y_size_in_pixels=y[1],
                             requested_top_margin=max(0, opts.margin_top),
                             requested_left_margin=max(0, opts.margin_left),
                             requested_bottom_margin=max(0, opts.margin_bottom),
@@ -261,32 +332,62 @@ def layer_shell_config(opts: PanelCLIOptions) -> LayerShellConfig:
                             output_name=opts.output_name or '')
 
 
+def handle_single_instance_command(boss: BossType, sys_args: Sequence[str], environ: Mapping[str, str], notify_on_os_window_death: str | None = '') -> None:
+    from kitty.tabs import SpecialWindow
+    try:
+        args, items = parse_panel_args(list(sys_args[1:]))
+    except BaseException as e:
+        log_error(f'Invalid arguments received over single instance socket: {sys_args} with error: {e}')
+        return
+    if args.toggle_visibility and boss.os_window_map:
+        for os_window_id in boss.os_window_map:
+            toggle_os_window_visibility(os_window_id)
+        return
+    items = items or [kitten_exe(), 'run-shell']
+    lsc = layer_shell_config(args)
+    os_window_id = boss.add_os_panel(lsc, args.cls, args.name)
+    if notify_on_os_window_death:
+        boss.os_window_death_actions[os_window_id] = partial(boss.notify_on_os_window_death, notify_on_os_window_death)
+    tm = boss.os_window_map[os_window_id]
+    tm.new_tab(SpecialWindow(cmd=items, env=dict(environ)))
+
+
 def main(sys_args: list[str]) -> None:
     global args
-    if is_macos:
-        raise SystemExit('Currently the panel kitten is not supported on macOS')
     args, items = parse_panel_args(sys_args[1:])
-    if not items:
-        raise SystemExit('You must specify the program to run')
     sys.argv = ['kitty']
     if args.debug_rendering:
         sys.argv.append('--debug-rendering')
     for config in args.config:
         sys.argv.extend(('--config', config))
-    sys.argv.extend(('--class', args.cls))
+    if not is_macos:
+        sys.argv.extend(('--class', args.cls))
     if args.name:
         sys.argv.extend(('--name', args.name))
+    if args.start_as_hidden:
+        sys.argv.append('--start-as=hidden')
     for override in args.override:
         sys.argv.extend(('--override', override))
     sys.argv.append('--override=linux_display_server=auto')
+    sys.argv.append('--override=macos_quit_when_last_window_closed=yes')
+    sys.argv.append('--override=macos_hide_from_tasks=yes')
+    sys.argv.append('--override=macos_window_resizable=no')
+    if args.single_instance:
+        sys.argv.append('--single-instance')
+    if args.instance_group:
+        sys.argv.append(f'--instance-group={args.instance_group}')
+    if args.listen_on:
+        sys.argv.append(f'--listen-on={args.listen_on}')
+
     sys.argv.extend(items)
     from kitty.main import main as real_main
     from kitty.main import run_app
     run_app.cached_values_name = 'panel'
     run_app.layer_shell_config = layer_shell_config(args)
-    run_app.first_window_callback = setup_x11_window
-    run_app.initial_window_size_func = initial_window_size_func
-    real_main()
+    if not is_macos:
+        run_app.first_window_callback = setup_x11_window
+        run_app.initial_window_size_func = initial_window_size_func
+    real_main(called_from_panel=True)
 
 
 if __name__ == '__main__':

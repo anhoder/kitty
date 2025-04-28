@@ -30,7 +30,7 @@ from .constants import (
     shell_path,
     ssh_control_master_template,
 )
-from .fast_data_types import WINDOW_FULLSCREEN, WINDOW_MAXIMIZED, WINDOW_MINIMIZED, WINDOW_NORMAL, Color, Shlex, get_options, monotonic, open_tty
+from .fast_data_types import WINDOW_FULLSCREEN, WINDOW_HIDDEN, WINDOW_MAXIMIZED, WINDOW_MINIMIZED, WINDOW_NORMAL, Color, Shlex, get_options, monotonic, open_tty
 from .fast_data_types import timed_debug_print as _timed_debug_print
 from .types import run_once
 from .typing import AddressFamily, PopenType, StartupCtx
@@ -257,18 +257,6 @@ def open_url(url: str, program: str | list[str] = 'default', cwd: str | None = N
     return open_cmd(command_for_open(program), url, cwd=cwd, extra_env=extra_env)
 
 
-def detach(fork: bool = True, setsid: bool = True, redirect: bool = True) -> None:
-    if fork:
-        # Detach from the controlling process.
-        if os.fork() != 0:
-            raise SystemExit(0)
-    if setsid:
-        os.setsid()
-    if redirect:
-        from .fast_data_types import redirect_std_streams
-        redirect_std_streams(os.devnull)
-
-
 def init_startup_notification_x11(window_handle: int, startup_id: str | None = None) -> Optional['StartupCtx']:
     # https://specifications.freedesktop.org/startup-notification-spec/startup-notification-latest.txt
     from kitty.fast_data_types import init_x11_startup_notification
@@ -401,10 +389,19 @@ def parse_address_spec(spec: str) -> tuple[AddressFamily, tuple[str, int] | str,
 
 
 def parse_os_window_state(state: str) -> int:
-    return {
-        'normal': WINDOW_NORMAL, 'maximized': WINDOW_MAXIMIZED, 'minimized': WINDOW_MINIMIZED,
-        'fullscreen': WINDOW_FULLSCREEN, 'fullscreened':WINDOW_FULLSCREEN
-    }[state]
+    match state:
+        case 'normal':
+            return WINDOW_NORMAL
+        case 'maximized':
+            return WINDOW_MAXIMIZED
+        case 'minimized':
+            return WINDOW_MINIMIZED
+        case 'fullscreen' | 'fullscreened':
+            return WINDOW_FULLSCREEN
+        case 'hidden':
+            return WINDOW_HIDDEN
+        case _:
+            return WINDOW_NORMAL
 
 
 def write_all(fd: int, data: str | bytes, block_until_written: bool = True) -> None:
@@ -670,7 +667,7 @@ def system_paths_on_macos() -> tuple[str, ...]:
     def add_from_file(x: str) -> None:
         try:
             f = open(x)
-        except FileNotFoundError:
+        except (FileNotFoundError, PermissionError):
             return
         with f:
             for line in f:
@@ -681,7 +678,7 @@ def system_paths_on_macos() -> tuple[str, ...]:
                         entries.append(line)
     try:
         files = os.listdir('/etc/paths.d')
-    except FileNotFoundError:
+    except (FileNotFoundError, PermissionError):
         files = []
     for name in sorted(files):
         add_from_file(os.path.join('/etc/paths.d', name))
@@ -1108,23 +1105,13 @@ def key_val_matcher(items: Iterable[tuple[str, str]], key_pat: 're.Pattern[str]'
 
 
 def shlex_split(text: str, allow_ansi_quoted_strings: bool = False) -> Iterator[str]:
-    s = Shlex(text, allow_ansi_quoted_strings)
-    yielded = False
-    while (q := s.next_word())[0] > -1:
-        yield q[1]
-        yielded = True
-    if not yielded:
-        yield ''
+    yield from Shlex(text, allow_ansi_quoted_strings)
 
 
 def shlex_split_with_positions(text: str, allow_ansi_quoted_strings: bool = False) -> Iterator[tuple[int, str]]:
     s = Shlex(text, allow_ansi_quoted_strings)
-    yielded = False
     while (q := s.next_word())[0] > -1:
         yield q
-        yielded = True
-    if not yielded:
-        yield 0, ''
 
 
 def timed_debug_print(*a: Any, sep: str = ' ', end: str = '\n') -> None:

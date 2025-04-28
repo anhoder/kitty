@@ -38,11 +38,11 @@ A terminal PDF viewer
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 A terminal PDF viewer with GUI-like usage and Vim-like keybindings written in Rust
 
-.. _tool_mdcat:
+.. _tool_mcat:
 
-`mdcat <https://github.com/lunaryorn/mdcat>`_
+`mcat <https://github.com/Skardyy/mcat>`_
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Display markdown files nicely formatted with images in the terminal
+Display various types of files nicely formatted with images in the terminal
 
 .. _tool_ranger:
 
@@ -208,6 +208,13 @@ Add this to bashrc and then to plot a function, simply do:
 .. code-block:: sh
 
     iplot 'sin(x*3)*exp(x*.2)'
+
+.. _tool_k-nine:
+
+`k-nine <https://github.com/talwrii/kitty-plotnine>`_
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A wrapper around the :code:`plotnine` library which lets you plot data from the command-line with bash one-liners.
 
 .. tool_tgutui:
 

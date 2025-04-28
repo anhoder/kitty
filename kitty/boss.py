@@ -88,6 +88,7 @@ from .fast_data_types import (
     get_options,
     get_os_window_size,
     global_font_size,
+    is_layer_shell_supported,
     last_focused_os_window_id,
     mark_os_window_for_close,
     monitor_pid,
@@ -109,6 +110,7 @@ from .fast_data_types import (
     thread_write,
     toggle_fullscreen,
     toggle_maximized,
+    toggle_os_window_visibility,
     toggle_secure_input,
     wrapped_kitten_names,
 )
@@ -122,7 +124,7 @@ from .os_window_size import initial_window_size_func
 from .session import Session, create_sessions, get_os_window_sizing_data
 from .shaders import load_shader_programs
 from .tabs import SpecialWindow, SpecialWindowInstance, Tab, TabDict, TabManager
-from .types import _T, AsyncResponse, SingleInstanceData, WindowSystemMouseEvent, ac
+from .types import _T, AsyncResponse, LayerShellConfig, SingleInstanceData, WindowSystemMouseEvent, ac
 from .typing import PopenType, TypedDict
 from .utils import (
     cleanup_ssh_control_masters,
@@ -149,6 +151,7 @@ from .window import CommandOutput, CwdRequest, Window
 
 if TYPE_CHECKING:
 
+    from .fast_data_types import OSWindowSize
     from .rc.base import ResponseType
 # }}}
 
@@ -453,6 +456,18 @@ class Boss:
             wname = self.args.name or self.args.cls or appname
             wclass = self.args.cls or appname
         tm = TabManager(os_window_id, self.args, wclass, wname, startup_session)
+        self.os_window_map[os_window_id] = tm
+        return os_window_id
+
+    def add_os_panel(self, cfg: LayerShellConfig, wclass: str | None = appname, wname: str | None = appname) -> int:
+        if is_macos or not is_wayland() or not is_layer_shell_supported():
+            raise RuntimeError('Creating desktop panels is not supported on this platform')
+        wclass = wclass or appname
+        wname = wname or appname
+        size_data = get_os_window_sizing_data(get_options(), None)
+        os_window_id = create_os_window(
+            initial_window_size_func(size_data, {}), lambda *a: None, appname, wname, wclass, None, layer_shell_config=cfg)
+        tm = TabManager(os_window_id, self.args, wclass, wname, None)
         self.os_window_map[os_window_id] = tm
         return os_window_id
 
@@ -829,10 +844,19 @@ class Boss:
             log_error('Malformed command received over single instance socket, ignoring')
             return None
         if isinstance(data, dict) and data.get('cmd') == 'new_instance':
+            if data['args'][0] == 'panel':
+                from kittens.panel.main import handle_single_instance_command
+                handle_single_instance_command(self, data['args'], data['environ'], data.get('notify_on_os_window_death', ''))
+                return None
             from .cli_stub import CLIOptions
             startup_id = data['environ'].get('DESKTOP_STARTUP_ID', '')
             activation_token = data['environ'].get('XDG_ACTIVATION_TOKEN', '')
-            args, rest = parse_args(list(data['args'][1:]), result_class=CLIOptions)
+            try:
+                args, rest = parse_args(list(data['args'][1:]), result_class=CLIOptions)
+            except BaseException as e:
+                self.show_error(_('Invalid single instance command received'), _('The command: {0} is invalid with error: {1}').format(
+                    data['args'], e))
+                return None
             cmdline_args_for_open = data.get('cmdline_args_for_open')
             if cmdline_args_for_open:
                 self.launch_urls(*cmdline_args_for_open, no_replace_window=True)
@@ -849,10 +873,12 @@ class Boss:
                 args.session = ''
             if not os.path.isabs(args.directory):
                 args.directory = os.path.join(data['cwd'], args.directory)
+            from .child import process_env
+            clean_env = process_env(data['environ'])
             focused_os_window = os_window_id = 0
-            for session in create_sessions(opts, args, respect_cwd=True):
+            for session in create_sessions(opts, args, respect_cwd=True, env_when_no_session=clean_env):
                 if not session.has_non_background_processes:
-                    # background only do not create and OS Window
+                    # background only do not create an OS Window
                     from .launch import LaunchSpec, launch
                     for tab in session.tabs:
                         for window in tab.windows:
@@ -876,6 +902,10 @@ class Boss:
         else:
             log_error('Unknown message received over single instance socket, ignoring')
         return None
+
+    def quick_access_terminal_invoked(self) -> None:
+        for os_window_id in self.os_window_map:
+            toggle_os_window_visibility(os_window_id)
 
     def handle_remote_cmd(self, cmd: memoryview, window: Window | None = None) -> None:
         response = self._handle_remote_command(cmd, window)
@@ -1584,12 +1614,14 @@ class Boss:
             return None
         return tab.resize_window_by(window.id, increment, is_horizontal)
 
-    def resize_os_window(self, os_window_id: int, width: int, height: int, unit: str, incremental: bool = False) -> None:
+    def resize_os_window(self, os_window_id: int, width: int, height: int, unit: str, incremental: bool = False, metrics: 'None | OSWindowSize' = None) -> None:
         if not incremental and (width < 0 or height < 0):
             return
-        metrics = get_os_window_size(os_window_id)
+        metrics = get_os_window_size(os_window_id) if metrics is None else metrics
         if metrics is None:
             return
+        if metrics['is_layer_shell']:
+            raise TypeError(f'The OS Window {os_window_id} is a panel and cannot be resized')
         has_window_scaling = is_macos or is_wayland()
         w, h = get_new_os_window_size(metrics, width, height, unit, incremental, has_window_scaling)
         set_os_window_size(os_window_id, w, h)

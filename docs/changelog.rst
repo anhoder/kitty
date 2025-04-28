@@ -97,6 +97,22 @@ Detailed list of changes
 0.42.0 [future]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+- The :doc:`panel kitten </kittens/panel>` can now be used to :ref:`quake`
+
+- The :doc:`panel kitten </kittens/panel>` now works on macOS as well as Wayland (:iss:`2590`)
+
+- **Behavior change**: Now kitty does full grapheme segmentation following the
+  Unicode 16 spec when splitting text into cells (:iss:`8533`)
+
+- panel kitten: Allow using :option:`kitty +kitten panel --single-instance` to create multiple panels in one process (:iss:`8549`)
+
+- launch: Allow creating desktop panels such as those created by the :doc:`panel kitten </kittens/panel>` (:iss:`8549`)
+
+- Remote control: Allow modifying desktop panels and showing/hiding OS Windows
+  using the `kitten @ resize-os-window` command (:iss:`8550`)
+
+- Allow starting kitty with the OS window hidden via :option:`kitty --start-as`\=hidden useful for single instance mode (:iss:`3466`)
+
 - Allow configuring the mouse unhide behavior when using :opt:`mouse_hide_wait` (:pull:`8508`)
 
 - diff kitten: Add half page and full page scroll vim-like bindings (:pull:`8514`)
@@ -106,6 +122,19 @@ Detailed list of changes
 - Wayland: When the compositor supports the `xdg-system-bell
   <https://wayland.app/protocols/xdg-system-bell-v1>`__ protocol use it to play
   the default bell sound
+
+- panel kitten: Allow specifying panel size in pixels in addition to cells
+
+- Fix a regression in 0.36.0 that caused using = with single letter options to
+  no longer work correctly (:iss:`8556`)
+
+- Single instance: Preserve environment variables from invoking environment in
+  newly created window (:disc:`8567`)
+
+- Single instance: Reset OS Window class and name in new single instance OS
+  windows (:disc:`8567`)
+
+- macOS: Fix text color in visual window select ignoring the color theme (:iss:`8579`)
 
 0.41.1 [2025-04-03]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

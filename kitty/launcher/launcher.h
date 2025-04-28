@@ -8,13 +8,21 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 
 typedef struct CLIOptions {
-    const char *session, *instance_group;
-    bool single_instance, version_requested, wait_for_single_instance_window_close;
+    const char *session, *instance_group, *detached_log;
+    bool single_instance, version_requested, wait_for_single_instance_window_close, detach;
     int open_url_count; char **open_urls;
 } CLIOptions;
 
 
-void
-single_instance_main(int argc, char *argv[], const CLIOptions *opts);
+typedef struct argv_array {
+    char **argv, *buf; size_t capacity, count, pos;
+    bool needs_free;
+} argv_array;
+
+
+void single_instance_main(int argc, char *argv[], const CLIOptions *opts);
+bool get_argv_from(const char *filename, const char* argv0, argv_array *ans);
+void free_argv_array(argv_array *a);

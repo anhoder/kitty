@@ -239,6 +239,10 @@ workaround that limitation, |kitty| will read command line options from the file
 :file:`<kitty config dir>/macos-launch-services-cmdline` when it is launched
 from the GUI, i.e. by clicking the |kitty| application icon or using
 ``open -a kitty``. Note that this file is *only read* when running via the GUI.
+The contents of the file are assumed to be the command line to pass to kitty in
+shell syntax, for example::
+
+    --single-instance --override background=red
 
 You can, of course, also run |kitty| from a terminal with command line options,
 using: :file:`/Applications/kitty.app/Contents/MacOS/kitty`.
@@ -325,10 +329,9 @@ Then, the font will be available in ``kitten choose-fonts``.
 How can I assign a single global shortcut to bring up the kitty terminal?
 -----------------------------------------------------------------------------
 
-Bringing up applications on a single key press is the job of the window
-manager/desktop environment. For ways to do it with kitty (or indeed any
-terminal) in different environments,
-see :iss:`here <45>`.
+Use the :ref:`panel kitten <quake>`, this allows you to use kitty as a quick
+access Quake like terminal and even to use kitty as the desktop background, if
+so desired.
 
 
 I do not like the kitty icon!

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"kitty/tools/cli"
 	"kitty/tools/tty"
@@ -70,8 +72,8 @@ func parse_favorites(raw string) (ans []rune) {
 			line = line[:idx]
 		}
 		code_text, _, _ := strings.Cut(line, " ")
-		code, err := strconv.ParseUint(code_text, 16, 32)
-		if err == nil && codepoint_ok(rune(code)) {
+		code, err := strconv.ParseInt(code_text, 16, 32)
+		if err == nil && code <= utf8.MaxRune && codepoint_ok(rune(code)) {
 			ans = append(ans, rune(code))
 		}
 	}
@@ -208,7 +210,6 @@ func is_index(word string) bool {
 }
 
 func (self *handler) update_codepoints() {
-	var index_word uint64
 	var q checkpoints_key
 	q.mode = self.mode
 	q.index_word = -1
@@ -232,8 +233,9 @@ func (self *handler) update_codepoints() {
 					if i > 0 && is_index(w) {
 						iw := words[i]
 						words = words[:i]
-						index_word, _ = strconv.ParseUint(strings.TrimLeft(iw, INDEX_CHAR), INDEX_BASE, 32)
-						q.index_word = int(index_word)
+						if index_word, perr := strconv.ParseInt(strings.TrimLeft(iw, INDEX_CHAR), INDEX_BASE, 0); perr == nil {
+							q.index_word = int(index_word)
+						}
 						break
 					}
 				}
@@ -388,17 +390,18 @@ func (self *handler) switch_mode(mode Mode) {
 
 func (self *handler) handle_hex_key_event(event *loop.KeyEvent) {
 	text := self.rl.AllText()
-	val, err := strconv.ParseUint(text, 16, 32)
+	uval, err := strconv.ParseUint(text, 16, 32)
 	new_val := -1
-	if err != nil {
+	if err != nil || uval > math.MaxInt {
 		return
 	}
+	val := int(uval)
 	if event.MatchesPressOrRepeat("tab") {
-		new_val = int(val) + 10
+		new_val = val + 10
 	} else if event.MatchesPressOrRepeat("up") {
-		new_val = int(val) + 1
+		new_val = val + 1
 	} else if event.MatchesPressOrRepeat("down") {
-		new_val = utils.Max(32, int(val)-1)
+		new_val = max(32, val-1)
 	}
 	if new_val > -1 {
 		event.Handled = true

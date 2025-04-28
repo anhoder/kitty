@@ -1049,16 +1049,16 @@ typedef struct GLFWLayerShellConfig {
     GLFWEdge edge;
     char output_name[64];
     GLFWFocusPolicy focus_policy;
-    unsigned x_size_in_cells;
-    unsigned y_size_in_cells;
-    unsigned requested_top_margin;
-    unsigned requested_left_margin;
-    unsigned requested_bottom_margin;
-    unsigned requested_right_margin;
+    unsigned x_size_in_cells, x_size_in_pixels;
+    unsigned y_size_in_cells, y_size_in_pixels;
+    int requested_top_margin, requested_left_margin, requested_bottom_margin, requested_right_margin;
     int requested_exclusive_zone;
     unsigned override_exclusive_zone;
-    void (*size_callback)(GLFWwindow *window, const struct GLFWLayerShellConfig *config, unsigned monitor_width, unsigned monitor_height, uint32_t *width, uint32_t *height);
-    struct { double xdpi, ydpi, xscale, yscale; } expected;
+    void (*size_callback)(GLFWwindow *window, float xscale, float yscale, unsigned *cell_width, unsigned *cell_height, double *left_edge_spacing, double *top_edge_spacing, double *right_edge_spacing, double *bottom_edge_spacing);
+    struct { float xscale, yscale; } expected;
+    struct {
+        float background_opacity; int background_blur, color_space;
+    } related;
 } GLFWLayerShellConfig;
 
 typedef struct GLFWDBUSNotificationData {
@@ -1710,7 +1710,7 @@ typedef struct GLFWgamepadstate
 typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int,unsigned long);
 typedef bool (* GLFWapplicationshouldhandlereopenfun)(int);
 typedef bool (* GLFWhandleurlopen)(const char*);
-typedef void (* GLFWapplicationwillfinishlaunchingfun)(void);
+typedef void (* GLFWapplicationwillfinishlaunchingfun)(bool);
 typedef bool (* GLFWcocoatogglefullscreenfun)(GLFWwindow*);
 typedef void (* GLFWcocoarenderframefun)(GLFWwindow*);
 typedef void (*GLFWwaylandframecallbackfunc)(unsigned long long id);
@@ -1852,7 +1852,7 @@ typedef void (*glfwWindowHintString_func)(int, const char*);
 GFW_EXTERN glfwWindowHintString_func glfwWindowHintString_impl;
 #define glfwWindowHintString glfwWindowHintString_impl
 
-typedef GLFWwindow* (*glfwCreateWindow_func)(int, int, const char*, GLFWmonitor*, GLFWwindow*);
+typedef GLFWwindow* (*glfwCreateWindow_func)(int, int, const char*, GLFWmonitor*, GLFWwindow*, const GLFWLayerShellConfig*);
 GFW_EXTERN glfwCreateWindow_func glfwCreateWindow_impl;
 #define glfwCreateWindow glfwCreateWindow_impl
 
@@ -1867,6 +1867,10 @@ GFW_EXTERN glfwIsFullscreen_func glfwIsFullscreen_impl;
 typedef bool (*glfwAreSwapsAllowed_func)(const GLFWwindow*);
 GFW_EXTERN glfwAreSwapsAllowed_func glfwAreSwapsAllowed_impl;
 #define glfwAreSwapsAllowed glfwAreSwapsAllowed_impl
+
+typedef bool (*glfwSetLayerShellConfig_func)(GLFWwindow*, const GLFWLayerShellConfig*);
+GFW_EXTERN glfwSetLayerShellConfig_func glfwSetLayerShellConfig_impl;
+#define glfwSetLayerShellConfig glfwSetLayerShellConfig_impl
 
 typedef void (*glfwDestroyWindow_func)(GLFWwindow*);
 GFW_EXTERN glfwDestroyWindow_func glfwDestroyWindow_impl;
@@ -2340,6 +2344,10 @@ typedef void (*glfwWaylandRedrawCSDWindowTitle_func)(GLFWwindow*);
 GFW_EXTERN glfwWaylandRedrawCSDWindowTitle_func glfwWaylandRedrawCSDWindowTitle_impl;
 #define glfwWaylandRedrawCSDWindowTitle glfwWaylandRedrawCSDWindowTitle_impl
 
+typedef bool (*glfwWaylandIsLayerShellSupported_func)(void);
+GFW_EXTERN glfwWaylandIsLayerShellSupported_func glfwWaylandIsLayerShellSupported_impl;
+#define glfwWaylandIsLayerShellSupported glfwWaylandIsLayerShellSupported_impl
+
 typedef bool (*glfwWaylandIsWindowFullyCreated_func)(GLFWwindow*);
 GFW_EXTERN glfwWaylandIsWindowFullyCreated_func glfwWaylandIsWindowFullyCreated_impl;
 #define glfwWaylandIsWindowFullyCreated glfwWaylandIsWindowFullyCreated_impl
@@ -2348,9 +2356,9 @@ typedef bool (*glfwWaylandBeep_func)(GLFWwindow*);
 GFW_EXTERN glfwWaylandBeep_func glfwWaylandBeep_impl;
 #define glfwWaylandBeep glfwWaylandBeep_impl
 
-typedef void (*glfwWaylandSetupLayerShellForNextWindow_func)(const GLFWLayerShellConfig*);
-GFW_EXTERN glfwWaylandSetupLayerShellForNextWindow_func glfwWaylandSetupLayerShellForNextWindow_impl;
-#define glfwWaylandSetupLayerShellForNextWindow glfwWaylandSetupLayerShellForNextWindow_impl
+typedef GLFWLayerShellConfig* (*glfwWaylandLayerShellConfig_func)(GLFWwindow*);
+GFW_EXTERN glfwWaylandLayerShellConfig_func glfwWaylandLayerShellConfig_impl;
+#define glfwWaylandLayerShellConfig glfwWaylandLayerShellConfig_impl
 
 typedef pid_t (*glfwWaylandCompositorPID_func)(void);
 GFW_EXTERN glfwWaylandCompositorPID_func glfwWaylandCompositorPID_impl;

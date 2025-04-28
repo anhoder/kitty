@@ -1311,16 +1311,16 @@ typedef struct GLFWLayerShellConfig {
     GLFWEdge edge;
     char output_name[64];
     GLFWFocusPolicy focus_policy;
-    unsigned x_size_in_cells;
-    unsigned y_size_in_cells;
-    unsigned requested_top_margin;
-    unsigned requested_left_margin;
-    unsigned requested_bottom_margin;
-    unsigned requested_right_margin;
+    unsigned x_size_in_cells, x_size_in_pixels;
+    unsigned y_size_in_cells, y_size_in_pixels;
+    int requested_top_margin, requested_left_margin, requested_bottom_margin, requested_right_margin;
     int requested_exclusive_zone;
     unsigned override_exclusive_zone;
-    void (*size_callback)(GLFWwindow *window, const struct GLFWLayerShellConfig *config, unsigned monitor_width, unsigned monitor_height, uint32_t *width, uint32_t *height);
-    struct { double xdpi, ydpi, xscale, yscale; } expected;
+    void (*size_callback)(GLFWwindow *window, float xscale, float yscale, unsigned *cell_width, unsigned *cell_height, double *left_edge_spacing, double *top_edge_spacing, double *right_edge_spacing, double *bottom_edge_spacing);
+    struct { float xscale, yscale; } expected;
+    struct {
+        float background_opacity; int background_blur, color_space;
+    } related;
 } GLFWLayerShellConfig;
 
 typedef struct GLFWDBUSNotificationData {
@@ -2869,10 +2869,11 @@ GLFWAPI void glfwWindowHintString(int hint, const char* value);
  *
  *  @ingroup window
  */
-GLFWAPI GLFWwindow* glfwCreateWindow(int width, int height, const char* title, GLFWmonitor* monitor, GLFWwindow* share);
+GLFWAPI GLFWwindow* glfwCreateWindow(int width, int height, const char* title, GLFWmonitor* monitor, GLFWwindow* share, const GLFWLayerShellConfig *lsc);
 GLFWAPI bool glfwToggleFullscreen(GLFWwindow *window, unsigned int flags);
 GLFWAPI bool glfwIsFullscreen(GLFWwindow *window, unsigned int flags);
 GLFWAPI bool glfwAreSwapsAllowed(const GLFWwindow* window);
+GLFWAPI bool glfwSetLayerShellConfig(GLFWwindow* handle, const GLFWLayerShellConfig *value);
 
 /*! @brief Destroys the specified window and its context.
  *

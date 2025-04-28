@@ -769,10 +769,11 @@ PYWRAP1(set_options) {
         Py_CLEAR(global_state.options_object);
         Py_RETURN_NONE;
     }
-    global_state.is_wayland = is_wayland ? true : false;
 #ifdef __APPLE__
+    global_state.is_apple = true;
     global_state.has_render_frames = true;
 #endif
+    global_state.is_wayland = is_wayland ? true : false;
     if (global_state.is_wayland) global_state.has_render_frames = true;
     global_state.debug_rendering = debug_rendering ? true : false;
     global_state.debug_font_fallback = debug_font_fallback ? true : false;
@@ -1081,9 +1082,7 @@ PYWRAP1(os_window_font_size) {
     PA("K|dp", &os_window_id, &new_sz, &force);
     WITH_OS_WINDOW(os_window_id)
         if (new_sz > 0 && (force || new_sz != os_window->fonts_data->font_sz_in_pts)) {
-            double xdpi, ydpi; float xscale, yscale;
-            get_os_window_content_scale(os_window, &xdpi, &ydpi, &xscale, &yscale);
-            os_window->fonts_data = load_fonts_data(new_sz, xdpi, ydpi);
+            on_os_window_font_size_change(os_window, new_sz);
             send_prerendered_sprites_for_window(os_window);
             resize_screen(os_window, os_window->tab_bar_render_data.screen, false);
             for (size_t ti = 0; ti < os_window->num_tabs; ti++) {
@@ -1093,7 +1092,6 @@ PYWRAP1(os_window_font_size) {
                     resize_screen(os_window, w->render_data.screen, true);
                 }
             }
-            os_window_update_size_increments(os_window);
             // On Wayland with CSD title needs to be re-rendered in a different font size
             if (os_window->window_title && global_state.is_wayland) set_os_window_title(os_window, NULL);
         }
@@ -1123,10 +1121,10 @@ PYWRAP1(get_os_window_size) {
         get_os_window_size(os_window, &width, &height, &fw, &fh);
         get_os_window_content_scale(os_window, &xdpi, &ydpi, &xscale, &yscale);
         unsigned int cell_width = os_window->fonts_data->fcm.cell_width, cell_height = os_window->fonts_data->fcm.cell_height;
-        return Py_BuildValue("{si si si si sf sf sd sd sI sI}",
+        return Py_BuildValue("{si si si si sf sf sd sd sI sI sO}",
             "width", width, "height", height, "framebuffer_width", fw, "framebuffer_height", fh,
             "xscale", xscale, "yscale", yscale, "xdpi", xdpi, "ydpi", ydpi,
-            "cell_width", cell_width, "cell_height", cell_height);
+            "cell_width", cell_width, "cell_height", cell_height, "is_layer_shell", os_window->is_layer_shell ? Py_True : Py_False);
     END_WITH_OS_WINDOW
     Py_RETURN_NONE;
 }
@@ -1558,6 +1556,7 @@ init_state(PyObject *module) {
     PyModule_AddIntMacro(module, WINDOW_NORMAL);
     PyModule_AddIntMacro(module, WINDOW_FULLSCREEN);
     PyModule_AddIntMacro(module, WINDOW_MAXIMIZED);
+    PyModule_AddIntMacro(module, WINDOW_HIDDEN);
     PyModule_AddIntMacro(module, WINDOW_MINIMIZED);
     PyModule_AddIntMacro(module, TOP_EDGE);
     PyModule_AddIntMacro(module, BOTTOM_EDGE);
