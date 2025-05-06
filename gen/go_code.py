@@ -29,11 +29,8 @@ from kittens.tui.operations import Mode
 from kittens.tui.spinners import spinners
 from kitty.actions import get_all_actions
 from kitty.cli import (
-    CompletionSpec,
     GoOption,
     go_options_for_seq,
-    parse_option_spec,
-    serialize_as_go_string,
 )
 from kitty.conf.generate import gen_go_code
 from kitty.conf.types import Definition
@@ -45,6 +42,7 @@ from kitty.options.types import Options
 from kitty.rc.base import RemoteCommand, all_command_names, command_for_name
 from kitty.remote_control import global_options_spec
 from kitty.rgb import color_names
+from kitty.simple_cli_definitions import CompletionSpec, parse_option_spec, serialize_as_go_string
 
 if __name__ == '__main__' and not __package__:
     import __main__
@@ -452,15 +450,6 @@ def go_code_for_remote_command(name: str, cmd: RemoteCommand, template: str) -> 
 
 # kittens {{{
 
-@lru_cache
-def wrapped_kittens() -> tuple[str, ...]:
-    with open('shell-integration/ssh/kitty') as f:
-        for line in f:
-            if line.startswith('    wrapped_kittens="'):
-                val = line.strip().partition('"')[2][:-1]
-                return tuple(sorted(filter(None, val.split())))
-    raise Exception('Failed to read wrapped kittens from kitty wrapper script')
-
 
 def generate_conf_parser(kitten: str, defn: Definition) -> None:
     with replace_if_needed(f'kittens/{kitten}/conf_generated.go'):
@@ -541,7 +530,7 @@ def kitten_clis() -> None:
             for opt in gopts:
                 print(opt.as_option('ans'))
                 od.append(opt.struct_declaration())
-                ser.append(opt.as_string_for_commandline())
+                ser.append('\n'.join(opt.as_string_for_commandline()))
             if ac is not None:
                 print(''.join(ac.as_go_code('ans.ArgCompleter', ' = ')))
             if not kcd:
@@ -555,8 +544,11 @@ def kitten_clis() -> None:
             print('\n'.join(od))
             print('}')
             print('func (opts Options) AsCommandLine() (ans []string) {')
-            for x in ser:
-                print('\t' + x)
+            if ser:
+                print('\t sval := ""')
+                print('\t _ = sval')
+                for x in ser:
+                    print('\t' + x)
             print('return')
             print('}')
 

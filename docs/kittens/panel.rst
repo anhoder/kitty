@@ -8,52 +8,43 @@ Draw a GPU accelerated dock panel on your desktop
     Overview
     --------------
 
+.. include:: ../quake-screenshots.rst
 
-You can use this kitten to draw a GPU accelerated panel on the edge of your
-screen or as the desktop wallpaper, that shows the output from an arbitrary
-terminal program.
+Draw the desktop wallpaper or docks and panels using arbitrary
+terminal programs, For example, have `btop
+<https://github.com/aristocratos/btop>`__ or `cava
+<https://github.com/karlstav/cava/>`__ be your desktop wallpaper.
 
 It is useful for showing status information or notifications on your desktop
-using terminal programs instead of GUI toolkits. It can also be used for a
-:ref:`Quake like quick access terminal <quake>`.
-
-.. figure:: ../screenshots/panel.png
-   :alt: Screenshot, showing a sample panel
-   :align: center
-   :width: 100%
-
-   Screenshot, showing a sample panel
+using terminal programs instead of GUI toolkits.
 
 
-The screenshot above shows a sample panel that displays the current desktop and
-window title as well as miscellaneous system information such as network
-activity, CPU load, date/time, etc.
+The screenshot to the side shows some uses of the panel kitten to draw various
+desktop components such as the background, a quick access floating terminal and
+a dock panel showing system information (Linux only).
 
 .. versionadded:: 0.42.0
-   Support for macOS and support for Wayland was added in 0.34.0
 
-.. note::
+   Support for macOS, see :ref:`compatibility matrix <panel_compat>` for details.
+   and X11 (background and overlay).
 
-    This kitten currently only works on macOS and Wayland compositors
-    that support the `wlr layer shell protocol
-    <https://wayland.app/protocols/wlr-layer-shell-unstable-v1#compositor-support>`__
-    (which is almost all of them except GNOME). On macOS the panels do not
-    prevent other windows from floating over them because of limitations in
-    Cocoa. On X11, only the ``top`` and ``bottom`` panels are widely supported,
-    the other types depend on the window manager used.
+.. versionadded:: 0.34.0
+
+   Support for Wayland. See :ref:`below <panel_compat>` for which
+   Wayland compositors work.
 
 Using this kitten is simple, for example::
 
-    kitty +kitten panel sh -c 'printf "\n\n\nHello, world."; sleep 5s'
+    kitten panel sh -c 'printf "\n\n\nHello, world."; sleep 5s'
 
 This will show ``Hello, world.`` at the top edge of your screen for five
 seconds. Here, the terminal program we are running is :program:`sh` with a script
 to print out ``Hello, world!``. You can make the terminal program as complex as
-you like, as demonstrated in the screenshot above.
+you like, as demonstrated in the screenshots.
 
-If you are on Wayland or macOS, you can, for instance run::
+If you are on Wayland or macOS, you can, for instance, run::
 
-    kitty +kitten panel --edge=background htop
+    kitten panel --edge=background htop
 
 to display ``htop`` as your desktop background. Remember this works in everything
 but GNOME and also, in sway, you have to disable the background wallpaper as
@@ -62,40 +53,13 @@ sway renders that over the panel kitten surface.
 There are projects that make use of this facility to implement generalised
 panels and desktop components:
 
+.. _panel_projects:
+
     * `kitty panel <https://github.com/5hubham5ingh/kitty-panel>`__
     * `pawbar <https://github.com/codelif/pawbar>`__
 
 
-.. _quake:
-
-Make a Quake like quick access terminal
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-.. versionadded:: 0.42.0
-   Support for quake mode, works only on macOS and Wayland, except for GNOME.
-
-This kitten can be used to make a quick access terminal, that appears and
-disappears at a key press. To do so use the following command:
-
-.. code-block:: sh
-
-_default_quake_cmdline
-
-Run this command in a terminal, and a quick access kitty panel will show up at
-the top of your screen. Run it again, and the panel will be hidden.
-
-Simply bind this command to some key press in your window manager or desktop
-environment settings and then you have a quick access terminal at a single key press.
-You can use the various panel options to configure the size, appearance and
-position of the quick access panel. In particular, the :option:`kitty +kitten panel --config` and
-:option:`kitty +kitten panel --override` options can be used to theme the terminal appropriately,
-making it look different from regular kitty terminal instances.
-
-.. note::
-   If you want to start the quake terminal hidden, use
-   :option:`kitty +kitten panel --start-as-hidden`, useful if you are starting it in the background
-   during computer startup.
-
+.. _remote_control_panel:
 
 Controlling panels via remote control
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -103,7 +67,7 @@ Controlling panels via remote control
 You can control panels via the kitty :doc:`remote control </remote-control>` facility. Create a panel
 with remote control enabled::
 
-    kitty +kitten panel -o allow_remote_control=socket-only --lines=2 \
+    kitten panel -o allow_remote_control=socket-only --lines=2 \
         --listen-on=unix:/tmp/panel kitten run-shell
 
 
@@ -125,3 +89,137 @@ To create a new panel running the program top, in the same instance
 
 
 .. include:: ../generated/cli-kitten-panel.rst
+
+
+.. _quake_ss:
+
+How the screenshots were generated
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The system statistics in the background were created using::
+
+    kitten panel --edge=background -o background_opacity=0.2 -o background=black btop
+
+This creates a kitty background window and inside it runs the `btop
+<https://github.com/aristocratos/btop>`__ program to display the statistics.
+
+The floating quick access window was created by running::
+
+    kitten quick-access-terminal kitten run-shell \
+       zsh -c 'printf "\e]66;s=4;Quick access kitty in Hyprland\a\n\n\n\nAlso uses kitty to draw desktop background\n"'
+
+This starts the quick access window and inside it runs ``kitten run-shell``, which
+in turn first runs ``zsh`` to print out the message and then starts the users login
+shell.
+
+The Linux dock panel was::
+
+    kitten panel kitty +launch my-panel.py
+
+This creates the panel window and runs the ``my-panel.py`` script inside it
+using the Python interpreter that comes bundled with kitty. Unfortunately the
+actual script is not public, but there are :ref:`public projects implementing
+general purpose panels using kitty <panel_projects>`.
+
+
+.. _panel_compat:
+
+Compatibility with various platforms
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. only:: man
+
+   See the HTML documentation for the compatibility matrix.
+
+.. only:: not man
+
+    Generated with the help of the :file:`panels.py` test script.
+
+    .. tab:: Wayland
+
+        Below is a list of the status of various Wayland compositors. The panel kitten
+        relies of the `wlr layer shell protocol
+        <https://wayland.app/protocols/wlr-layer-shell-unstable-v1#compositor-support>`__,
+        which is technically supported by almost all Wayland compositors, but the
+        implementation in some of them is quite buggy.
+
+        🟢 **Hyprland**
+           Fully working, no known issues
+
+        🟢 **KDE** (kwin)
+           Fully working, no known issues
+
+        🟠 **Sway**
+           Partially working. Issues include:
+               * Renders its configured background over the background window instead of
+                 under it. This is likely because it uses the wlr protocol for
+                 backgrounds itself.
+               * Hiding a dock panel (unmapping the window) does not release the space
+                 used by the dock.
+
+        🟠 **niri**
+           Breaks when hiding (unmapping) layer shell windows. This means the quick
+           access terminal is non-functional, but background and dock panels work.
+           More technically, keyboard focus gets stuck in the hidden window and when trying
+           to remap the hidden window niri never sends configure events for the remapped surface.
+
+        🟠 **labwc**
+           Breaks when hiding (unmapping) layer shell windows. This means the quick
+           access terminal is non-functional, but background and dock panels work.
+           More technically, when unmapping the surface (attaching a NULL buffer to
+           it) labwc continues to send configure events to the unmapped surface,
+           leading to Wayland protocol errors and a crash of labwc.
+
+        🔴 **GNOME** (mutter)
+           Does not implement the wlr protocol at all, nothing works.
+
+    .. tab:: macOS
+
+        Mostly everything works, with the notable exception that dock panels do not
+        prevent other windows from covering them. This is because Apple does not
+        provide and way to do this in their APIs.
+
+    .. tab:: X11
+
+        Support is highly dependent on the quirks of individual window
+        managers. See the matrix below:
+
+        .. list-table:: Compatibility matrix
+           :header-rows: 1
+           :stub-columns: 1
+
+           * - WM
+             - Desktop
+             - Dock
+             - Quick
+             - Notes
+
+           * - KDE
+             - 🟠
+             - 🟢
+             - 🟢
+             - transparency does not work for :option:`--edge=background <--edge>`
+
+           * - GNOME
+             - 🟢
+             - 🟢
+             - 🟢
+             -
+
+           * - XFCE
+             - 🟢
+             - 🟢
+             - 🟢
+             -
+
+           * - i3
+             - 🔴
+             - 🟠
+             - 🔴
+             - only top and bottom dock panels, without transparency
+
+           * - xmonad
+             - 🔴
+             - 🔴
+             - 🔴
+             - doesn't support the needed NET_WM protocols

@@ -51,11 +51,17 @@ func (self *Command) parse_args(ctx *Context, args []string) error {
 		opt.seen_option = opt_str
 		needs_arg := opt.needs_argument()
 		if needs_arg && val_not_allowed {
-			return &ParseError{Message: fmt.Sprintf("The option : :yellow:`%s` must be followed by a value not another option", opt_str)}
+			return &ParseError{Message: fmt.Sprintf("The option: :yellow:`%s` must be followed by a value not another option", opt_str)}
 		}
 		if has_val {
 			if !needs_arg {
-				return &ParseError{Message: fmt.Sprintf("The option: :yellow:`%s` does not take values", opt_str)}
+				if opt.OptionType == BoolOption {
+					if err := opt.add_value(opt_val); err != nil {
+						return err
+					}
+				} else {
+					return &ParseError{Message: fmt.Sprintf("The option: :yellow:`%s` does not take values", opt_str)}
+				}
 			}
 			return opt.add_value(opt_val)
 		} else if needs_arg {
@@ -76,16 +82,8 @@ func (self *Command) parse_args(ctx *Context, args []string) error {
 					options_allowed = false
 					continue
 				}
-				opt_str := arg
-				opt_val := ""
-				has_val := false
+				opt_str, opt_val, has_val := strings.Cut(arg, "=")
 				if strings.HasPrefix(opt_str, "--") {
-					parts := strings.SplitN(arg, "=", 2)
-					if len(parts) > 1 {
-						has_val = true
-						opt_val = parts[1]
-					}
-					opt_str = parts[0]
 					err := handle_option(opt_str, has_val, opt_val, false)
 					if err != nil {
 						return err
@@ -93,7 +91,12 @@ func (self *Command) parse_args(ctx *Context, args []string) error {
 				} else {
 					runes := []rune(opt_str[1:])
 					for i, sl := range runes {
-						err := handle_option("-"+string(sl), false, "", i < len(runes)-1)
+						var err error
+						if i == len(runes)-1 {
+							err = handle_option("-"+string(sl), has_val, opt_val, false)
+						} else {
+							err = handle_option("-"+string(sl), false, "", true)
+						}
 						if err != nil {
 							return err
 						}

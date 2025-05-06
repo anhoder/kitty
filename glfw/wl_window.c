@@ -976,8 +976,20 @@ find_output_by_name(const char* name) {
     return NULL;
 }
 
+static enum zwlr_layer_shell_v1_layer
+get_layer_shell_layer(const _GLFWwindow *window) {
+    enum zwlr_layer_shell_v1_layer which_layer = ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND; // Default to background
+    switch (window->wl.layer_shell.config.type) {
+        case GLFW_LAYER_SHELL_BACKGROUND: case GLFW_LAYER_SHELL_NONE: break;
+        case GLFW_LAYER_SHELL_PANEL: which_layer = ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM; break;
+        case GLFW_LAYER_SHELL_TOP: which_layer = ZWLR_LAYER_SHELL_V1_LAYER_TOP; break;
+        case GLFW_LAYER_SHELL_OVERLAY: which_layer = ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY; break;
+    }
+    return which_layer;
+}
+
 static void
-layer_set_properties(const _GLFWwindow *window, uint32_t width, uint32_t height) {
+layer_set_properties(const _GLFWwindow *window, bool during_creation, uint32_t width, uint32_t height) {
 #define config window->wl.layer_shell.config
     enum zwlr_layer_surface_v1_anchor which_anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
     int exclusive_zone = config.requested_exclusive_zone;
@@ -1031,6 +1043,7 @@ layer_set_properties(const _GLFWwindow *window, uint32_t width, uint32_t height)
     zwlr_layer_surface_v1_set_anchor(surface, which_anchor);
     zwlr_layer_surface_v1_set_exclusive_zone(surface, exclusive_zone);
     zwlr_layer_surface_v1_set_margin(surface, config.requested_top_margin, config.requested_right_margin, config.requested_bottom_margin, config.requested_left_margin);
+    if (!during_creation) zwlr_layer_surface_v1_set_layer(surface, get_layer_shell_layer(window));
     zwlr_layer_surface_v1_set_keyboard_interactivity(surface, focus_policy);
 #undef surface
 #undef config
@@ -1041,8 +1054,10 @@ calculate_layer_size(_GLFWwindow *window, uint32_t *width, uint32_t *height) {
     const GLFWLayerShellConfig *config = &window->wl.layer_shell.config;
     GLFWvidmode m = {0};
     if (window->wl.monitorsCount) _glfwPlatformGetVideoMode(window->wl.monitors[0], &m);
+    int monitor_width = m.width, monitor_height = m.height;
     const int y_margin = config->requested_bottom_margin + config->requested_top_margin, x_margin = config->requested_left_margin + config->requested_right_margin;
-    const int monitor_width = MAX(0, m.width - x_margin), monitor_height = MAX(0, m.height - y_margin);
+    monitor_width = monitor_width > x_margin ? monitor_width - x_margin : 0;
+    monitor_height = monitor_height > y_margin ? monitor_height - y_margin : 0;
     float xscale = (float)config->expected.xscale, yscale = (float)config->expected.yscale;
     if (window->wl.window_fully_created) _glfwPlatformGetWindowContentScale(window, &xscale, &yscale);
     unsigned cell_width, cell_height; double left_edge_spacing, top_edge_spacing, right_edge_spacing, bottom_edge_spacing;
@@ -1054,9 +1069,9 @@ calculate_layer_size(_GLFWwindow *window, uint32_t *width, uint32_t *height) {
         if (!*height) *height = monitor_height;
         return;
     }
-    debug("Calculating layer shell window size at scale: %f\n", xscale);
     const unsigned xsz = config->x_size_in_pixels ? (unsigned)(config->x_size_in_pixels * xscale) : (cell_width * config->x_size_in_cells);
     const unsigned ysz = config->y_size_in_pixels ? (unsigned)(config->y_size_in_pixels * yscale) : (cell_height * config->y_size_in_cells);
+    debug("Calculating layer shell window size at scale: %f cell_size: %u %u sz: %u %u\n", xscale, cell_width, cell_height, xsz, ysz);
     if (config->edge == GLFW_EDGE_LEFT || config->edge == GLFW_EDGE_RIGHT) {
         if (!*height) *height = monitor_height;
         double spacing = spacing_x;
@@ -1076,6 +1091,7 @@ calculate_layer_size(_GLFWwindow *window, uint32_t *width, uint32_t *height) {
         *width = (uint32_t)(1. + spacing_x);
         *height = (uint32_t)(1. + spacing_y);
     }
+
 }
 
 static void
@@ -1088,8 +1104,6 @@ layer_surface_handle_configure(void* data, struct zwlr_layer_surface_v1* surface
         window->wl.once.surface_configured = true;
         update_fully_created_on_configure(window);
     }
-    GLFWvidmode m = {0};
-    if (window->wl.monitorsCount) _glfwPlatformGetVideoMode(window->wl.monitors[0], &m);
     calculate_layer_size(window, &width, &height);
     zwlr_layer_surface_v1_ack_configure(surface, serial);
     if ((int)width != window->wl.width || (int)height != window->wl.height) {
@@ -1098,7 +1112,7 @@ layer_surface_handle_configure(void* data, struct zwlr_layer_surface_v1* surface
         window->wl.width = width; window->wl.height = height;
         resizeFramebuffer(window);
         _glfwInputWindowDamage(window);
-        layer_set_properties(window, window->wl.width, window->wl.height);
+        layer_set_properties(window, false, window->wl.width, window->wl.height);
         if (window->wl.wp_viewport) wp_viewport_set_destination(window->wl.wp_viewport, window->wl.width, window->wl.height);
     }
     commit_window_surface_if_safe(window);
@@ -1127,22 +1141,15 @@ create_layer_shell_surface(_GLFWwindow *window) {
     }
     window->decorated = false;  // shell windows must not have decorations
     struct wl_output *wl_output = find_output_by_name(window->wl.layer_shell.config.output_name);
-    enum zwlr_layer_shell_v1_layer which_layer = ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND; // Default to background
-    switch (window->wl.layer_shell.config.type) {
-        case GLFW_LAYER_SHELL_BACKGROUND: break; case GLFW_LAYER_SHELL_NONE: break;
-        case GLFW_LAYER_SHELL_PANEL: which_layer = ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM; break;
-        case GLFW_LAYER_SHELL_TOP: which_layer = ZWLR_LAYER_SHELL_V1_LAYER_TOP; break;
-        case GLFW_LAYER_SHELL_OVERLAY: which_layer = ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY; break;
-    }
 #define ls window->wl.layer_shell.zwlr_layer_surface_v1
     ls = zwlr_layer_shell_v1_get_layer_surface(
-            _glfw.wl.zwlr_layer_shell_v1, window->wl.surface, wl_output, which_layer, "kitty");
+            _glfw.wl.zwlr_layer_shell_v1, window->wl.surface, wl_output, get_layer_shell_layer(window), "kitty");
     if (!ls) {
         _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: layer-surface creation failed");
         return false;
     }
     zwlr_layer_surface_v1_add_listener(ls, &zwlr_layer_surface_v1_listener, window);
-    layer_set_properties(window, window->wl.width, window->wl.height);
+    layer_set_properties(window, true, window->wl.width, window->wl.height);
     if (window->wl.wp_viewport) wp_viewport_set_destination(window->wl.wp_viewport, window->wl.width, window->wl.height);
     commit_window_surface(window);
     wl_display_roundtrip(_glfw.wl.display);
@@ -1727,7 +1734,7 @@ void _glfwPlatformShowWindow(_GLFWwindow* window)
             window->wl.visible = true;
         } else {
             // workaround for kwin layer shell bug: https://bugs.kde.org/show_bug.cgi?id=503121
-            if (is_layer_shell(window)) layer_set_properties(window, window->wl.width, window->wl.height);
+            if (is_layer_shell(window)) layer_set_properties(window, false, window->wl.width, window->wl.height);
             window->wl.visible = true;
             commit_window_surface(window);
         }
@@ -1752,7 +1759,7 @@ _glfwPlatformSetLayerShellConfig(_GLFWwindow* window, const GLFWLayerShellConfig
     if (value) window->wl.layer_shell.config = *value;
     uint32_t width, height;
     calculate_layer_size(window, &width, &height);
-    layer_set_properties(window, width, height);
+    layer_set_properties(window, false, width, height);
     commit_window_surface(window);
     return true;
 }
@@ -2889,7 +2896,7 @@ GLFWAPI GLFWLayerShellConfig* glfwWaylandLayerShellConfig(GLFWwindow *handle) {
     return &((_GLFWwindow*)handle)->wl.layer_shell.config;
 }
 
-GLFWAPI bool glfwWaylandIsLayerShellSupported(void) { return _glfw.wl.zwlr_layer_shell_v1 != NULL; }
+GLFWAPI bool glfwIsLayerShellSupported(void) { return _glfw.wl.zwlr_layer_shell_v1 != NULL; }
 
 GLFWAPI bool glfwWaylandIsWindowFullyCreated(GLFWwindow *handle) { return handle != NULL && ((_GLFWwindow*)handle)->wl.window_fully_created; }
 

@@ -6,6 +6,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -36,16 +37,33 @@ var conf *Config
 var opts *Options
 var lp *loop.Loop
 
-func isdir(path string) bool {
-	if s, err := os.Stat(path); err == nil {
-		return s.IsDir()
-	}
-	return false
-}
+var temp_files []string
 
-func exists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
+func resolve_path(path string) (ans string, is_dir bool, err error) {
+	var s fs.FileInfo
+	if s, err = os.Stat(path); err != nil {
+		return
+	} else {
+		if s.Mode()&fs.ModeNamedPipe != 0 {
+			var src, dest *os.File
+			if src, err = os.Open(path); err != nil {
+				return
+			}
+			defer src.Close()
+			if dest, err = os.CreateTemp("", fmt.Sprintf("*-pipe-%s", filepath.Base(path))); err != nil {
+				return
+			}
+			defer dest.Close()
+			temp_files = append(temp_files, dest.Name())
+			if _, err = io.Copy(dest, src); err != nil {
+				return
+			}
+			return dest.Name(), false, nil
+
+		} else {
+			return path, s.IsDir(), nil
+		}
+	}
 }
 
 func get_ssh_file(hostname, rpath string) (string, error) {
@@ -133,15 +151,22 @@ func main(_ *cli.Command, opts_ *Options, args []string) (rc int, err error) {
 	if err != nil {
 		return 1, err
 	}
-	if isdir(left) != isdir(right) {
+	defer func() {
+		for _, path := range temp_files {
+			os.Remove(path)
+		}
+	}()
+	var left_is_dir, right_is_dir bool
+	if left, left_is_dir, err = resolve_path(left); err != nil {
+		return 1, err
+	}
+	if right, right_is_dir, err = resolve_path(right); err != nil {
+		return 1, err
+	}
+	if left_is_dir != right_is_dir {
 		return 1, fmt.Errorf("The items to be diffed should both be either directories or files. Comparing a directory to a file is not valid.'")
 	}
-	if !exists(left) {
-		return 1, fmt.Errorf("%s does not exist", left)
-	}
-	if !exists(right) {
-		return 1, fmt.Errorf("%s does not exist", right)
-	}
+
 	lp, err = loop.New()
 	loop.MouseTrackingMode(lp, loop.BUTTONS_AND_DRAG_MOUSE_TRACKING)
 	if err != nil {

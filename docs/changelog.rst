@@ -9,6 +9,18 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+Access kitty with a single keypress [0.42]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. include:: quake-screenshots.rst
+
+kitty now has a Quake like floating, translucent terminal window, so you can access
+all that kitty goodness instantly with a single keypress.
+
+See the screenshots on the side and head over to the :doc:`kitten page for details
+on how to set it up </kittens/quick-access-terminal>`.
+
+
 Multiple sized text [0.40]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -97,7 +109,7 @@ Detailed list of changes
 0.42.0 [future]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- The :doc:`panel kitten </kittens/panel>` can now be used to :ref:`quake`
+- A new kitten: :doc:`quick-access-terminal </kittens/quick-access-terminal>` to :ref:`quake`
 
 - The :doc:`panel kitten </kittens/panel>` now works on macOS as well as Wayland (:iss:`2590`)
 
@@ -116,6 +128,8 @@ Detailed list of changes
 - Allow configuring the mouse unhide behavior when using :opt:`mouse_hide_wait` (:pull:`8508`)
 
 - diff kitten: Add half page and full page scroll vim-like bindings (:pull:`8514`)
+
+- diff kitten: Allow diffing named pipes (:iss:`8597`)
 
 - Fix a regression that caused automatic color themes to not be re-applied after config file reload (:iss:`8530`)
 

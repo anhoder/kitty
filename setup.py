@@ -1058,17 +1058,30 @@ def extract_rst_targets() -> Dict[str, Dict[str, str]]:
     return cast(Dict[str, Dict[str, str]], m['main']())
 
 
+def update_if_changed(path: str, text: str) -> None:
+    q = ''
+    with suppress(FileNotFoundError), open(path) as f:
+        q = f.read()
+    if q != text:
+        with open(path, 'w') as f:
+            f.write(text)
+
+
 def build_ref_map(skip_generation: bool = False) -> str:
     dest = 'kitty/docs_ref_map_generated.h'
     if not skip_generation:
         d = extract_rst_targets()
         h = 'static const char docs_ref_map[] = {\n' + textwrap.fill(', '.join(map(str, bytearray(json.dumps(d, sort_keys=True).encode('utf-8'))))) + '\n};\n'
-        q = ''
-        with suppress(FileNotFoundError), open(dest) as f:
-            q = f.read()
-        if q != h:
-            with open(dest, 'w') as f:
-                f.write(h)
+        update_if_changed(dest, h)
+    return dest
+
+
+def build_cli_parser_specs(skip_generation: bool = False) -> str:
+    dest = 'kitty/launcher/cli-parser-data_generated.h'
+    if not skip_generation:
+        m = runpy.run_path('kitty/simple_cli_definitions.py', {'appname': appname})
+        h = '\n'.join(m['generate_c_parsers']())
+        update_if_changed(dest, h)
     return dest
 
 
@@ -1136,6 +1149,7 @@ def build(args: Options, native_optimizations: bool = True, call_init: bool = Tr
         init_env_from_args(args, native_optimizations)
     sources, headers = find_c_files()
     headers.append(build_ref_map(args.skip_code_generation))
+    headers.append(build_cli_parser_specs(args.skip_code_generation))
     headers.append(build_uniforms_header(args.skip_code_generation))
     compile_c_extension(
         kitty_env(args), 'kitty/fast_data_types', args.compilation_database, sources, headers,
@@ -1281,17 +1295,14 @@ def read_bool_options(path: str = 'kitty/cli.py') -> Tuple[str, ...]:
     return tuple(ans)
 
 
-@lru_cache(2)
-def kitty_cli_boolean_options() -> Tuple[str, ...]:
-    return tuple(sorted(set(read_bool_options()) | set(read_bool_options('kittens/panel/main.py'))))
-
-
 def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 'source') -> str:
     werror = '' if args.ignore_compiler_warnings else '-pedantic-errors -Werror'
     cflags = f'-Wall {werror} -fpie'.split()
     cppflags = [define(f'WRAPPED_KITTENS=" {wrapped_kittens()} "')]
-    libs: List[str] = []
     ldflags = shlex.split(os.environ.get('LDFLAGS', ''))
+    xxhash = xxhash_flags()
+    cppflags.extend(xxhash[0])
+    libs: list[str] = xxhash[1]
     if args.profile or args.sanitize:
         cflags.append('-g3')
         if args.sanitize:
@@ -1343,14 +1354,15 @@ def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 's
     os.makedirs(launcher_dir, exist_ok=True)
     os.makedirs(build_dir, exist_ok=True)
     objects = []
-    cppflags.append('-DKITTY_CLI_BOOL_OPTIONS=" ' + ' '.join(kitty_cli_boolean_options()) + ' "')
+    headers = glob.glob('kitty/launcher/*.h')
     cppflags.append('-DKITTY_VERSION="' + '.'.join(map(str, version)) + '"')
     for src in ('kitty/launcher/main.c', 'kitty/launcher/single-instance.c', 'kitty/launcher/cmdline.c'):
         obj = os.path.join(build_dir, src.replace('/', '-').replace('.c', '.o'))
         objects.append(obj)
         cmd = env.cc + cppflags + cflags + ['-c', src, '-o', obj]
         key = CompileKey(src, os.path.basename(obj))
-        args.compilation_database.add_command(f'Compiling {emphasis(src)} ...', cmd, partial(newer, obj, src), key=key, keyfile=src)
+        args.compilation_database.add_command(
+            f'Compiling {emphasis(src)} ...', cmd, partial(newer, obj, src, *dependecies_for(src, obj, headers)), key=key, keyfile=src)
     dest = kitty_exe = os.path.join(launcher_dir, 'kitty')
     link_targets.append(os.path.abspath(dest))
     desc = f'Linking {emphasis("launcher")} ...'

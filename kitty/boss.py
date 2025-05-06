@@ -125,7 +125,7 @@ from .session import Session, create_sessions, get_os_window_sizing_data
 from .shaders import load_shader_programs
 from .tabs import SpecialWindow, SpecialWindowInstance, Tab, TabDict, TabManager
 from .types import _T, AsyncResponse, LayerShellConfig, SingleInstanceData, WindowSystemMouseEvent, ac
-from .typing import PopenType, TypedDict
+from .typing_compat import PopenType, TypedDict
 from .utils import (
     cleanup_ssh_control_masters,
     func_name,
@@ -460,7 +460,7 @@ class Boss:
         return os_window_id
 
     def add_os_panel(self, cfg: LayerShellConfig, wclass: str | None = appname, wname: str | None = appname) -> int:
-        if is_macos or not is_wayland() or not is_layer_shell_supported():
+        if not is_layer_shell_supported():
             raise RuntimeError('Creating desktop panels is not supported on this platform')
         wclass = wclass or appname
         wname = wname or appname
@@ -3039,8 +3039,6 @@ class Boss:
 
     def set_background_image(self, path: str | None, os_windows: tuple[int, ...], configured: bool, layout: str | None, png_data: bytes = b'') -> None:
         set_background_image(path, os_windows, configured, layout, png_data)
-        for os_window_id in os_windows:
-            self.default_bg_changed_for(os_window_id)
 
     # Can be called with kitty -o "map f1 send_test_notification"
     def send_test_notification(self) -> None:

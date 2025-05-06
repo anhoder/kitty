@@ -205,6 +205,10 @@ typedef struct _GLFWwindowX11
     // The last position the cursor was warped to by GLFW
     int             warpCursorPosX, warpCursorPosY;
 
+    struct {
+        bool is_active;
+        GLFWLayerShellConfig config;
+    } layer_shell;
 } _GLFWwindowX11;
 
 typedef struct MimeAtom {
@@ -247,19 +251,22 @@ typedef struct _GLFWlibraryX11
     Atom            WM_STATE;
     Atom            WM_DELETE_WINDOW;
     Atom            NET_WM_NAME;
+    Atom            NET_WM_ALLOWED_ACTIONS, NET_WM_ACTION_MOVE, NET_WM_ACTION_RESIZE, NET_WM_ACTION_MINIMIZE, NET_WM_ACTION_SHADE, NET_WM_ACTION_STICK, NET_WM_ACTION_MAXIMIZE_HORZ, NET_WM_ACTION_MAXIMIZE_VERT, NET_WM_ACTION_FULLSCREEN, NET_WM_ACTION_CHANGE_DESKTOP, NET_WM_ACTION_CLOSE, NET_WM_ACTION_ABOVE, NET_WM_ACTION_BELOW, NET_WM_ACTION_ABOVE_BELOW;
     Atom            NET_WM_ICON_NAME;
     Atom            NET_WM_ICON;
     Atom            NET_WM_PID;
     Atom            NET_WM_PING;
-    Atom            NET_WM_WINDOW_TYPE;
-    Atom            NET_WM_WINDOW_TYPE_NORMAL;
-    Atom            NET_WM_WINDOW_TYPE_DOCK;
+    Atom            NET_WM_WINDOW_TYPE, NET_WM_WINDOW_TYPE_NORMAL, NET_WM_WINDOW_TYPE_DOCK, NET_WM_WINDOW_TYPE_DESKTOP, NET_WM_WINDOW_TYPE_UTILITY, NET_WM_WINDOW_TYPE_SPLASH, NET_WM_WINDOW_TYPE_DIALOG, NET_WM_WINDOW_TYPE_MENU, NET_WM_WINDOW_TYPE_NOTIFICATION;
     Atom            NET_WM_STATE;
     Atom            NET_WM_STATE_ABOVE;
+    Atom            NET_WM_STATE_BELOW;
     Atom            NET_WM_STATE_FULLSCREEN;
     Atom            NET_WM_STATE_MAXIMIZED_VERT;
     Atom            NET_WM_STATE_MAXIMIZED_HORZ;
     Atom            NET_WM_STATE_DEMANDS_ATTENTION;
+    Atom            NET_WM_STATE_SKIP_TASKBAR;
+    Atom            NET_WM_STATE_SKIP_PAGER;
+    Atom            NET_WM_STATE_STICKY;
     Atom            NET_WM_BYPASS_COMPOSITOR;
     Atom            NET_WM_FULLSCREEN_MONITORS;
     Atom            NET_WM_WINDOW_OPACITY;

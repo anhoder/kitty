@@ -3,11 +3,13 @@
 
 import os
 import shutil
+import subprocess
 import tempfile
 
+from kitty.constants import kitty_exe
 from kitty.fast_data_types import Color, test_cursor_blink_easing_function
 from kitty.options.utils import DELETE_ENV_VAR, EasingFunction, to_color
-from kitty.utils import log_error
+from kitty.utils import log_error, shlex_split
 
 from . import BaseTest
 
@@ -28,13 +30,15 @@ class TestConfParsing(BaseTest):
     def test_conf_parsing(self):
         conf_parsing(self)
 
+    def test_launcher(self):
+        launcher(self)
+
     def test_cli_parsing(self):
         cli_parsing(self)
 
 
 def cli_parsing(self):
     from kitty.cli import CLIOptions, Options, parse_cmdline, parse_option_spec
-    from kitty.utils import shlex_split
     seq, disabled = parse_option_spec('''\
 --simple-string -s
 a simple string
@@ -77,39 +81,124 @@ version
     oc = Options(seq, usage='xxx', message='yyy', appname='test')
     oc.do_print = False
 
-    def t(args, leftover=(), fails=False, **expected):
-        oc.values_map['list'] = []
+    def t(args, leftover=(), fails=False, version_called=False, help_called=False, **expected):
+        oc.help_called = oc.version_called = False
         args = list(shlex_split(args))
         ans = CLIOptions()
         if fails:
-            with self.assertRaises(SystemExit):
-                parse_cmdline(oc, disabled, ans, args=args)
+            if isinstance(fails, str):
+                with self.assertRaisesRegex(SystemExit, fails):
+                    parse_cmdline(oc, disabled, ans, args=args)
+            else:
+                with self.assertRaises(SystemExit):
+                    parse_cmdline(oc, disabled, ans, args=args)
         else:
             actual_leftover = parse_cmdline(oc, disabled, ans, args=args)
             self.assertEqual(tuple(leftover), tuple(actual_leftover), f'{args}\n{ans}')
             for dest, defval in oc.values_map.items():
                 val = expected.get(dest, defval)
-                self.assertEqual(val, getattr(ans, dest), f'Failed to parse {dest} correctly for: {args} \n{ans}')
+                self.assertEqual(val, getattr(ans, dest, BaseTest), f'Failed to parse {dest} correctly for: {args}\n{ans}')
+        self.assertEqual(version_called, oc.version_called, f'Failed to call version for: {args}\n{ans}')
+        self.assertEqual(help_called, oc.help_called, f'Failed to call help for: {args}\n{ans}')
 
-    t('-1 -h', fails=True)
-    t('-1 --help', fails=True)
-    t('-1 -0v', fails=True)
-    t('-1 -v0', fails=True)
-    t('-1 --version', fails=True)
     t('-1', bool_set=True)
     t('-01', bool_reset=False, bool_set=True)
     t('-01=y', bool_reset=False, bool_set=True)
     t('-01=n', bool_reset=False, bool_set=False)
     t('--simple-string xx moo -1', leftover=['moo', '-1'], simple_string='xx')
-    t('--simple-string -0 -- -1', leftover=['-1'], simple_string='-0')
+    t('--si -0 -- -1', leftover=['-1'], simple_string='-0')
     t('--simple-string=-0 -- -1', leftover=['-1'], simple_string='-0')
     t('--simple-string=--help -- -1', leftover=['-1'], simple_string='--help')
     t('--simple-string --help -- -1', leftover=['-1'], simple_string='--help')
     t('-1l=a --list=b -c b --list c', bool_set=True, choice='b', list=list('abc'))
     t('-1s= -l "" --list= x', leftover=['x'], bool_set=True, simple_string='', list=['', ''])
-    t('--choice moo', fails=True)
-    t('-1c moo', fails=True)
-    t('-10c=moo', fails=True)
+    t('--choice moo', fails=r'moo')
+    t('--bool', fails='mbiguous')
+    t('-1c moo', fails=r'moo')
+    t('-10c=moo', fails=r'moo')
+    t('-1 -h', fails=True, help_called=True)
+    t('-1 --help', fails=True, help_called=True)
+    t('-1 -0v', fails=True, version_called=True)
+    t('-1 -v0', fails=True, version_called=True)
+    t('-1 --version', fails=True, version_called=True)
+    t('-f=3.142 --int 17', float=3.142, int=17)
+
+
+def launcher(self):
+    kexe = kitty_exe()
+    cfgdir = None
+    def get_report(cmdline: str, launch_services= False):
+        nonlocal cfgdir
+        args = list(shlex_split(cmdline))
+        env = dict(os.environ)
+        if launch_services:
+            env['KITTY_LAUNCHED_BY_LAUNCH_SERVICES'] = '1'
+        cp = subprocess.run([kexe, "+testing-launcher-code"] + args, env=env, stdout=subprocess.PIPE)
+        self.assertEqual(cp.returncode, 0)
+        ans = {}
+        for line in cp.stdout.decode().split('\n'):
+            if not line:
+                continue
+            try:
+                key, val = line.split(':')
+            except ValueError:
+                raise AssertionError(f'Unexpected output from launcher: {line!r}\n{cp.stdout.decode()}')
+            if '\x1e' in val:
+                val = [x for x in val.split('\x1e') if x]
+            else:
+                val = val.strip()
+            ans[key] = val
+            if key == 'config_dir':
+                cfgdir = val
+        return ans, cp.stdout.decode().replace('\x1e', ' ')
+    def test(cmdline, assertions):
+        r, output = get_report(cmdline, launch_services=assertions.get('launched_by_launch_services', '0') != '0')
+        for key, expected in assertions.items():
+            self.assertEqual(expected, r.get(key), f'Failed for {key} with command line: {cmdline}\nOutput:\n{output}')
+        return output
+
+    def t(cmdline, **assertions):
+        assertions['is_quick_access_terminal'] = '0'
+        if cfgdir:
+            assertions['config_dir'] = cfgdir
+        assertions.setdefault('launched_by_launch_services', '0')
+        test(cmdline, assertions)
+
+    def si(cmdline, **assertions):
+        assertions['single_instance'] = '1'
+        test(cmdline, assertions)
+
+    def dt(cmdline, **assertions):
+        assertions['detach'] = 'true'
+        test(cmdline, assertions)
+
+    def k(cmdline):
+        assertions = {}
+        assertions['argv'] = ['kitten'] + cmdline.split()
+        for prefix in ('+kitten', '+ kitten'):
+            output = test(prefix + ' ' + cmdline, assertions)
+            self.assertIn('kitten_exe:', output)
+
+    def pn(cmdline, **assertions):
+        ig = assertions.get('instance_group')
+        assertions['instance_group'] = f'panel-{ig}' if ig else 'panel'
+        assertions['single_instance'] = '1'
+        assertions['session'] = ''
+        test(cmdline, assertions)
+
+    t('', original_argv=[kexe], argv=[])
+    t('--title=xxx --start-as maximized -c=a -c b cat', title='xxx', start_as='maximized', config=['a', 'b'], original_argv=[
+        kexe, '--title=xxx', '--start-as', 'maximized', '-c=a', '-c', 'b', 'cat'], argv=['cat'])
+    k('icat abc xyz')
+    t('+kitten unwrapped xyz', argv=['+kitten', 'unwrapped', 'xyz'])
+    t('+ kitten unwrapped xyz', original_argv=[kexe, '+', 'kitten', 'unwrapped', 'xyz'])
+    si('--single-instance --instance-group=g -T 3', argv=[kexe, '--single-instance', '--instance-group=g', '-T', '3'])
+    t('+open --help', argv=['+open', '--help'])
+    t('+open -1 --help', argv=['+open', '-1', '--help'])
+    si('+open -1 moose', argv=[kexe, '+open', '-1', 'moose'], open_urls=['moose'])
+    si('+open -1 --instance-group=g x y', instance_group='g', open_urls=['x', 'y'])
+    dt('--detach --session=moose --detached-log=xyz', detached_log='xyz', session='moose')
+    pn('+kitten panel -1 --edge=left', edge='left')
 
 
 def conf_parsing(self):
