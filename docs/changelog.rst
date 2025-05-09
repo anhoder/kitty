@@ -125,6 +125,10 @@ Detailed list of changes
 - Remote control: Allow modifying desktop panels and showing/hiding OS Windows
   using the `kitten @ resize-os-window` command (:iss:`8550`)
 
+- Remote control launch: Allow waiting for a program launched in a new window
+  to exit and get the exit code via the `kitty +launch
+  --wait-for-child-to-exit` command line flag (:disc:`8573`)
+
 - Allow starting kitty with the OS window hidden via :option:`kitty --start-as=hidden <kitty --start-as>`, useful for single instance mode (:iss:`3466`)
 
 - Allow configuring the mouse unhide behavior when using :opt:`mouse_hide_wait` (:pull:`8508`)
@@ -141,8 +145,8 @@ Detailed list of changes
 
 - panel kitten: Allow specifying panel size in pixels in addition to cells
 
-- Fix a regression in 0.36.0 that caused using = with single letter options to
-  no longer work correctly (:iss:`8556`)
+- Fix a regression in 0.36.0 that caused using = with single letter command
+  line flags to no longer work correctly (:iss:`8556`)
 
 - Single instance: Preserve environment variables from invoking environment in
   newly created window (:disc:`8567`)
@@ -151,6 +155,10 @@ Detailed list of changes
   windows (:disc:`8567`)
 
 - macOS: Fix text color in visual window select ignoring the color theme (:iss:`8579`)
+
+- Launch action: Allow using an env var that resolves to a full command-line as the program to launch (:pull:`8613`)
+
+- :ac:`change_font_size` allow multiplying/dividing the current font size in addition to incrementing it (:iss:`8616`)
 
 0.41.1 [2025-04-03]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
