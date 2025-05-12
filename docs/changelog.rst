@@ -106,12 +106,17 @@ consumption to do the same tasks.
 Detailed list of changes
 -------------------------------------
 
-0.42.0 [future]
+0.42.1 [future]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Fix ambiguous width and private use characters not being rendered when used with variable width text-sizing protocol escape codes
+
+0.42.0 [2025-05-11]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - A new kitten: :doc:`quick-access-terminal </kittens/quick-access-terminal>` to :ref:`quake`
 
-- The :doc:`panel kitten </kittens/panel>` now works on macOS as well as Wayland (:iss:`2590`)
+- The :doc:`panel kitten </kittens/panel>` works on macOS and X11 as well as Wayland (:iss:`2590`)
 
 - **Behavior change**: Now kitty does full grapheme segmentation following the
   Unicode 16 spec when splitting text into cells (:iss:`8533`)
@@ -123,7 +128,7 @@ Detailed list of changes
 - launch: Allow creating desktop panels such as those created by the :doc:`panel kitten </kittens/panel>` (:iss:`8549`)
 
 - Remote control: Allow modifying desktop panels and showing/hiding OS Windows
-  using the `kitten @ resize-os-window` command (:iss:`8550`)
+  using the ``kitten @ resize-os-window`` command (:iss:`8550`)
 
 - Remote control launch: Allow waiting for a program launched in a new window
   to exit and get the exit code via the `kitty +launch
@@ -159,6 +164,8 @@ Detailed list of changes
 - Launch action: Allow using an env var that resolves to a full command-line as the program to launch (:pull:`8613`)
 
 - :ac:`change_font_size` allow multiplying/dividing the current font size in addition to incrementing it (:iss:`8616`)
+
+- Box drawing: Improve appearance of rounder corners, giving them a uniform line width (:iss:`8299`)
 
 0.41.1 [2025-04-03]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

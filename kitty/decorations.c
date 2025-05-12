@@ -258,13 +258,17 @@ append_limit(Canvas *self, double upper, double lower) {
     self->y_limits[self->y_limits_count++].lower = lower;
 }
 
-
-static uint
-thickness(Canvas *self, uint level, bool horizontal) {
+static double
+thickness_as_float(Canvas *self, uint level, bool horizontal) {
     level = min(level, arraysz(OPT(box_drawing_scale)));
     double pts = OPT(box_drawing_scale)[level];
     double dpi = horizontal ? self->dpi.x : self->dpi.y;
-    return (uint)ceil(self->supersample_factor * self->scale * pts * dpi / 72.0);
+    return self->supersample_factor * self->scale * pts * dpi / 72.0;
+}
+
+static uint
+thickness(Canvas *self, uint level, bool horizontal) {
+    return (uint)ceil(thickness_as_float(self, level, horizontal));
 }
 
 static const uint hole_factor = 8;
@@ -588,16 +592,27 @@ typedef struct CubicBezier {
 } CubicBezier;
 
 #define bezier_eq(which) { \
-    double tm1 = 1 - t; \
-    double tm1_3 = tm1 * tm1 * tm1; \
-    double t_3 = t * t * t; \
-    return tm1_3 * cb.start.which + 3 * t * tm1 * (tm1 * cb.c1.which + t * cb.c2.which) + t_3 * cb.end.which; \
+    const CubicBezier *cb = v; \
+    const double u = 1. - t; \
+    const double u_3 = u * u * u; \
+    const double t_3 = t * t * t; \
+    return u_3 * cb->start.which + 3 * t * u * (u * cb->c1.which + t * cb->c2.which) + t_3 * cb->end.which; \
 }
-static double
-bezier_x(CubicBezier cb, double t) { bezier_eq(x); }
-static double
-bezier_y(CubicBezier cb, double t) { bezier_eq(y); }
+
+#define bezier_prime_eq(which) { \
+    const CubicBezier *cb = v; \
+    const double u = 1. - t; \
+    const double u_2 = u * u; \
+    const double t_2 = t * t; \
+    return 3 * u_2 * (cb->c1.which - cb->start.which) + 6 * t * u * (cb->c2.which - cb->c1.which) + 3 * t_2 * (cb->end.which - cb->c2.which); \
+}
+
+static double bezier_x(const void *v, double t) { bezier_eq(x); }
+static double bezier_y(const void *v, double t) { bezier_eq(y); }
+static double bezier_prime_x(const void *v, double t) { bezier_prime_eq(x); }
+static double bezier_prime_y(const void *v, double t) { bezier_prime_eq(y); }
 #undef bezier_eq
+#undef bezier_prime_eq
 
 static int
 find_bezier_for_D(int width, int height) {
@@ -605,13 +620,13 @@ find_bezier_for_D(int width, int height) {
     CubicBezier cb = {.end={.x=0, .y=height - 1}, .c2={.x=0, .y=height - 1}};
     while (true) {
         cb.c1.x = cx; cb.c2.x = cx;
-        if (bezier_x(cb, 0.5) > width - 1) return last_cx;
+        if (bezier_x(&cb, 0.5) > width - 1) return last_cx;
         last_cx = cx++;
     }
 }
 
 static double
-find_t_for_x(CubicBezier cb, int x, double start_t) {
+find_t_for_x(const CubicBezier *cb, int x, double start_t) {
     if (fabs(bezier_x(cb, start_t) - x) < 0.1) return start_t;
     static const double t_limit = 0.5;
     double increment = t_limit - start_t;
@@ -635,7 +650,7 @@ find_t_for_x(CubicBezier cb, int x, double start_t) {
 
 
 static void
-get_bezier_limits(Canvas *self, CubicBezier cb) {
+get_bezier_limits(Canvas *self, const CubicBezier *cb) {
     int start_x = (int)bezier_x(cb, 0), max_x = (int)bezier_x(cb, 0.5);
     double last_t = 0.;
     for (int x = start_x; x < max_x + 1; x++) {
@@ -666,38 +681,54 @@ static void
 filled_D(Canvas *self, bool left) {
     int c1x = find_bezier_for_D(self->width, self->height);
     CubicBezier cb = {.end={.y=self->height-1}, .c1 = {.x=c1x}, .c2 = {.x=c1x, .y=self->height - 1}};
-    get_bezier_limits(self, cb);
+    get_bezier_limits(self, &cb);
     if (left) fill_region(self, false);
     else mirror_horizontally(fill_region(self, false));
 }
 
-#define NAME position_set
-#define KEY_TY Point
-#define HASH_FN hash_point
-#define CMPR_FN cmpr_point
-static uint64_t hash_point(Point p);
-static bool cmpr_point(Point, Point);
-#include "kitty-verstable.h"
-static uint64_t hash_point(Point p) { return vt_hash_integer(p.val); }
-static bool cmpr_point(Point a, Point b) { return a.val == b.val; }
+static double
+distance(double x1, double y1, double x2, double y2) {
+    const double dx = x1 - x2;
+    const double dy = y1 - y2;
+    return sqrt(dx * dx + dy * dy);
+}
 
-#define draw_parametrized_curve(self, level, xfunc, yfunc) { \
-    div_t d = div(thickness(self, level, true), 2u); \
-    int delta = d.quot, extra = d.rem; \
-    uint num_samples = self->height * 8; \
-    position_set seen; vt_init(&seen); \
-    for (uint i = 0; i < num_samples + 1; i++) { \
-        double t = i / (double)num_samples; \
-        Point p = {.x=(int32_t)xfunc, .y=(int32_t)yfunc};  \
-        position_set_itr q = vt_get(&seen, p); \
-        if (!vt_is_end(q)) continue; \
-        if (vt_is_end(vt_insert(&seen, p))) fatal("Out of memory"); \
-        for (int y = MAX(0, p.y - delta); y < MIN(p.y + delta + extra, (int)self->height); y++) { \
-            uint offset = y * self->width, start = MAX(0, p.x - delta); \
-            memset(self->mask + offset + start, 255, minus((uint)MIN(p.x + delta + extra, (int)self->width), start)); \
-        } \
-    } \
-    vt_cleanup(&seen); \
+typedef double(*curve_func)(const void *, double t);
+
+static void
+draw_parametrized_curve_with_derivative(
+    Canvas *self, void *curve_data, double line_width, curve_func xfunc, curve_func yfunc, curve_func x_prime, curve_func y_prime,
+    int x_offset, int yoffset, double thickness_fudge
+) {
+    double larger_dim = fmax(self->height, self->width);
+    double step = 1.0 / larger_dim;
+    const double min_step = step / 100., max_step = step;
+    line_width = fmax(1., line_width);
+    const double half_thickness = line_width / 2.0;
+    const double distance_limit = half_thickness + thickness_fudge;
+    double t = 0;
+    while(true) {
+        double x = xfunc(curve_data, t), y = yfunc(curve_data, t);
+        for (double dy = -line_width; dy <= line_width; dy++) {
+            for (double dx = -line_width; dx <= line_width; dx++) {
+                double px = x + dx, py = y + dy;
+                double dist = distance(x, y, px, py);
+                int row = (int)py + yoffset, col = (int)px + x_offset;
+                if (dist > distance_limit || row >= (int)self->height || row < 0 || col >= (int)self->width || col < 0) continue;
+                const int offset = row * self->width + col;
+                double alpha = 1.0 - (dist / half_thickness);
+                uint8_t old_alpha = self->mask[offset];
+                self->mask[offset] = (uint8_t)(alpha * 255 + (1 - alpha) * old_alpha);
+            }
+        }
+        if (t >= 1.0) break;
+        // Dynamically adjust step size based on curve's derivative
+        double dx = x_prime(curve_data, t), dy = y_prime(curve_data, t);
+        double d = sqrt(dx * dx + dy * dy);
+        step = 1.0 / fmax(1e-6, d);
+        step = fmax(min_step, fmin(step, max_step));
+        t = fmin(t + step, 1.0);
+    }
 }
 
 static void
@@ -705,8 +736,10 @@ rounded_separator(Canvas *self, uint level, bool left) {
     uint gap = thickness(self, level, true);
     int c1x = find_bezier_for_D(minus(self->width, gap), self->height);
     CubicBezier cb = {.end={.y=self->height - 1}, .c1={.x=c1x}, .c2={.x=c1x, .y=self->height - 1}};
-    if (left) { draw_parametrized_curve(self, level, bezier_x(cb, t), bezier_y(cb, t)); }
-    else { mirror_horizontally(draw_parametrized_curve(self, level, bezier_x(cb, t), bezier_y(cb, t))); }
+    double line_width = thickness_as_float(self, level, true);
+#define d draw_parametrized_curve_with_derivative(self, &cb, line_width, bezier_x, bezier_y, bezier_prime_x, bezier_prime_y, 0, 0, 0)
+    if (left) { d; } else { mirror_horizontally(d); }
+#undef d
 }
 
 static void
@@ -724,56 +757,61 @@ corner_triangle(Canvas *self, const Corner corner) {
 }
 
 typedef struct Circle {
-    Point origin;
-    double radius;
-
+    double x, y, radius;
     double start, end, amt;
 } Circle;
 
 static Circle
-circle(Point origin, double radius, double start_at, double end_at) {
+circle(double x, double y, double radius, double start_at, double end_at) {
     double conv = M_PI / 180.;
-    Circle ans = {.origin=origin, .radius=radius, .start=start_at*conv, .end=end_at*conv};
+    Circle ans = {.x=x, .y=y, .radius=radius, .start=start_at*conv, .end=end_at*conv};
     ans.amt = ans.end - ans.start;
     return ans;
 }
 
-static double
-circle_x(Circle c, double t) { return c.origin.x + c.radius * cos(c.start + c.amt * t); }
-static double
-circle_y(Circle c, double t) { return c.origin.y + c.radius * sin(c.start + c.amt * t); }
+static double circle_x(const void *v, double t) { const Circle *c=v; return c->x + c->radius * cos(c->start + c->amt * t); }
+static double circle_y(const void *v, double t) { const Circle *c=v; return c->y + c->radius * sin(c->start + c->amt * t); }
+static double circle_prime_x(const void *v, double t) { const Circle *c=v; return -c->radius * sin(c->start + c->amt * t); }
+static double circle_prime_y(const void *v, double t) { const Circle *c=v; return c->radius * cos(c->start + c->amt * t); }
 
 static void
 spinner(Canvas *self, uint level, double start_degrees, double end_degrees) {
-    uint w = self->width / 2, h = self->height / 2;
-    uint radius = minus(min(w, h), thickness(self, level, true) / 2);
-    Circle c = circle((Point){.x=w, .y=h}, radius, start_degrees, end_degrees);
-    draw_parametrized_curve(self, level, circle_x(c, t), circle_y(c, t));
+    double x = self->width / 2.0, y = self->height / 2.0;
+    double line_width = thickness_as_float(self, level, true);
+    double radius = fmax(0, fmin(x, y) - line_width / 2.0);
+    Circle c = circle(x, y, radius, start_degrees, end_degrees);
+    draw_parametrized_curve_with_derivative(self, &c, line_width, circle_x, circle_y, circle_prime_x, circle_prime_y, 0, 0, 0);
 }
 
 static void
-draw_circle(Canvas *self, double scale, double gap, bool invert) {
-    const uint w = self->width / 2, h = self->height / 2;
-    const double radius = (int)(scale * min(w, h) - gap / 2);
-    const uint8_t fill = invert ? 0 : 255;
+fill_circle_of_radius(Canvas *self, double origin_x, double origin_y, double radius, uint8_t alpha) {
     const double limit = radius * radius;
     for (uint y = 0; y < self->height; y++) {
         for (uint x = 0; x < self->width; x++) {
-            double xw = (double)x - w, yh = (double)y - h;
-            if (xw * xw + yh * yh <= limit) self->mask[y * self->width + x] = fill;
+            double xw = (double)x - origin_x, yh = (double)y - origin_y;
+            if (xw * xw + yh * yh <= limit) self->mask[y * self->width + x] = alpha;
         }
     }
 }
 
 static void
-draw_fish_eye(Canvas *self, uint level) {
-    uint w = self->width / 2, h = self->height / 2;
-    uint line_width = thickness(self, level, true) / 2;
-    uint radius = minus(min(w, h), line_width);
-    Circle c = circle((Point){.x=w, .y=h}, radius, 0, 360);
-    draw_parametrized_curve(self, level, circle_x(c, t), circle_y(c, t));
-    uint gap = minus(radius, radius / 10);
-    draw_circle(self, 1.0, gap, false);
+fill_circle(Canvas *self, double scale, double gap, bool invert) {
+    const uint w = self->width / 2, h = self->height / 2;
+    const double radius = (int)(scale * min(w, h) - gap / 2);
+    const uint8_t fill = invert ? 0 : 255;
+    fill_circle_of_radius(self, w, h, radius, fill);
+}
+
+static void
+draw_fish_eye(Canvas *self, uint level UNUSED) {
+    double x = self->width / 2., y = self->height / 2.;
+    double radius = fmin(x, y);
+    double central_radius = (2./3.) * radius;
+    fill_circle_of_radius(self, x, y, central_radius, 255);
+    double line_width = fmax(1. * self->supersample_factor, (radius - central_radius) / 2.5);
+    radius = fmax(0, fmin(x, y) - line_width / 2.);
+    Circle c = circle(x, y, radius, 0, 360);
+    draw_parametrized_curve_with_derivative(self, &c, line_width, circle_x, circle_y, circle_prime_x, circle_prime_y, 0, 0, 0);
 }
 
 static void
@@ -1187,38 +1225,36 @@ fading_vline(Canvas *self, uint level, uint num, Edge fade) {
 }
 
 typedef struct Rectircle Rectircle;
-typedef double (*Rectircle_equation)(Rectircle r, double t);
 
 typedef struct Rectircle {
-    uint a, b;
-    double yexp, xexp, adjust_x;
-    uint cell_width;
-    Rectircle_equation x, y;
+    double a, b, yexp, xexp, x_sign, y_sign, x_start, y_start;
+    double x_prime_coeff, x_prime_exp, y_prime_coeff, y_prime_exp;
 } Rectircle;
 
 static double
-rectircle_lower_quadrant_y(Rectircle r, double t) {
-    return r.b * t; // 0 -> top of cell, 1 -> middle of cell
+rectircle_x(const void *v, double t) {
+    const Rectircle *r = v;
+    return r->x_start + r->x_sign * r->a * pow(cos(t * (M_PI / 2.0)), r->xexp);
 }
 
 static double
-rectircle_upper_quadrant_y(Rectircle r, double t) {
-    return r.b * (2. - t); // 0 -> bottom of cell, 1 -> middle of cell
-}
-
-// x(t). To get this we first need |y(t)|/b. This is just t since as t goes
-// from 0 to 1 y goes from either 0 to b or 0 to -b
-
-static double
-rectircle_left_quadrant_x(Rectircle r, double t) {
-    double xterm = 1 - pow(t, r.yexp);
-    return floor(r.cell_width - fabs(r.a * pow(xterm, r.xexp)) - r.adjust_x);
+rectircle_x_prime(const void *v, double t) {
+    const Rectircle *r = v;
+    t *= (M_PI / 2.0);
+    return r->x_prime_coeff * pow(cos(t), r->x_prime_exp) * sin(t);
 }
 
 static double
-rectircle_right_quadrant_x(Rectircle r, double t) {
-    double xterm = 1 - pow(t, r.yexp);
-    return ceil(fabs(r.a * pow(xterm, r.xexp)));
+rectircle_y_prime(const void *v, double t) {
+    const Rectircle *r = v;
+    t *= (M_PI / 2.0);
+    return r->y_prime_coeff * pow(sin(t), r->y_prime_exp) * cos(t);
+}
+
+static double
+rectircle_y(const void *v, double t) {
+    const Rectircle *r = v;
+    return r->y_start + r->y_sign * r->b * pow(sin(t * (M_PI / 2.0)), r->yexp);
 }
 
 static Rectircle
@@ -1227,10 +1263,14 @@ rectcircle(Canvas *self, Corner which) {
     Return two functions, x(t) and y(t) that map the parameter t which must be
     in the range [0, 1] to x and y coordinates in the cell. The rectircle equation
     we use is:
-
-    (|x| / a) ^ (2a / r) + (|y| / a) ^ (2b / r) = 1
-
+    (|x| / a) ^ (2a / r) + (|y| / b) ^ (2b / r) = 1
     where 2a = width, 2b = height and r is radius
+    See https://math.stackexchange.com/questions/1649714
+
+    This is a super-ellipse, its parametrized form is:
+    x = ± a * (cos(theta) ^ (r / a)); y = ± b * (sin(theta) ^ (r / b)); theta is in [0, pi/2]
+    https://en.wikipedia.org/wiki/Superellipse
+    The plus minus signs are chosen to give the four quadrants.
 
     The entire rectircle fits in four cells, each cell being one quadrant
     of the full rectircle and the origin being the center of the rectircle.
@@ -1238,18 +1278,17 @@ rectcircle(Canvas *self, Corner which) {
     ╭╮  ╭─╮
     ╰╯  │ │
         ╰─╯
-    See https://math.stackexchange.com/questions/1649714
     */
-    double radius = self->width / 2.;
-    uint cell_width_is_odd = (self->width / self->supersample_factor) & 1;
+    double radius = self->width / 2., a = self->width / 2., b = self->height / 2.;
     Rectircle ans = {
-        .a = half_width(self), .b = half_height(self),
-        .yexp = self->height / radius,
-        .xexp = radius / self->width,
-        .cell_width = self->width,
-        .adjust_x = cell_width_is_odd * self->supersample_factor,
-        .x = which & LEFT_EDGE ? rectircle_left_quadrant_x : rectircle_right_quadrant_x,
-        .y = which & TOP_EDGE ? rectircle_upper_quadrant_y : rectircle_lower_quadrant_y,
+        .a = a, .b = b,
+        .xexp = radius / a, .yexp = radius / b,
+        .x_prime_coeff = radius, .x_prime_exp = radius / a - 1.,
+        .y_prime_coeff = radius, .y_prime_exp = radius / b - 1.,
+        .x_sign = which & RIGHT_EDGE ? 1. : -1,
+        .x_start = which & RIGHT_EDGE ? 0. : 2 * a,
+        .y_start = which & BOTTOM_EDGE ? 0. : 2 * b,
+        .y_sign = which & BOTTOM_EDGE ? 1. : -1,
     };
 
     return ans;
@@ -1258,7 +1297,12 @@ rectcircle(Canvas *self, Corner which) {
 static void
 rounded_corner(Canvas *self, uint level, Corner which) {
     Rectircle r = rectcircle(self, which);
-    draw_parametrized_curve(self, level, r.x(r, t), r.y(r, t));
+    uint cell_width_is_odd = (self->width / self->supersample_factor) & 1;
+    uint cell_height_is_odd = (self->height / self->supersample_factor) & 1;
+    // adjust for odd cell dimensions to line up with box drawing lines
+    int x_offset = -(cell_width_is_odd & 1), y_offset = -(cell_height_is_odd & 1);
+    double line_width = thickness_as_float(self, level, true);
+    draw_parametrized_curve_with_derivative(self, &r, line_width, rectircle_x, rectircle_y, rectircle_x_prime, rectircle_y_prime, x_offset, y_offset, 0.1);
 }
 
 static void
@@ -1269,8 +1313,8 @@ commit(Canvas *self, Edge lines, bool solid) {
     if (lines & LEFT_EDGE) draw_hline(self, 0, hw, hh, level);
     if (lines & TOP_EDGE) draw_vline(self, 0, hh, hw, level);
     if (lines & BOTTOM_EDGE) draw_vline(self, hh, self->height, hw, level);
-    draw_circle(self, scale, 0, false);
-    if (!solid) draw_circle(self, scale, thickness(self, level, true), true);
+    fill_circle(self, scale, 0, false);
+    if (!solid) fill_circle(self, scale, thickness(self, level, true), true);
 }
 
 // thin and fat line levels
@@ -1527,7 +1571,7 @@ START_ALLOW_CASE_RANGE
         S(L'◟', spinner, 1, 450, 540);
         S(L'◠', spinner, 1, 180, 360);
         S(L'◡', spinner, 1, 0, 180);
-        S(L'●', draw_circle, 1.0, 0, false);
+        S(L'●', fill_circle, 1.0, 0, false);
         S(L'◉', draw_fish_eye, 0);
 
         C(L'═', dhline, 1, TOP_EDGE | BOTTOM_EDGE);
