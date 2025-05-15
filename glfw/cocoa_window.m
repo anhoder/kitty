@@ -2313,26 +2313,21 @@ bool _glfwPlatformSetLayerShellConfig(_GLFWwindow *window,
     if (height < 1.)
       height = NSWidth(screen.visibleFrame);
   }
-  if (width < 1.)
-    width = NSWidth(screen.visibleFrame);
-  if (height < 1.)
-    height = NSWidth(screen.visibleFrame);
-}
 
-if (config.edge != GLFW_EDGE_CENTER_SIZED) {
-  x += config.requested_left_margin;
-  width -= config.requested_left_margin + config.requested_right_margin;
-  y += config.requested_bottom_margin;
-  height -= config.requested_top_margin + config.requested_bottom_margin;
-}
+  if (config.edge != GLFW_EDGE_CENTER_SIZED) {
+    x += config.requested_left_margin;
+    width -= config.requested_left_margin + config.requested_right_margin;
+    y += config.requested_bottom_margin;
+    height -= config.requested_top_margin + config.requested_bottom_margin;
+  }
 
-[nswindow setAnimationBehavior:animation_behavior];
-[nswindow setLevel:level];
-[nswindow setCollectionBehavior:(NSWindowCollectionBehaviorCanJoinAllSpaces |
-                                 NSWindowCollectionBehaviorStationary |
-                                 NSWindowCollectionBehaviorIgnoresCycle)];
-[nswindow setFrame:NSMakeRect(x, y, width, height) display:YES];
-return true;
+  [nswindow setAnimationBehavior:animation_behavior];
+  [nswindow setLevel:level];
+  [nswindow setCollectionBehavior:(NSWindowCollectionBehaviorCanJoinAllSpaces |
+                                   NSWindowCollectionBehaviorStationary |
+                                   NSWindowCollectionBehaviorIgnoresCycle)];
+  [nswindow setFrame:NSMakeRect(x, y, width, height) display:YES];
+  return true;
 #undef config
 #undef nswindow
 }
