@@ -111,6 +111,19 @@ Detailed list of changes
 
 - Fix ambiguous width and private use characters not being rendered when used with variable width text-sizing protocol escape codes
 
+- Quick access terminal: Restore focus to previously active window when hiding the quick access terminal window on macOS (:iss:`8627`)
+
+- Wayland: Fix an abort if the terminal program sets a window title longer than 2KB that contains CSI escape sequences and multibyte UTF-8 (:iss:`8619`)
+
+- Quick access terminal: Allow toggling the window to full screen and map using the standard kitty :sc:`toggle_fullscreen` shortcut (:iss:`8626`)
+
+- Quick access terminal: Allow configuring the monitor to display the panel on in Wayland/X11 (:iss:`8630`)
+
+- A new setting :opt:`remember_window_position` to optionally use the position of the last closed kitty OS Window as the position of the first kitty OS Window when running a new kitty instance (:pull:`8601`)
+
+- Panel kitten: A new ``center-sized`` value for :option:`--edge <kitty +kitten panel --edge>` to allow easily creating sized and centered panels
+
+
 0.42.0 [2025-05-11]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

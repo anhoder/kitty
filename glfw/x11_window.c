@@ -606,6 +606,11 @@ calculate_layer_geometry(_GLFWwindow *window) {
             ans.width = m.width - config.requested_right_margin - config.requested_left_margin;
             ans.struts[s.bottom] = ans.height; ans.struts[s.bottom_end_x] = ans.width;
             break;
+        case GLFW_EDGE_CENTER_SIZED:
+            ans.needs_strut = false;
+            ans.x = (m.width - ans.width) / 2;
+            ans.y = (m.height - ans.height) / 2;
+            break;
         default:
             ans.needs_strut = false;
             ans.x = m.x + config.requested_left_margin;
@@ -2092,7 +2097,13 @@ void _glfwPlatformDestroyWindow(_GLFWwindow* window)
     XFlush(_glfw.x11.display);
 }
 
-bool _glfwPlatformSetLayerShellConfig(_GLFWwindow* window, const GLFWLayerShellConfig *value) {
+const GLFWLayerShellConfig*
+_glfwPlatformGetLayerShellConfig(_GLFWwindow *window) {
+    return &window->x11.layer_shell.config;
+}
+
+bool
+_glfwPlatformSetLayerShellConfig(_GLFWwindow* window, const GLFWLayerShellConfig *value) {
     if (value) window->x11.layer_shell.config = *value;
     WindowGeometry wg = calculate_layer_geometry(window);
     update_wm_hints(window, &wg, NULL);

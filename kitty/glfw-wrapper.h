@@ -1040,14 +1040,19 @@ typedef struct GLFWkeyevent
 
 typedef enum { GLFW_LAYER_SHELL_NONE, GLFW_LAYER_SHELL_BACKGROUND, GLFW_LAYER_SHELL_PANEL, GLFW_LAYER_SHELL_TOP, GLFW_LAYER_SHELL_OVERLAY } GLFWLayerShellType;
 
-typedef enum { GLFW_EDGE_TOP, GLFW_EDGE_BOTTOM, GLFW_EDGE_LEFT, GLFW_EDGE_RIGHT, GLFW_EDGE_CENTER, GLFW_EDGE_NONE } GLFWEdge;
+typedef enum { GLFW_EDGE_TOP, GLFW_EDGE_BOTTOM, GLFW_EDGE_LEFT, GLFW_EDGE_RIGHT, GLFW_EDGE_CENTER, GLFW_EDGE_NONE, GLFW_EDGE_CENTER_SIZED } GLFWEdge;
 
 typedef enum { GLFW_FOCUS_NOT_ALLOWED, GLFW_FOCUS_EXCLUSIVE, GLFW_FOCUS_ON_DEMAND} GLFWFocusPolicy;
 
 typedef struct GLFWLayerShellConfig {
     GLFWLayerShellType type;
     GLFWEdge edge;
-    char output_name[64];
+    struct {
+        GLFWEdge edge;
+        int requested_top_margin, requested_left_margin, requested_bottom_margin, requested_right_margin;
+    } previous;
+    bool was_toggled_to_fullscreen;
+    char output_name[128];
     GLFWFocusPolicy focus_policy;
     unsigned x_size_in_cells, x_size_in_pixels;
     unsigned y_size_in_cells, y_size_in_pixels;
@@ -1812,6 +1817,10 @@ typedef const char* (*glfwGetMonitorName_func)(GLFWmonitor*);
 GFW_EXTERN glfwGetMonitorName_func glfwGetMonitorName_impl;
 #define glfwGetMonitorName glfwGetMonitorName_impl
 
+typedef const char* (*glfwGetMonitorDescription_func)(GLFWmonitor*);
+GFW_EXTERN glfwGetMonitorDescription_func glfwGetMonitorDescription_impl;
+#define glfwGetMonitorDescription glfwGetMonitorDescription_impl
+
 typedef void (*glfwSetMonitorUserPointer_func)(GLFWmonitor*, void*);
 GFW_EXTERN glfwSetMonitorUserPointer_func glfwSetMonitorUserPointer_impl;
 #define glfwSetMonitorUserPointer glfwSetMonitorUserPointer_impl
@@ -1871,6 +1880,10 @@ GFW_EXTERN glfwIsFullscreen_func glfwIsFullscreen_impl;
 typedef bool (*glfwAreSwapsAllowed_func)(const GLFWwindow*);
 GFW_EXTERN glfwAreSwapsAllowed_func glfwAreSwapsAllowed_impl;
 #define glfwAreSwapsAllowed glfwAreSwapsAllowed_impl
+
+typedef const GLFWLayerShellConfig* (*glfwGetLayerShellConfig_func)(GLFWwindow*);
+GFW_EXTERN glfwGetLayerShellConfig_func glfwGetLayerShellConfig_impl;
+#define glfwGetLayerShellConfig glfwGetLayerShellConfig_impl
 
 typedef bool (*glfwSetLayerShellConfig_func)(GLFWwindow*, const GLFWLayerShellConfig*);
 GFW_EXTERN glfwSetLayerShellConfig_func glfwSetLayerShellConfig_impl;
@@ -2355,10 +2368,6 @@ GFW_EXTERN glfwWaylandIsWindowFullyCreated_func glfwWaylandIsWindowFullyCreated_
 typedef bool (*glfwWaylandBeep_func)(GLFWwindow*);
 GFW_EXTERN glfwWaylandBeep_func glfwWaylandBeep_impl;
 #define glfwWaylandBeep glfwWaylandBeep_impl
-
-typedef GLFWLayerShellConfig* (*glfwWaylandLayerShellConfig_func)(GLFWwindow*);
-GFW_EXTERN glfwWaylandLayerShellConfig_func glfwWaylandLayerShellConfig_impl;
-#define glfwWaylandLayerShellConfig glfwWaylandLayerShellConfig_impl
 
 typedef pid_t (*glfwWaylandCompositorPID_func)(void);
 GFW_EXTERN glfwWaylandCompositorPID_func glfwWaylandCompositorPID_impl;

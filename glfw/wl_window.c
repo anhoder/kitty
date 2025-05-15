@@ -971,7 +971,7 @@ find_output_by_name(const char* name) {
     if (!name || !name[0]) return NULL;
     for (int i = 0; i < _glfw.monitorCount; i++) {
         _GLFWmonitor *m = _glfw.monitors[i];
-        if (strcmp(m->wl.friendly_name, name) == 0) return m->wl.output;
+        if (strcmp(m->name, name) == 0) return m->wl.output;
     }
     return NULL;
 }
@@ -1028,12 +1028,13 @@ layer_set_properties(const _GLFWwindow *window, bool during_creation, uint32_t w
                     if (!config.override_exclusive_zone) exclusive_zone = width;
                     break;
                 case GLFW_EDGE_CENTER:
-                    which_anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT | ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM;
+                    break;
+                case GLFW_EDGE_CENTER_SIZED:
+                    panel_width = width; panel_height = height;
                     break;
                 case GLFW_EDGE_NONE:
                     which_anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP;
-                    panel_width = width;
-                    panel_height = height;
+                    panel_width = width; panel_height = height;
                     break;
             }
     }
@@ -2892,8 +2893,9 @@ GLFWAPI void glfwWaylandRedrawCSDWindowTitle(GLFWwindow *handle) {
     if (csd_change_title(window)) commit_window_surface_if_safe(window);
 }
 
-GLFWAPI GLFWLayerShellConfig* glfwWaylandLayerShellConfig(GLFWwindow *handle) {
-    return &((_GLFWwindow*)handle)->wl.layer_shell.config;
+const GLFWLayerShellConfig*
+_glfwPlatformGetLayerShellConfig(_GLFWwindow *window) {
+    return &window->wl.layer_shell.config;
 }
 
 GLFWAPI bool glfwIsLayerShellSupported(void) { return _glfw.wl.zwlr_layer_shell_v1 != NULL; }

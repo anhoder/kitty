@@ -2162,6 +2162,22 @@ static NSScreen *screen_for_window_center(_GLFWwindow *window) {
   return NSScreen.mainScreen;
 }
 
+const GLFWLayerShellConfig *
+_glfwPlatformGetLayerShellConfig(_GLFWwindow *window) {
+  return &window->ns.layer_shell.config;
+}
+
+static NSScreen *screen_for_name(const char *name) {
+  int count = 0;
+  GLFWmonitor **monitors = glfwGetMonitors(&count);
+  for (int i = 0; i < count; i++) {
+    const char *q = glfwGetMonitorName(monitors[i]);
+    if (q && strcmp(q, name) == 0)
+      return ((_GLFWmonitor *)monitors[i])->ns.screen;
+  }
+  return NULL;
+}
+
 bool _glfwPlatformSetLayerShellConfig(_GLFWwindow *window,
                                       const GLFWLayerShellConfig *value) {
 #define config window->ns.layer_shell.config
@@ -2202,6 +2218,11 @@ bool _glfwPlatformSetLayerShellConfig(_GLFWwindow *window,
   // HACK: Changing the style mask can cause the first responder to be cleared
   [nswindow makeFirstResponder:window->ns.view];
   NSScreen *screen = screen_for_window_center(window);
+  if (config.output_name[0]) {
+    NSScreen *q = screen_for_name(config.output_name);
+    if (q)
+      screen = q;
+  }
   unsigned cell_width, cell_height;
   double left_edge_spacing, top_edge_spacing, right_edge_spacing,
       bottom_edge_spacing;
@@ -2275,6 +2296,12 @@ bool _glfwPlatformSetLayerShellConfig(_GLFWwindow *window,
       x += width - panel_width + 1.;
       width = panel_width;
       break;
+    case GLFW_EDGE_CENTER_SIZED:
+      x += (width - panel_width) / 2;
+      y += (height - panel_height) / 2;
+      width = panel_width;
+      height = panel_height;
+      break;
     default: // top left
       y += height - panel_height + 1.;
       height = panel_height;
@@ -2286,19 +2313,26 @@ bool _glfwPlatformSetLayerShellConfig(_GLFWwindow *window,
     if (height < 1.)
       height = NSWidth(screen.visibleFrame);
   }
+  if (width < 1.)
+    width = NSWidth(screen.visibleFrame);
+  if (height < 1.)
+    height = NSWidth(screen.visibleFrame);
+}
 
+if (config.edge != GLFW_EDGE_CENTER_SIZED) {
   x += config.requested_left_margin;
   width -= config.requested_left_margin + config.requested_right_margin;
   y += config.requested_bottom_margin;
   height -= config.requested_top_margin + config.requested_bottom_margin;
+}
 
-  [nswindow setAnimationBehavior:animation_behavior];
-  [nswindow setLevel:level];
-  [nswindow setCollectionBehavior:(NSWindowCollectionBehaviorCanJoinAllSpaces |
-                                   NSWindowCollectionBehaviorStationary |
-                                   NSWindowCollectionBehaviorIgnoresCycle)];
-  [nswindow setFrame:NSMakeRect(x, y, width, height) display:YES];
-  return true;
+[nswindow setAnimationBehavior:animation_behavior];
+[nswindow setLevel:level];
+[nswindow setCollectionBehavior:(NSWindowCollectionBehaviorCanJoinAllSpaces |
+                                 NSWindowCollectionBehaviorStationary |
+                                 NSWindowCollectionBehaviorIgnoresCycle)];
+[nswindow setFrame:NSMakeRect(x, y, width, height) display:YES];
+return true;
 #undef config
 #undef nswindow
 }
@@ -2472,15 +2506,47 @@ void _glfwPlatformMaximizeWindow(_GLFWwindow *window) {
 }
 
 void _glfwPlatformShowWindow(_GLFWwindow *window) {
+  NSRunningApplication *app =
+      [[NSWorkspace sharedWorkspace] frontmostApplication];
+  window->ns.previous_front_most_application = 0;
+  if (app && app.processIdentifier != getpid())
+    window->ns.previous_front_most_application = app.processIdentifier;
   if (window->ns.layer_shell.is_active &&
       window->ns.layer_shell.config.type == GLFW_LAYER_SHELL_BACKGROUND) {
     [window->ns.object orderBack:nil];
   } else
     [window->ns.object orderFront:nil];
+  debug("Previously active application pid: %d bundle identifier: %s\n",
+        window->ns.previous_front_most_application,
+        app ? app.bundleIdentifier.UTF8String : "");
 }
 
 void _glfwPlatformHideWindow(_GLFWwindow *window) {
   [window->ns.object orderOut:nil];
+  pid_t prev_app_pid = window->ns.previous_front_most_application;
+  window->ns.previous_front_most_application = 0;
+  NSRunningApplication *app;
+  if (window->ns.layer_shell.is_active && prev_app_pid > 0 &&
+      (app = [NSRunningApplication
+           runningApplicationWithProcessIdentifier:prev_app_pid])) {
+    unsigned num_visible = 0;
+    for (_GLFWwindow *w = _glfw.windowListHead; w; w = w->next) {
+      if (_glfwPlatformWindowVisible(w))
+        num_visible++;
+    }
+    if (!num_visible) {
+      // yieldActivationToApplication was introduced in macOS 14 (Sonoma)
+      SEL selector = NSSelectorFromString(@"yieldActivationToApplication:");
+      if ([NSApp respondsToSelector:selector]) {
+        [NSApp performSelector:selector withObject:app];
+        [app activateWithOptions:0];
+      } else {
+#define NSApplicationActivateIgnoringOtherApps 2
+        [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+#undef NSApplicationActivateIgnoringOtherApps
+      }
+    }
+  }
 }
 
 void _glfwPlatformRequestWindowAttention(_GLFWwindow *window UNUSED) {

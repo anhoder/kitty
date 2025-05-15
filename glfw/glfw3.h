@@ -1302,14 +1302,19 @@ typedef struct GLFWkeyevent
 
 typedef enum { GLFW_LAYER_SHELL_NONE, GLFW_LAYER_SHELL_BACKGROUND, GLFW_LAYER_SHELL_PANEL, GLFW_LAYER_SHELL_TOP, GLFW_LAYER_SHELL_OVERLAY } GLFWLayerShellType;
 
-typedef enum { GLFW_EDGE_TOP, GLFW_EDGE_BOTTOM, GLFW_EDGE_LEFT, GLFW_EDGE_RIGHT, GLFW_EDGE_CENTER, GLFW_EDGE_NONE } GLFWEdge;
+typedef enum { GLFW_EDGE_TOP, GLFW_EDGE_BOTTOM, GLFW_EDGE_LEFT, GLFW_EDGE_RIGHT, GLFW_EDGE_CENTER, GLFW_EDGE_NONE, GLFW_EDGE_CENTER_SIZED } GLFWEdge;
 
 typedef enum { GLFW_FOCUS_NOT_ALLOWED, GLFW_FOCUS_EXCLUSIVE, GLFW_FOCUS_ON_DEMAND} GLFWFocusPolicy;
 
 typedef struct GLFWLayerShellConfig {
     GLFWLayerShellType type;
     GLFWEdge edge;
-    char output_name[64];
+    struct {
+        GLFWEdge edge;
+        int requested_top_margin, requested_left_margin, requested_bottom_margin, requested_right_margin;
+    } previous;
+    bool was_toggled_to_fullscreen;
+    char output_name[128];
     GLFWFocusPolicy focus_policy;
     unsigned x_size_in_cells, x_size_in_pixels;
     unsigned y_size_in_cells, y_size_in_pixels;
@@ -2380,6 +2385,7 @@ GLFWAPI void glfwGetMonitorContentScale(GLFWmonitor* monitor, float* xscale, flo
  *  @ingroup monitor
  */
 GLFWAPI const char* glfwGetMonitorName(GLFWmonitor* monitor);
+GLFWAPI const char* glfwGetMonitorDescription(GLFWmonitor* monitor);
 
 /*! @brief Sets the user pointer of the specified monitor.
  *
@@ -2874,6 +2880,7 @@ GLFWAPI GLFWwindow* glfwCreateWindow(int width, int height, const char* title, G
 GLFWAPI bool glfwToggleFullscreen(GLFWwindow *window, unsigned int flags);
 GLFWAPI bool glfwIsFullscreen(GLFWwindow *window, unsigned int flags);
 GLFWAPI bool glfwAreSwapsAllowed(const GLFWwindow* window);
+GLFWAPI const GLFWLayerShellConfig* glfwGetLayerShellConfig(GLFWwindow* handle);
 GLFWAPI bool glfwSetLayerShellConfig(GLFWwindow* handle, const GLFWLayerShellConfig *value);
 
 /*! @brief Destroys the specified window and its context.
