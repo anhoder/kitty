@@ -1144,7 +1144,7 @@ create_layer_shell_surface(_GLFWwindow *window) {
     struct wl_output *wl_output = find_output_by_name(window->wl.layer_shell.config.output_name);
 #define ls window->wl.layer_shell.zwlr_layer_surface_v1
     ls = zwlr_layer_shell_v1_get_layer_surface(
-            _glfw.wl.zwlr_layer_shell_v1, window->wl.surface, wl_output, get_layer_shell_layer(window), "kitty");
+            _glfw.wl.zwlr_layer_shell_v1, window->wl.surface, wl_output, get_layer_shell_layer(window), window->wl.appId[0] ? window->wl.appId : "kitty");
     if (!ls) {
         _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: layer-surface creation failed");
         return false;
@@ -1198,8 +1198,10 @@ create_window_desktop_surface(_GLFWwindow* window)
         zxdg_toplevel_decoration_v1_add_listener(window->wl.xdg.decoration, &xdgDecorationListener, window);
     }
 
-    if (strlen(window->wl.appId))
+    if (window->wl.appId[0])
         xdg_toplevel_set_app_id(window->wl.xdg.toplevel, window->wl.appId);
+    if (window->wl.windowTag[0] && _glfw.wl.xdg_toplevel_tag_manager_v1)
+        xdg_toplevel_tag_manager_v1_set_toplevel_tag(_glfw.wl.xdg_toplevel_tag_manager_v1, window->wl.xdg.toplevel, window->wl.windowTag);
 
     if (window->wl.title)
         xdg_toplevel_set_title(window->wl.xdg.toplevel, window->wl.title);
