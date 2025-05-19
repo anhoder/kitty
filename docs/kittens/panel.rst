@@ -114,11 +114,12 @@ shell.
 
 The Linux dock panel was::
 
-    kitten panel kitty +launch my-panel.py
+    wm bar
 
-This creates the panel window and runs the ``my-panel.py`` script inside it
-using the Python interpreter that comes bundled with kitty. Unfortunately the
-actual script is not public, but there are :ref:`public projects implementing
+This is a custom program I wrote for my personal use. It uses kitty's kitten
+infrastructure to implement the bar in a `few hundred lines of code
+<https://github.com/kovidgoyal/wm/blob/master/bar/main.go>`__.
+This was designed for my personal use only, but, there are :ref:`public projects implementing
 general purpose panels using kitty <panel_projects>`.
 
 
@@ -146,7 +147,7 @@ Compatibility with various platforms
         🟢 **Hyprland**
            Fully working, no known issues
 
-        🟢 **KDE**
+        🟢 **KDE** (kwin)
            Fully working, no known issues. KDE uses an `undocumented mapping <https://invent.kde.org/plasma/kwin/-/blob/3dc5cee6b34792486b343098e55e7f2b90dfcd00/src/layershellv1window.cpp#L24>`__ under Wayland to set the window type from the :code:`kitten panel --app-id` flag. You might want to use :code:`--app-id=dock` so that KDE treats the window as a dock panel, and disables window
            appearing/disappearing animations for it.
 

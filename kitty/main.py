@@ -42,6 +42,7 @@ from .fast_data_types import (
     glfw_get_monitor_workarea,
     glfw_init,
     glfw_terminate,
+    grab_keyboard,
     is_layer_shell_supported,
     load_png_data,
     mask_kitty_signals_process_wide,
@@ -254,12 +255,14 @@ def _run_app(opts: Options, args: CLIOptions, bad_lines: Sequence[BadLine] = (),
         global_shortcuts = {}
         set_window_icon()
     if _is_panel_kitten and not is_layer_shell_supported():
-        raise SystemExit('Cannot create panels as the window manager/compositor does not support the neccessary protocols')
+        raise SystemExit('Cannot create panels as the window manager/compositor does not support the necessary protocols')
     pos_x, pos_y = None, None
+    if args.grab_keyboard:
+        grab_keyboard(True)
     with cached_values_for(run_app.cached_values_name) as cached_values:
         if not _is_panel_kitten and not is_wayland():
             if opts.remember_window_position:
-                cached_workarea = cached_values.get('monitor-workarea', ())
+                cached_workarea = tuple(tuple(x) for x in cached_values.get('monitor-workarea', ()))
                 if cached_workarea and glfw_get_monitor_workarea() == tuple(cached_workarea):
                     pos_x, pos_y = cached_values.get('window-pos', (None, None))
             if args.position:

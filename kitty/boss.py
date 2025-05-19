@@ -89,6 +89,7 @@ from .fast_data_types import (
     get_os_window_size,
     glfw_get_monitor_workarea,
     global_font_size,
+    grab_keyboard,
     is_layer_shell_supported,
     last_focused_os_window_id,
     mark_os_window_for_close,
@@ -124,6 +125,7 @@ from .options.utils import MINIMUM_FONT_SIZE, KeyboardMode, KeyDefinition
 from .os_window_size import initial_window_size_func
 from .session import Session, create_sessions, get_os_window_sizing_data
 from .shaders import load_shader_programs
+from .simple_cli_definitions import grab_keyboard_docs
 from .tabs import SpecialWindow, SpecialWindowInstance, Tab, TabDict, TabManager
 from .types import _T, AsyncResponse, LayerShellConfig, SingleInstanceData, WindowSystemMouseEvent, ac
 from .typing_compat import PopenType, TypedDict
@@ -3214,3 +3216,11 @@ class Boss:
                 if wid == exception:
                     continue
                 window.screen.clear_selection()
+
+    @ac('misc', grab_keyboard_docs)
+    def grab_keyboard(self) -> None:
+        grab_keyboard(True)
+
+    @ac('misc', 'Ungrab the keyboard if it was previously grabbed')
+    def ungrab_keyboard(self) -> None:
+        grab_keyboard(False)
