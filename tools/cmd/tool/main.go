@@ -6,8 +6,10 @@ import (
 	"fmt"
 
 	"github.com/kovidgoyal/kitty/kittens/ask"
+	"github.com/kovidgoyal/kitty/kittens/choose_files"
 	"github.com/kovidgoyal/kitty/kittens/choose_fonts"
 	"github.com/kovidgoyal/kitty/kittens/clipboard"
+	"github.com/kovidgoyal/kitty/kittens/desktop_ui"
 	"github.com/kovidgoyal/kitty/kittens/diff"
 	"github.com/kovidgoyal/kitty/kittens/hints"
 	"github.com/kovidgoyal/kitty/kittens/hyperlinked_grep"
@@ -63,6 +65,8 @@ func KittyToolEntryPoints(root *cli.Command) {
 	unicode_input.EntryPoint(root)
 	// show_key
 	show_key.EntryPoint(root)
+	// desktop_ui
+	desktop_ui.EntryPoint(root)
 	// mouse_demo
 	root.AddSubCommand(&cli.Command{
 		Name:             "mouse-demo",
@@ -91,6 +95,8 @@ func KittyToolEntryPoints(root *cli.Command) {
 	show_error.EntryPoint(root)
 	// choose-fonts
 	choose_fonts.EntryPoint(root)
+	// choose-files
+	choose_files.EntryPoint(root)
 	// query-terminal
 	query_terminal.EntryPoint(root)
 	// __pytest__
