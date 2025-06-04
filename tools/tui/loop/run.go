@@ -394,6 +394,7 @@ func (self *Loop) run() (err error) {
 	self.write_msg_id_counter = 0
 	write_done_channel := make(chan IdType)
 	self.wakeup_channel = make(chan byte, 256)
+	self.panic_channel = make(chan error)
 	self.pending_writes = make([]write_msg, 0, 256)
 	err_channel := make(chan error, 8)
 	self.death_signal = SIGNULL
@@ -557,15 +558,14 @@ func (self *Loop) run() (err error) {
 			}
 			var timeout time.Duration
 			if len(self.timers) > 0 {
-				timeout = self.timers[0].deadline.Sub(now)
-				if timeout < 0 {
-					timeout = 0
-				}
+				timeout = max(0, self.timers[0].deadline.Sub(now))
 			}
 			timeout_chan = time.After(timeout)
 		}
 		select {
 		case <-timeout_chan:
+		case p := <-self.panic_channel:
+			return p
 		case <-self.wakeup_channel:
 			for len(self.wakeup_channel) > 0 {
 				<-self.wakeup_channel

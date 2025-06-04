@@ -18,33 +18,14 @@ map = definition.add_map
 mma = definition.add_mouse_map
 
 agr('scan', 'Scanning the filesystem')
-opt(
-    '+exclude_directory',
-    '^/proc$',
-    add_to_default=True,
-    long_text='''
-Regular expression to exclude directories. Matching directories will not be recursed into, but
-you can still or change into them to inspect their contents. Can be specified multiple times.
-Matches against the absolute path to the directory.
-If the pattern starts with :code:`!`, the :code:`!` is removed and the remaining pattern is removed from the list of patterns. This
-can be used to remove the default excluded directory patterns.
-''',
-)
-opt('+exclude_directory', '^/dev$', add_to_default=True)
-opt('+exclude_directory', '^/sys$', add_to_default=True)
-opt('+exclude_directory', '/__pycache__$', add_to_default=True)
-
-opt('max_depth', '4', option_type='positive_int', long_text='''
-The maximum depth to which to scan the filesystem for matches. Using large values will slow things down considerably. The better
-approach is to use a small value and first change to the directory of interest then actually select the file of interest.
-''')
-
-opt('+modify_score', r'(^|/)\.[^/]+(/|$) *= 0.5', add_to_default=True, long_text='''
+opt('+modify_score', r'(^|/)\.[^/]+(/|$) *= 0.1', add_to_default=True, long_text='''
 Modify the score of items matching the specified regular expression (matches against the absolute path).
 Can be used to make certain files and directories less or more prominent in the results.
-Can be specified multiple times. The default includes rules to reduce the score of hidden items.
+Can be specified multiple times. The default includes rules to reduce the score of hidden items and
+items in some well known cache folder names. Only applies when some actual search expression is provided.
 The syntax is :code:`regular-expression operator value`. Supported operators are: :code:`*=, +=, -=, /=`.
 ''')
+opt('+modify_score', '(^|/)__pycache__(/|$) *= 0.1', add_to_default=True)
 egr()
 
 def main(args: list[str]) -> None:
@@ -67,6 +48,19 @@ completion=type:file ext:conf group:"Config files" kwds:none,NONE
 {config_help}
 
 
+--mode
+type=choices
+choices=file,files,save-file,dir,save-dir,dirs,dir-for-files
+default=file
+The type of object(s) to select
+
+
+--suggested-save-file-name
+A suggested name when picking a save file.
+
+
+--suggested-save-file-path
+Path to an existing file to use as the save file.
 '''.format(config_help=CONFIG_HELP.format(conf_name='diff', appname=appname)).format
 
 

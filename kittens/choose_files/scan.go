@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/kovidgoyal/kitty/tools/tui/subseq"
 	"github.com/kovidgoyal/kitty/tools/utils"
@@ -21,80 +22,47 @@ type ResultItem struct {
 	text, abspath string
 	dir_entry     os.DirEntry
 	positions     []int // may be nil
+	score         float64
 }
 
 func (r ResultItem) String() string {
 	return fmt.Sprintf("{text: %#v, abspath: %#v, is_dir: %v, positions: %#v}", r.text, r.abspath, r.dir_entry.IsDir(), r.positions)
 }
 
-type dir_cache map[string][]ResultItem
+type dir_cache map[string][]os.DirEntry
 
 type ScanCache struct {
 	dir_entries           dir_cache
 	mutex                 sync.Mutex
 	root_dir, search_text string
 	in_progress           bool
+	only_dirs             bool
 	matches               []*ResultItem
 }
 
-func (sc *ScanCache) get_cached_entries(root_dir string) (ans []ResultItem, found bool) {
+func (sc *ScanCache) get_cached_entries(root_dir string) (ans []os.DirEntry, found bool) {
 	sc.mutex.Lock()
 	defer sc.mutex.Unlock()
 	ans, found = sc.dir_entries[root_dir]
 	return
 }
 
-func (sc *ScanCache) set_cached_entries(root_dir string, e []ResultItem) {
+func (sc *ScanCache) set_cached_entries(root_dir string, e []os.DirEntry) {
 	sc.mutex.Lock()
 	defer sc.mutex.Unlock()
 	sc.dir_entries[root_dir] = e
 }
 
-func scan_dir(path, root_dir string) []ResultItem {
-	if ans, err := os.ReadDir(path); err == nil {
-		if rel, err := filepath.Rel(root_dir, path); err == nil {
-			return utils.Map(func(x os.DirEntry) ResultItem {
-				path := filepath.Join(path, x.Name())
-				r := filepath.Join(rel, x.Name())
-				if root_dir == "/" {
-					r = "/" + r
-				}
-				return ResultItem{dir_entry: x, abspath: path, text: r}
-			}, ans)
-		}
-	}
-	return []ResultItem{}
-}
-
-func is_excluded(path string, exclude_patterns []*regexp.Regexp) bool {
-	for _, pattern := range exclude_patterns {
-		if pattern.MatchString(path) {
-			return true
-		}
-	}
-	return false
-}
-
-func (sc *ScanCache) fs_scan(root_dir, current_dir string, max_depth int, exclude_patterns []*regexp.Regexp, seen map[string]bool) (ans []ResultItem) {
+func (sc *ScanCache) readdir(current_dir string) (ans []os.DirEntry) {
 	var found bool
 	if ans, found = sc.get_cached_entries(current_dir); !found {
-		ans = scan_dir(current_dir, root_dir)
+		ans, _ = os.ReadDir(current_dir)
 		sc.set_cached_entries(current_dir, ans)
-	}
-	ans = slices.Clone(ans)
-	// now recurse into directories
-	if max_depth > 0 {
-		for _, x := range ans {
-			if x.dir_entry.IsDir() && !seen[x.abspath] && !is_excluded(x.abspath, exclude_patterns) {
-				seen[x.abspath] = true
-				ans = append(ans, sc.fs_scan(root_dir, x.abspath, max_depth-1, exclude_patterns, seen)...)
-			}
-		}
 	}
 	return
 }
 
-func sort_items_without_search_text(items []ResultItem) (ans []*ResultItem) {
+func sort_items_without_search_text(items []*ResultItem) (ans []*ResultItem) {
 	type s struct {
 		ltext          string
 		num_of_slashes int
@@ -103,14 +71,17 @@ func sort_items_without_search_text(items []ResultItem) (ans []*ResultItem) {
 		r              *ResultItem
 	}
 	hidden_pat := regexp.MustCompile(`(^|/)\.[^/]+(/|$)`)
-	d := utils.Map(func(x ResultItem) s {
-		return s{strings.ToLower(x.text), strings.Count(x.text, "/"), x.dir_entry.IsDir(), hidden_pat.MatchString(x.abspath), &x}
+	d := utils.Map(func(x *ResultItem) s {
+		return s{strings.ToLower(x.text), strings.Count(x.text, "/"), x.dir_entry.IsDir(), hidden_pat.MatchString(x.abspath), x}
 	}, items)
-	sort.Slice(d, func(i, j int) bool {
+	sort.SliceStable(d, func(i, j int) bool {
 		a, b := d[i], d[j]
 		if a.num_of_slashes == b.num_of_slashes {
 			if a.is_dir == b.is_dir {
 				if a.is_hidden == b.is_hidden {
+					if a.ltext == b.ltext {
+						return count_uppercase(a.r.text) < count_uppercase(b.r.text)
+					}
 					return a.ltext < b.ltext
 				}
 				return b.is_hidden
@@ -122,41 +93,124 @@ func sort_items_without_search_text(items []ResultItem) (ans []*ResultItem) {
 	return utils.Map(func(s s) *ResultItem { return s.r }, d)
 }
 
-func get_modified_score(r *ResultItem, score float64, score_patterns []ScorePattern) float64 {
+func get_modified_score(abspath string, score float64, score_patterns []ScorePattern) float64 {
 	for _, sp := range score_patterns {
-		if sp.pat.MatchString(r.abspath) {
+		if sp.pat.MatchString(abspath) {
 			score = sp.op(score, sp.val)
 		}
 	}
 	return score
 }
 
-func (sc *ScanCache) scan(root_dir, search_text string, max_depth int, exclude_patterns []*regexp.Regexp, score_patterns []ScorePattern) (ans []*ResultItem) {
-	seen := make(map[string]bool, 1024)
-	matches := sc.fs_scan(root_dir, root_dir, max_depth, exclude_patterns, seen)
-	if search_text == "" {
-		ans = sort_items_without_search_text(matches)
-		return
+func count_uppercase(s string) int {
+	count := 0
+	for _, r := range s {
+		if unicode.IsUpper(r) {
+			count++
+		}
 	}
-	pm := make(map[string]*ResultItem, len(ans))
-	for _, x := range matches {
-		nx := x
-		pm[x.text] = &nx
+	return count
+}
+
+type pos_in_name struct {
+	name      string
+	positions []int
+}
+
+func (r *ResultItem) finalize(positions []pos_in_name) {
+	buf := strings.Builder{}
+	buf.Grow(256)
+	pos := 0
+	for i, x := range positions {
+		before := buf.Len()
+		buf.WriteString(x.name)
+		if i != len(positions)-1 {
+			buf.WriteRune(os.PathSeparator)
+		}
+		for _, p := range x.positions {
+			r.positions = append(r.positions, p+pos)
+		}
+		pos += buf.Len() - before
 	}
-	matches2 := utils.Filter(subseq.ScoreItems(search_text, utils.Keys(pm), subseq.Options{}), func(x *subseq.Match) bool {
-		return x.Score > 0
+	r.text = buf.String()
+	if r.text == "" {
+		r.text = string(os.PathSeparator)
+	}
+}
+
+func (sc *ScanCache) scan_dir(abspath string, patterns []string, positions []pos_in_name, score float64) (ans []*ResultItem) {
+	if entries := sc.readdir(abspath); len(entries) > 0 {
+		npos := make([]pos_in_name, len(positions)+1)
+		copy(npos, positions)
+		if sc.only_dirs {
+			entries = utils.Filter(entries, func(e os.DirEntry) bool { return e.IsDir() })
+		}
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		var scores []*subseq.Match
+		pattern := ""
+		if len(patterns) > 0 {
+			pattern = patterns[0]
+		}
+		if pattern != "" {
+			scores = subseq.ScoreItems(pattern, names, subseq.Options{})
+		} else {
+			null := subseq.Match{}
+			scores = slices.Repeat([]*subseq.Match{&null}, len(names))
+		}
+		is_last := pattern == "" || len(patterns) <= 1
+		for i, n := range names {
+			e := entries[i]
+			child_abspath := filepath.Join(abspath, n)
+			if pattern == "" || scores[i].Score > 0 {
+				npos[len(positions)] = pos_in_name{name: n, positions: scores[i].Positions}
+				if is_last {
+					r := &ResultItem{score: score + scores[i].Score, dir_entry: entries[i], abspath: child_abspath}
+					r.finalize(npos)
+					ans = append(ans, r)
+				} else if e.IsDir() {
+					ans = append(ans, sc.scan_dir(child_abspath, patterns[1:], npos, scores[i].Score+score)...)
+				}
+			}
+		}
+	}
+	return
+}
+
+func (sc *ScanCache) scan(root_dir, search_text string, score_patterns []ScorePattern) (ans []*ResultItem) {
+	var patterns []string
+	switch search_text {
+	case "", "/":
+	default:
+		patterns = strings.Split(filepath.Clean(search_text), string(os.PathSeparator))
+	}
+	if strings.HasPrefix(search_text, "/") {
+		root_dir = "/"
+		if len(patterns) > 0 {
+			patterns = patterns[1:]
+		}
+	}
+	ans = sc.scan_dir(root_dir, patterns, nil, 0)
+	for _, ri := range ans {
+		ri.score = get_modified_score(ri.abspath, ri.score, score_patterns)
+	}
+	has_search_text := search_text != "" && search_text != "/"
+	if !has_search_text {
+		return sort_items_without_search_text(ans)
+	}
+	slices.SortStableFunc(ans, func(a, b *ResultItem) int {
+		ans := cmp.Compare(b.score, a.score)
+		if ans == 0 {
+			ans = cmp.Compare(len(a.text), len(b.text))
+			if ans == 0 {
+				ans = cmp.Compare(count_uppercase(a.text), count_uppercase(b.text))
+			}
+		}
+		return ans
 	})
-	type s struct {
-		r     *ResultItem
-		score float64
-	}
-	ss := utils.Map(func(m *subseq.Match) s {
-		x := pm[m.Text]
-		x.positions = m.Positions
-		return s{x, get_modified_score(x, m.Score, score_patterns)}
-	}, matches2)
-	slices.SortFunc(ss, func(a, b s) int { return cmp.Compare(b.score, a.score) })
-	return utils.Map(func(s s) *ResultItem { return s.r }, ss)
+	return
 }
 
 func (h *Handler) get_results() (ans []*ResultItem, in_progress bool) {
@@ -166,21 +220,27 @@ func (h *Handler) get_results() (ans []*ResultItem, in_progress bool) {
 	if sc.dir_entries == nil {
 		sc.dir_entries = make(dir_cache, 512)
 	}
-	if sc.root_dir == h.state.CurrentDir() && sc.search_text == h.state.SearchText() {
+	cd := h.state.CurrentDir()
+	st := h.state.SearchText()
+	only_dirs := h.state.mode.OnlyDirs()
+	if st != "" {
+		st = filepath.Clean(st)
+	}
+	if sc.root_dir == cd && sc.search_text == st && sc.only_dirs == only_dirs {
 		return sc.matches, sc.in_progress
 	}
 	sc.in_progress = true
 	sc.matches = nil
-	root_dir := h.state.CurrentDir()
-	search_text := h.state.SearchText()
-	sc.root_dir = root_dir
-	sc.search_text = search_text
-	md, ep, sp := h.state.MaxDepth(), h.state.ExcludePatterns(), h.state.ScorePatterns()
+	sc.root_dir = cd
+	sc.search_text = st
+	sc.only_dirs = only_dirs
+	sp := h.state.ScorePatterns()
 	go func() {
-		results := sc.scan(root_dir, search_text, md, ep, sp)
+		defer h.lp.RecoverFromPanicInGoRoutine()
+		results := sc.scan(cd, st, sp)
 		sc.mutex.Lock()
 		defer sc.mutex.Unlock()
-		if root_dir == sc.root_dir && search_text == sc.search_text {
+		if cd == sc.root_dir && st == sc.search_text && sc.only_dirs == only_dirs {
 			sc.matches = results
 			sc.in_progress = false
 			h.lp.WakeupMainThread()

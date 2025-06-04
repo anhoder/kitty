@@ -154,7 +154,9 @@ You can also use the *CSI t* escape code to get the screen size. Send
 ``<ESC>[14t`` to ``STDOUT`` and kitty will reply on ``STDIN`` with
 ``<ESC>[4;<height>;<width>t`` where ``height`` and ``width`` are the window
 size in pixels. This escape code is supported in many terminals, not just
-kitty.
+kitty. A more precise version of this escape code, which is however supported
+in less terminals is ``<ESC>[16t`` which causes the terminal to reply with the
+pixel dimensions of a single cell.
 
 A minimal example
 ------------------
@@ -337,7 +339,7 @@ similar to reporting any other kind of I/O error. Since the file paths come
 from potentially untrusted sources, terminal emulators **must** refuse to read
 any device/socket/etc. special files. Only regular files are allowed.
 Additionally, terminal emulators may refuse to read files in *sensitive*
-parts of the filesystem, such as :file:`/proc`, :file:`/sys`, :file:`/dev/`, etc.
+parts of the filesystem, such as :file:`/proc`, :file:`/sys`, :file:`/dev`, etc.
 
 Local client
 ^^^^^^^^^^^^^^
@@ -479,6 +481,14 @@ An example response::
 If you send two placements with the same ``image id`` and ``placement id`` the
 second one will replace the first. This can be used to resize or move
 placements around the screen, without flicker.
+
+
+.. note::
+   When re-transmitting image data for a specific id, the existing image and
+   all its placements must be deleted. The new data replaces the old image data
+   but is not actually displayed until a placement for it is created. This is
+   to avoid divergent behavior in the case when unrelated programs happen to re-use
+   image ids in the same session.
 
 
 .. versionadded:: 0.19.3

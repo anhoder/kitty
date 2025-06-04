@@ -2,6 +2,8 @@ package choose_files
 
 import (
 	"fmt"
+	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,7 +19,7 @@ import (
 var _ = fmt.Print
 
 func (h *Handler) draw_results_title() {
-	text := filepath.Clean(h.state.BaseDir())
+	text := filepath.Clean(h.state.CurrentDir())
 	home := filepath.Clean(utils.Expanduser("~"))
 	if strings.HasPrefix(text, home) {
 		text = "~" + text[len(home):]
@@ -30,7 +32,7 @@ func (h *Handler) draw_results_title() {
 	if len(tt) < len(text) {
 		text = wcswidth.TruncateToVisualLength(text, available_width-1)
 	}
-	text = fmt.Sprintf(" %s %s ", h.lp.SprintStyled("fg=blue", string(icons.FOLDER)+" "), h.lp.SprintStyled("fg=intense-white bold", text))
+	text = fmt.Sprintf(" %s %s ", h.lp.SprintStyled("fg=blue", icons.IconForFileWithMode(text, fs.ModeDir, false)+" "), h.lp.SprintStyled("fg=intense-white bold", text))
 	extra := available_width - wcswidth.Stringwidth(text)
 	x := 3
 	if extra > 1 {
@@ -55,26 +57,16 @@ func (h *Handler) draw_no_matches_message(in_progress bool) {
 }
 
 const matching_position_style = "fg=green"
+const current_style = "fg=intense-white bold"
 
-func (h *Handler) draw_matching_result(r *ResultItem) {
-	icon := icon_for(r.abspath, r.dir_entry)
-	h.lp.MoveCursorHorizontally(1)
-	p, s, _ := strings.Cut(h.lp.SprintStyled(matching_position_style, " "), " ")
-	h.lp.QueueWriteString(p)
-	h.lp.DrawSizedText(icon, loop.SizedText{Scale: 2})
-	h.lp.QueueWriteString(s)
-	text := r.text
-	available_width := (h.screen_size.width - 6) / 2
-	add_ellipsis := false
-	if wcswidth.Stringwidth(text) > available_width {
-		text = wcswidth.TruncateToVisualLength(text, available_width-2)
-		add_ellipsis = true
-	}
-	h.render_match_with_positions(text, add_ellipsis, r.positions, 2)
-}
-
-func (h *Handler) render_match_with_positions(text string, add_ellipsis bool, positions []int, scale int) {
+func (h *Handler) render_match_with_positions(text string, add_ellipsis bool, positions []int, is_current bool) {
 	prefix, suffix, _ := strings.Cut(h.lp.SprintStyled(matching_position_style, " "), " ")
+	if is_current {
+		p, s, _ := strings.Cut(h.lp.SprintStyled(current_style, " "), " ")
+		h.lp.QueueWriteString(p)
+		defer h.lp.QueueWriteString(s)
+		suffix += p
+	}
 	write_chunk := func(text string, emphasize bool) {
 		if text == "" {
 			return
@@ -85,11 +77,7 @@ func (h *Handler) render_match_with_positions(text string, add_ellipsis bool, po
 				h.lp.QueueWriteString(suffix)
 			}()
 		}
-		if scale > 1 {
-			h.lp.DrawSizedText(text, loop.SizedText{Scale: scale})
-		} else {
-			h.lp.QueueWriteString(text)
-		}
+		h.lp.QueueWriteString(text)
 	}
 	at := 0
 	limit := len(text)
@@ -129,34 +117,31 @@ func icon_for(path string, x os.DirEntry) string {
 	return ans
 }
 
-func (h *Handler) draw_column_of_matches(matches []*ResultItem, x, available_width, num_extra_matches int) {
+func (h *Handler) draw_column_of_matches(matches []*ResultItem, current_idx int, x, available_width int) {
 	for i, m := range matches {
 		h.lp.QueueWriteString("\r")
 		h.lp.MoveCursorHorizontally(x)
 		icon := icon_for(m.abspath, m.dir_entry)
-		text := ""
+		text := m.text
 		add_ellipsis := false
-		positions := m.positions
-		if num_extra_matches > 0 && i == len(matches)-1 {
-			icon = "… "
-			text = h.lp.SprintStyled("italic", fmt.Sprintf("%d more matches", num_extra_matches))
-			positions = nil
-		} else {
-			text = m.text
-			if wcswidth.Stringwidth(text) > available_width-3 {
-				text = wcswidth.TruncateToVisualLength(text, available_width-4)
-				add_ellipsis = true
-			}
+		if wcswidth.Stringwidth(text) > available_width-3 {
+			text = wcswidth.TruncateToVisualLength(text, available_width-4)
+			add_ellipsis = true
 		}
-		h.lp.QueueWriteString(icon + " ")
-		h.render_match_with_positions(text, add_ellipsis, positions, 1)
+		is_current := i == current_idx
+		if is_current {
+			h.lp.QueueWriteString(h.lp.SprintStyled(matching_position_style, icon+" "))
+		} else {
+			h.lp.QueueWriteString(icon + " ")
+		}
+		h.render_match_with_positions(text, add_ellipsis, m.positions, is_current)
 		h.lp.MoveCursorVertically(1)
 	}
 }
 
-func (h *Handler) draw_list_of_results(matches []*ResultItem, y, height int) {
+func (h *Handler) draw_list_of_results(matches []*ResultItem, y, height int) int {
 	if len(matches) == 0 || height < 2 {
-		return
+		return 0
 	}
 	available_width := h.screen_size.width - 2
 	col_width := available_width
@@ -169,14 +154,47 @@ func (h *Handler) draw_list_of_results(matches []*ResultItem, y, height int) {
 		}
 		col_width = available_width / num_cols
 	}
-	x := 1
-	for i := range num_cols {
-		is_last := i == num_cols-1
-		chunk := matches[:min(len(matches), height)]
-		matches = matches[len(chunk):]
+	num_of_slots := num_cols * height
+	idx := min(h.state.CurrentIndex(), len(matches)-1)
+	pos := 0
+	for pos+num_of_slots <= idx {
+		pos += height
+	}
+	x, limit, total := 1, 0, 0
+	for range num_cols {
 		h.lp.MoveCursorTo(x, y)
-		h.draw_column_of_matches(chunk, x, col_width-1, utils.IfElse(is_last, len(matches), 0))
+		limit = min(len(matches), pos+height)
+		total += limit - pos
+		h.draw_column_of_matches(matches[pos:limit], idx-pos, x, col_width-1)
 		x += col_width
+		pos += height
+		if pos >= len(matches) {
+			break
+		}
+	}
+	return num_cols
+}
+
+func (h *Handler) draw_num_of_matches(num_shown, y int) {
+	m := ""
+	switch h.state.num_of_matches_at_last_render {
+	case 0:
+		m = " no matches "
+	default:
+		m = fmt.Sprintf(" %d of %d matches ", min(num_shown, h.state.num_of_matches_at_last_render), h.state.num_of_matches_at_last_render)
+	}
+	w := int(math.Ceil(float64(wcswidth.Stringwidth(m)) / 2.0))
+	h.lp.MoveCursorTo(h.screen_size.width-w-2, y)
+	st := loop.SizedText{Subscale_denominator: 2, Subscale_numerator: 1, Vertical_alignment: 2, Width: 1}
+	graphemes := wcswidth.SplitIntoGraphemes(m)
+	for len(graphemes) > 0 {
+		s := ""
+		for w := 0; w < 2 && len(graphemes) > 0; {
+			w += wcswidth.Stringwidth(graphemes[0])
+			s += graphemes[0]
+			graphemes = graphemes[1:]
+		}
+		h.lp.DrawSizedText(s, st)
 	}
 }
 
@@ -188,18 +206,63 @@ func (h *Handler) draw_results(y, bottom_margin int, matches []*ResultItem, in_p
 	h.draw_results_title()
 	y += 2
 	h.lp.MoveCursorTo(1, y)
+	h.state.num_of_slots_per_column_at_last_render = height - 2
+	num_cols := 0
 	switch len(matches) {
 	case 0:
 		h.draw_no_matches_message(in_progress)
 	default:
-		switch h.state.SearchText() {
-		case "":
-			h.draw_list_of_results(matches, y, height-2)
-		default:
-			h.draw_matching_result(matches[0])
-			y += 2
-			h.draw_list_of_results(matches[1:], y, height-4)
+		num_cols = h.draw_list_of_results(matches, y, h.state.num_of_slots_per_column_at_last_render)
+	}
+	h.state.num_of_matches_at_last_render = len(matches)
+	h.draw_num_of_matches(h.state.num_of_slots_per_column_at_last_render*num_cols, y+height-2)
+	return
+}
+
+func (h *Handler) next_result(amt int) {
+	if h.state.num_of_matches_at_last_render > 0 {
+		idx := h.state.CurrentIndex()
+		idx += amt
+		for idx < 0 {
+			idx += h.state.num_of_matches_at_last_render
+		}
+		idx %= h.state.num_of_matches_at_last_render
+		h.state.SetCurrentIndex(idx)
+	}
+}
+
+func (h *Handler) move_sideways(leftwards bool) {
+	if h.state.num_of_matches_at_last_render > 0 {
+		idx := h.state.CurrentIndex()
+		slots := h.state.num_of_slots_per_column_at_last_render
+		if leftwards {
+			if idx >= slots {
+				idx -= slots
+			}
+		} else {
+			idx = min(h.state.num_of_matches_at_last_render-1, idx+slots)
+		}
+		if idx != h.state.CurrentIndex() {
+			h.state.SetCurrentIndex(idx)
 		}
 	}
-	return
+}
+
+func (h *Handler) handle_result_list_keys(ev *loop.KeyEvent) bool {
+	switch {
+	case ev.MatchesPressOrRepeat("down"):
+		h.next_result(1)
+		return true
+	case ev.MatchesPressOrRepeat("up"):
+		h.next_result(-1)
+		return true
+	case ev.MatchesPressOrRepeat("left") || ev.MatchesPressOrRepeat("pgup"):
+		h.move_sideways(true)
+		return true
+	case ev.MatchesPressOrRepeat("right") || ev.MatchesPressOrRepeat("pgdn"):
+		h.move_sideways(false)
+		return true
+	default:
+		return false
+	}
 }

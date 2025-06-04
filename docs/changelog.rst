@@ -115,6 +115,14 @@ Detailed list of changes
 
 - Remote control: Fix holding a remote control socket open causing the kitty I/O thread to go into a loop and not respond on other remote control sockets (:disc:`8670`)
 
+- hints kitten: Preserve line breaks when the hint is over a line break (:iss:`8674`)
+
+- Fix a segfault when using the :ac:`copy_ansi_to_clipboard` action (:iss:`8682`)
+
+- Fix a crash when using linear easing curves for animations (:iss:`8692`)
+
+- Graphics protocol: Add a note clarifying image update behavior on re-transmission (:iss:`8701`)
+
 0.42.1 [2025-05-17]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
