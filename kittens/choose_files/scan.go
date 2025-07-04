@@ -1,250 +1,493 @@
 package choose_files
 
 import (
+	"bytes"
 	"cmp"
 	"fmt"
+	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 	"unicode"
+	"unicode/utf8"
 
-	"github.com/kovidgoyal/kitty/tools/tui/subseq"
+	"github.com/kovidgoyal/kitty/tools/fzf"
 	"github.com/kovidgoyal/kitty/tools/utils"
+	"golang.org/x/sys/unix"
 )
 
 var _ = fmt.Print
 
+func (c CombinedScore) String() string {
+	return fmt.Sprintf("{score: %d length: %d index: %d}", c.Score(), c.Length(), c.Index())
+}
+
 type ResultItem struct {
-	text, abspath string
-	dir_entry     os.DirEntry
-	positions     []int // may be nil
-	score         float64
+	text      string
+	ftype     fs.FileMode
+	positions []int // may be nil
+	score     CombinedScore
+}
+type ResultsType []*ResultItem
+
+func (r *ResultItem) SetScoreResult(x fzf.Result) {
+	r.positions = x.Positions
+	r.score.Set_score(uint16(math.MaxUint16 - uint16(x.Score)))
+}
+
+func (r ResultItem) IsMatching() bool {
+	return r.score.Score() < uint16(math.MaxUint16)
 }
 
 func (r ResultItem) String() string {
-	return fmt.Sprintf("{text: %#v, abspath: %#v, is_dir: %v, positions: %#v}", r.text, r.abspath, r.dir_entry.IsDir(), r.positions)
+	return fmt.Sprintf("{text: %#v, %s, positions: %#v}", r.text, r.score, r.positions)
 }
 
-type dir_cache map[string][]os.DirEntry
-
-type ScanCache struct {
-	dir_entries           dir_cache
-	mutex                 sync.Mutex
-	root_dir, search_text string
-	in_progress           bool
-	only_dirs             bool
-	matches               []*ResultItem
-}
-
-func (sc *ScanCache) get_cached_entries(root_dir string) (ans []os.DirEntry, found bool) {
-	sc.mutex.Lock()
-	defer sc.mutex.Unlock()
-	ans, found = sc.dir_entries[root_dir]
-	return
-}
-
-func (sc *ScanCache) set_cached_entries(root_dir string, e []os.DirEntry) {
-	sc.mutex.Lock()
-	defer sc.mutex.Unlock()
-	sc.dir_entries[root_dir] = e
-}
-
-func (sc *ScanCache) readdir(current_dir string) (ans []os.DirEntry) {
-	var found bool
-	if ans, found = sc.get_cached_entries(current_dir); !found {
-		ans, _ = os.ReadDir(current_dir)
-		sc.set_cached_entries(current_dir, ans)
+func (r *ResultItem) sorted_positions() []int {
+	if len(r.positions) > 1 {
+		sort.Ints(r.positions)
 	}
-	return
+	return r.positions
 }
 
-func sort_items_without_search_text(items []*ResultItem) (ans []*ResultItem) {
-	type s struct {
-		ltext          string
-		num_of_slashes int
-		is_dir         bool
-		is_hidden      bool
-		r              *ResultItem
+type FileSystemScanner struct {
+	listeners               []chan bool
+	in_progress, keep_going atomic.Bool
+	root_dir                string
+	mutex                   sync.Mutex
+	collection              *ResultCollection
+	dir_reader              func(path string) ([]fs.DirEntry, error)
+	err                     error
+}
+
+func NewFileSystemScanner(root_dir string, notify chan bool) (fss *FileSystemScanner) {
+	ans := &FileSystemScanner{root_dir: root_dir, listeners: []chan bool{notify}, collection: NewResultCollection(4096)}
+	ans.in_progress.Store(true)
+	ans.keep_going.Store(true)
+	ans.dir_reader = os.ReadDir
+	return ans
+}
+
+type Scanner interface {
+	Start()
+	Cancel()
+	AddListener(chan bool)
+	Len() int
+	Batch(offset *CollectionIndex) []ResultItem
+	Finished() bool
+	Error() error
+}
+
+func (fss *FileSystemScanner) lock()   { fss.mutex.Lock() }
+func (fss *FileSystemScanner) unlock() { fss.mutex.Unlock() }
+
+func (fss *FileSystemScanner) Error() error {
+	fss.lock()
+	defer fss.unlock()
+	return fss.err
+}
+
+func (fss *FileSystemScanner) Start() {
+	go fss.worker()
+}
+
+func (fss *FileSystemScanner) Cancel() {
+	fss.keep_going.Store(false)
+}
+
+func (fss *FileSystemScanner) AddListener(x chan bool) {
+	fss.lock()
+	defer fss.unlock()
+	if !fss.in_progress.Load() {
+		close(x)
+	} else {
+		fss.listeners = append(fss.listeners, x)
 	}
-	hidden_pat := regexp.MustCompile(`(^|/)\.[^/]+(/|$)`)
-	d := utils.Map(func(x *ResultItem) s {
-		return s{strings.ToLower(x.text), strings.Count(x.text, "/"), x.dir_entry.IsDir(), hidden_pat.MatchString(x.abspath), x}
-	}, items)
-	sort.SliceStable(d, func(i, j int) bool {
-		a, b := d[i], d[j]
-		if a.num_of_slashes == b.num_of_slashes {
-			if a.is_dir == b.is_dir {
-				if a.is_hidden == b.is_hidden {
-					if a.ltext == b.ltext {
-						return count_uppercase(a.r.text) < count_uppercase(b.r.text)
-					}
-					return a.ltext < b.ltext
-				}
-				return b.is_hidden
-			}
-			return a.is_dir
-		}
-		return a.num_of_slashes < b.num_of_slashes
-	})
-	return utils.Map(func(s s) *ResultItem { return s.r }, d)
 }
 
-func get_modified_score(abspath string, score float64, score_patterns []ScorePattern) float64 {
-	for _, sp := range score_patterns {
-		if sp.pat.MatchString(abspath) {
-			score = sp.op(score, sp.val)
-		}
-	}
-	return score
+func (fss *FileSystemScanner) Len() int {
+	fss.lock()
+	defer fss.unlock()
+	return fss.collection.Len()
 }
 
-func count_uppercase(s string) int {
-	count := 0
-	for _, r := range s {
-		if unicode.IsUpper(r) {
-			count++
-		}
-	}
-	return count
+func (fss *FileSystemScanner) Batch(offset *CollectionIndex) []ResultItem {
+	fss.lock()
+	defer fss.unlock()
+	return fss.collection.Batch(offset)
 }
 
-type pos_in_name struct {
-	name      string
-	positions []int
+func (fss *FileSystemScanner) Finished() bool {
+	return !fss.in_progress.Load()
 }
 
-func (r *ResultItem) finalize(positions []pos_in_name) {
-	buf := strings.Builder{}
-	buf.Grow(256)
+type sortable_dir_entry struct {
+	name     string
+	ftype    fs.FileMode
+	sort_key []byte
+	buf      [unix.NAME_MAX + 1]byte
+}
+
+const SymlinkToDir = 1
+
+// lowercase a string into a pre-existing byte buffer with speedups for ASCII
+func as_lower(s string, output []byte) int {
+	limit := min(len(s), len(output))
+	found_non_ascii := false
 	pos := 0
-	for i, x := range positions {
-		before := buf.Len()
-		buf.WriteString(x.name)
-		if i != len(positions)-1 {
-			buf.WriteRune(os.PathSeparator)
+	for i := range limit {
+		c := s[i]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+			if pos < i {
+				copy(output[pos:i], s[pos:i])
+			}
+			output[i] = c
+			pos = i + 1
+		} else if c >= utf8.RuneSelf {
+			if pos < i {
+				copy(output[pos:i], s[pos:i])
+			}
+			found_non_ascii = true
+			pos = i
+			break
 		}
-		for _, p := range x.positions {
-			r.positions = append(r.positions, p+pos)
-		}
-		pos += buf.Len() - before
 	}
-	r.text = buf.String()
-	if r.text == "" {
-		r.text = string(os.PathSeparator)
+	if !found_non_ascii {
+		if pos < limit {
+			copy(output[pos:limit], s[pos:limit])
+		}
+		return limit
 	}
-}
-
-func (sc *ScanCache) scan_dir(abspath string, patterns []string, positions []pos_in_name, score float64) (ans []*ResultItem) {
-	if entries := sc.readdir(abspath); len(entries) > 0 {
-		npos := make([]pos_in_name, len(positions)+1)
-		copy(npos, positions)
-		if sc.only_dirs {
-			entries = utils.Filter(entries, func(e os.DirEntry) bool { return e.IsDir() })
-		}
-		names := make([]string, len(entries))
-		for i, e := range entries {
-			names[i] = e.Name()
-		}
-		var scores []*subseq.Match
-		pattern := ""
-		if len(patterns) > 0 {
-			pattern = patterns[0]
-		}
-		if pattern != "" {
-			scores = subseq.ScoreItems(pattern, names, subseq.Options{})
+	buf := [4]byte{}
+	var n int
+	for _, r := range s[pos:] {
+		o := output[pos:]
+		r = unicode.ToLower(r)
+		if len(o) > 3 {
+			n = utf8.EncodeRune(o, r)
 		} else {
-			null := subseq.Match{}
-			scores = slices.Repeat([]*subseq.Match{&null}, len(names))
+			n = utf8.EncodeRune(buf[:], r)
+			n = copy(o, buf[:n])
 		}
-		is_last := pattern == "" || len(patterns) <= 1
-		for i, n := range names {
-			e := entries[i]
-			child_abspath := filepath.Join(abspath, n)
-			if pattern == "" || scores[i].Score > 0 {
-				npos[len(positions)] = pos_in_name{name: n, positions: scores[i].Positions}
-				if is_last {
-					r := &ResultItem{score: score + scores[i].Score, dir_entry: entries[i], abspath: child_abspath}
-					r.finalize(npos)
-					ans = append(ans, r)
-				} else if e.IsDir() {
-					ans = append(ans, sc.scan_dir(child_abspath, patterns[1:], npos, scores[i].Score+score)...)
-				}
-			}
+		pos += n
+		if pos >= len(output) {
+			break
 		}
 	}
-	return
+	return pos
 }
 
-func (sc *ScanCache) scan(root_dir, search_text string, score_patterns []ScorePattern) (ans []*ResultItem) {
-	var patterns []string
-	switch search_text {
-	case "", "/":
-	default:
-		patterns = strings.Split(filepath.Clean(search_text), string(os.PathSeparator))
-	}
-	if strings.HasPrefix(search_text, "/") {
-		root_dir = "/"
-		if len(patterns) > 0 {
-			patterns = patterns[1:]
+func (fss *FileSystemScanner) worker() {
+	defer func() {
+		fss.lock()
+		defer fss.unlock()
+		fss.in_progress.Store(false)
+		if r := recover(); r != nil {
+			st, qerr := utils.Format_stacktrace_on_panic(r)
+			fss.err = fmt.Errorf("%w\n%s", qerr, st)
 		}
-	}
-	ans = sc.scan_dir(root_dir, patterns, nil, 0)
-	for _, ri := range ans {
-		ri.score = get_modified_score(ri.abspath, ri.score, score_patterns)
-	}
-	has_search_text := search_text != "" && search_text != "/"
-	if !has_search_text {
-		return sort_items_without_search_text(ans)
-	}
-	slices.SortStableFunc(ans, func(a, b *ResultItem) int {
-		ans := cmp.Compare(b.score, a.score)
-		if ans == 0 {
-			ans = cmp.Compare(len(a.text), len(b.text))
-			if ans == 0 {
-				ans = cmp.Compare(count_uppercase(a.text), count_uppercase(b.text))
-			}
-		}
-		return ans
-	})
-	return
-}
-
-func (h *Handler) get_results() (ans []*ResultItem, in_progress bool) {
-	sc := &h.scan_cache
-	sc.mutex.Lock()
-	defer sc.mutex.Unlock()
-	if sc.dir_entries == nil {
-		sc.dir_entries = make(dir_cache, 512)
-	}
-	cd := h.state.CurrentDir()
-	st := h.state.SearchText()
-	only_dirs := h.state.mode.OnlyDirs()
-	if st != "" {
-		st = filepath.Clean(st)
-	}
-	if sc.root_dir == cd && sc.search_text == st && sc.only_dirs == only_dirs {
-		return sc.matches, sc.in_progress
-	}
-	sc.in_progress = true
-	sc.matches = nil
-	sc.root_dir = cd
-	sc.search_text = st
-	sc.only_dirs = only_dirs
-	sp := h.state.ScorePatterns()
-	go func() {
-		defer h.lp.RecoverFromPanicInGoRoutine()
-		results := sc.scan(cd, st, sp)
-		sc.mutex.Lock()
-		defer sc.mutex.Unlock()
-		if cd == sc.root_dir && st == sc.search_text && sc.only_dirs == only_dirs {
-			sc.matches = results
-			sc.in_progress = false
-			h.lp.WakeupMainThread()
+		for _, l := range fss.listeners {
+			close(l)
 		}
 	}()
-	return sc.matches, sc.in_progress
+	root_dir, _ := filepath.Abs(fss.root_dir)
+	if !strings.HasSuffix(root_dir, string(os.PathSeparator)) {
+		root_dir += string(os.PathSeparator)
+	}
+	dir := root_dir
+	base := ""
+	pos := &CollectionIndex{}
+	var arena []sortable_dir_entry
+	var sortable []*sortable_dir_entry
+	var idx uint32
+	// do a breadth first traversal of the filesystem
+	is_root := true
+	for dir != "" {
+		if !fss.keep_going.Load() {
+			break
+		}
+		entries, err := fss.dir_reader(dir)
+		if err != nil {
+			if is_root {
+				fss.keep_going.Store(false)
+				fss.lock()
+				fss.err = err
+				fss.unlock()
+			}
+			entries = nil
+		}
+		if cap(arena) < len(entries) {
+			arena = make([]sortable_dir_entry, 0, max(1024, len(entries), 2*cap(arena)))
+			sortable = make([]*sortable_dir_entry, 0, cap(arena))
+		}
+		arena = arena[:len(entries)]
+		sortable = sortable[:len(entries)]
+		for i, e := range entries {
+			arena[i].name = e.Name()
+			ftype := e.Type()
+			if ftype&fs.ModeSymlink != 0 {
+				if st, serr := os.Stat(dir + arena[i].name); serr == nil && st.IsDir() {
+					ftype |= SymlinkToDir
+				}
+			}
+			arena[i].ftype = ftype
+			if ftype&fs.ModeDir != 0 {
+				arena[i].buf[0] = '0'
+			} else {
+				arena[i].buf[0] = '1'
+			}
+			n := as_lower(arena[i].name, arena[i].buf[1:])
+			arena[i].sort_key = arena[i].buf[:1+n]
+			sortable[i] = &arena[i]
+		}
+		slices.SortFunc(sortable, func(a, b *sortable_dir_entry) int { return bytes.Compare(a.sort_key, b.sort_key) })
+		fss.lock()
+		for _, e := range sortable {
+			i := fss.collection.NextAppendPointer()
+			i.ftype = e.ftype
+			i.text = base + e.name
+			i.score.Set_index(idx)
+			idx++
+		}
+		listeners := fss.listeners
+		fss.unlock()
+		for _, l := range listeners {
+			select {
+			case l <- true:
+			default:
+			}
+		}
+		if relpath := fss.collection.NextDir(pos); relpath != "" {
+			base = relpath + string(os.PathSeparator)
+			dir = root_dir + base
+		} else {
+			dir = ""
+		}
+		is_root = false
+	}
+}
+
+type FileSystemScorer struct {
+	scanner                 Scanner
+	keep_going, is_complete atomic.Bool
+	root_dir, query         string
+	only_dirs               bool
+	mutex                   sync.Mutex
+	sorted_results          *SortedResults
+	on_results              func(error, bool)
+	current_worker_wait     *sync.WaitGroup
+	scorer                  *fzf.FuzzyMatcher
+}
+
+func NewFileSystemScorer(root_dir, query string, only_dirs bool, on_results func(error, bool)) (ans *FileSystemScorer) {
+	return &FileSystemScorer{
+		query: query, root_dir: root_dir, only_dirs: only_dirs, on_results: on_results,
+		scorer: fzf.NewFuzzyMatcher(fzf.PATH_SCHEME), sorted_results: NewSortedResults()}
+}
+
+func (fss *FileSystemScorer) lock()   { fss.mutex.Lock() }
+func (fss *FileSystemScorer) unlock() { fss.mutex.Unlock() }
+
+func (fss *FileSystemScorer) Start() {
+	on_results := make(chan bool)
+	fss.is_complete.Store(false)
+	fss.keep_going.Store(true)
+	if fss.scanner == nil {
+		fss.scanner = NewFileSystemScanner(fss.root_dir, on_results)
+		fss.scanner.Start()
+	} else {
+		fss.scanner.AddListener(on_results)
+	}
+	fss.current_worker_wait = &sync.WaitGroup{}
+	fss.current_worker_wait.Add(1)
+	go fss.worker(on_results, fss.current_worker_wait)
+}
+
+func (fss *FileSystemScorer) Change_query(query string) {
+	if fss.query == query {
+		return
+	}
+	fss.keep_going.Store(false)
+	if fss.current_worker_wait != nil {
+		fss.current_worker_wait.Wait()
+	}
+	fss.lock()
+	fss.query = query
+	fss.sorted_results.Clear()
+	fss.unlock()
+	fss.Start()
+}
+
+func (fss *FileSystemScorer) worker(on_results chan bool, worker_wait *sync.WaitGroup) {
+	defer func() {
+		fss.is_complete.Store(true)
+		defer worker_wait.Done()
+		if r := recover(); r != nil {
+			if fss.keep_going.Load() {
+				st, qerr := utils.Format_stacktrace_on_panic(r)
+				fss.on_results(fmt.Errorf("%w\n%s", qerr, st), true)
+			}
+		} else {
+			if fss.keep_going.Load() {
+				fss.on_results(fss.scanner.Error(), true)
+			}
+		}
+	}()
+	handle_batch := func(results []ResultItem) (err error) {
+		if err = fss.scanner.Error(); err != nil {
+			return
+		}
+		var rp []*ResultItem
+		if fss.only_dirs {
+			rp = make([]*ResultItem, 0, len(results))
+			for i, r := range results {
+				if r.ftype.IsDir() {
+					rp = append(rp, &results[i])
+				}
+			}
+		} else {
+			rp = make([]*ResultItem, len(results))
+			for i := range len(rp) {
+				rp[i] = &results[i]
+			}
+		}
+		if len(rp) > 0 {
+			if fss.query != "" {
+				scores, err := fss.scorer.Score(utils.Map(func(r *ResultItem) string { return r.text }, rp), fss.query)
+				if err != nil {
+					return err
+				}
+				for i, r := range rp {
+					r.SetScoreResult(scores[i])
+					r.score.Set_length(uint16(len(r.text)))
+				}
+				rp = utils.Filter(rp, func(r *ResultItem) bool { return r.IsMatching() })
+			} else {
+				for _, r := range rp {
+					r.score &= 0b11111111111111111111111111111111 // only preserve index
+					r.positions = nil
+				}
+			}
+		}
+		if len(rp) > 0 {
+			slices.SortFunc(rp, func(a, b *ResultItem) int { return cmp.Compare(a.score, b.score) })
+		}
+		fss.sorted_results.AddSortedSlice(rp)
+		return
+	}
+
+	offset := &CollectionIndex{}
+	for range on_results {
+		if !fss.keep_going.Load() {
+			break
+		}
+		results := fss.scanner.Batch(offset)
+		if len(results) > 0 || fss.scanner.Error() != nil {
+			fss.on_results(handle_batch(results), false)
+		}
+	}
+	for fss.keep_going.Load() {
+		b := fss.scanner.Batch(offset)
+		if len(b) == 0 {
+			break
+		}
+		fss.on_results(handle_batch(b), false)
+	}
+}
+
+func (fss *FileSystemScorer) Results() (ans *SortedResults, is_finished bool) {
+	fss.lock()
+	defer fss.unlock()
+	return fss.sorted_results, fss.is_complete.Load()
+}
+
+func (fss *FileSystemScorer) Cancel() {
+	fss.keep_going.Store(false)
+	fss.scanner.Cancel()
+}
+
+type Settings interface {
+	OnlyDirs() bool
+	CurrentDir() string
+	SearchText() string
+}
+
+type ResultManager struct {
+	report_errors    chan error
+	WakeupMainThread func() bool
+	settings         Settings
+
+	scorer         *FileSystemScorer
+	mutex          sync.Mutex
+	last_wakeup_at time.Time
+}
+
+func NewResultManager(err_chan chan error, settings Settings, WakeupMainThread func() bool) *ResultManager {
+	ans := &ResultManager{
+		report_errors:    err_chan,
+		settings:         settings,
+		WakeupMainThread: WakeupMainThread,
+	}
+	return ans
+}
+
+func (m *ResultManager) on_results(err error, is_finished bool) {
+	if err != nil {
+		m.report_errors <- err
+		m.WakeupMainThread()
+		return
+	}
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	if is_finished || time.Since(m.last_wakeup_at) > time.Millisecond*50 {
+		m.WakeupMainThread()
+		m.last_wakeup_at = time.Now()
+	}
+}
+
+func (m *ResultManager) set_root_dir(root_dir string) {
+	var err error
+	if root_dir == "" || root_dir == "." {
+		if root_dir, err = os.Getwd(); err != nil {
+			return
+		}
+	}
+	root_dir = utils.Expanduser(root_dir)
+	if root_dir, err = filepath.Abs(root_dir); err != nil {
+		return
+	}
+	if m.scorer != nil {
+		m.scorer.Cancel()
+	}
+	m.scorer = NewFileSystemScorer(root_dir, "", m.settings.OnlyDirs(), m.on_results)
+	m.mutex.Lock()
+	m.last_wakeup_at = time.Time{}
+	m.mutex.Unlock()
+	m.scorer.Start()
+}
+
+func (m *ResultManager) set_query(query string) {
+	m.mutex.Lock()
+	m.last_wakeup_at = time.Time{}
+	m.mutex.Unlock()
+	if m.scorer == nil {
+		m.scorer = NewFileSystemScorer(".", "", m.settings.OnlyDirs(), m.on_results)
+		m.scorer.Start()
+	} else {
+		m.scorer.Change_query(query)
+	}
+}
+
+func (h *Handler) get_results() (ans *SortedResults, is_complete bool) {
+	if h.result_manager.scorer == nil {
+		return
+	}
+	return h.result_manager.scorer.Results()
 }

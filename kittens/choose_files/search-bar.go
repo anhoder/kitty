@@ -55,7 +55,6 @@ func (h *Handler) draw_search_bar(y int) {
 	h.draw_frame(available_width, SEARCH_BAR_HEIGHT)
 	h.lp.MoveCursorTo(1+left_margin+1, 2+y)
 	h.draw_search_text(available_width - 2)
-	return
 }
 
 func (h *Handler) handle_edit_keys(ev *loop.KeyEvent) bool {
@@ -65,7 +64,7 @@ func (h *Handler) handle_edit_keys(ev *loop.KeyEvent) bool {
 			h.lp.Beep()
 		} else {
 			g := wcswidth.SplitIntoGraphemes(h.state.search_text)
-			h.state.SetSearchText(strings.Join(g[:len(g)-1], ""))
+			h.set_query(strings.Join(g[:len(g)-1], ""))
 			return true
 		}
 	}

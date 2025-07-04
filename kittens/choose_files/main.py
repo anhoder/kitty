@@ -17,17 +17,6 @@ opt = definition.add_option
 map = definition.add_map
 mma = definition.add_mouse_map
 
-agr('scan', 'Scanning the filesystem')
-opt('+modify_score', r'(^|/)\.[^/]+(/|$) *= 0.1', add_to_default=True, long_text='''
-Modify the score of items matching the specified regular expression (matches against the absolute path).
-Can be used to make certain files and directories less or more prominent in the results.
-Can be specified multiple times. The default includes rules to reduce the score of hidden items and
-items in some well known cache folder names. Only applies when some actual search expression is provided.
-The syntax is :code:`regular-expression operator value`. Supported operators are: :code:`*=, +=, -=, /=`.
-''')
-opt('+modify_score', '(^|/)__pycache__(/|$) *= 0.1', add_to_default=True)
-egr()
-
 def main(args: list[str]) -> None:
     raise SystemExit('This must be run as kitten choose-files')
 
@@ -36,6 +25,25 @@ usage = '[directory to start choosing files in]'
 
 
 OPTIONS = '''
+--mode
+type=choices
+choices=file,files,save-file,dir,save-dir,dirs,save-files
+default=file
+The type of object(s) to select
+
+
+--suggested-save-file-name
+A suggested name when picking a save file.
+
+
+--suggested-save-file-path
+Path to an existing file to use as the save file.
+
+
+--title
+Window title to use for this chooser
+
+
 --override -o
 type=list
 Override individual configuration options, can be specified multiple times.
@@ -48,20 +56,19 @@ completion=type:file ext:conf group:"Config files" kwds:none,NONE
 {config_help}
 
 
---mode
-type=choices
-choices=file,files,save-file,dir,save-dir,dirs,dir-for-files
-default=file
-The type of object(s) to select
+--write-output-to
+Path to a file to which the output is written in addition to STDOUT.
 
 
---suggested-save-file-name
-A suggested name when picking a save file.
+--output-format
+choices=text,json
+default=text
+The format in which to write the output.
 
 
---suggested-save-file-path
-Path to an existing file to use as the save file.
-'''.format(config_help=CONFIG_HELP.format(conf_name='diff', appname=appname)).format
+--write-pid-to
+Path to a file to which to write the process ID (PID) of this process to.
+'''.format(config_help=CONFIG_HELP.format(conf_name='choose-files', appname=appname)).format
 
 
 help_text = '''\

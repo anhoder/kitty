@@ -1,13 +1,22 @@
 package desktop_ui
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"maps"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/kovidgoyal/dbus"
 	"github.com/kovidgoyal/dbus/introspect"
@@ -24,11 +33,13 @@ const PORTAL_COLOR_SCHEME_KEY = "color-scheme"
 const PORTAL_ACCENT_COLOR_KEY = "accent-color"
 const PORTAL_CONTRAST_KEY = "contrast"
 const PORTAL_BUS_NAME = "org.freedesktop.impl.portal.desktop.kitty"
-const SETTINGS_OBJECT_PATH = "/org/freedesktop/portal/desktop"
+const DESKTOP_OBJECT_PATH = "/org/freedesktop/portal/desktop"
 const SETTINGS_INTERFACE = "org.freedesktop.impl.portal.Settings"
-const CHANGE_SETTINGS_OBJECT_PATH = "/net/kovidgoyal/kitty/portal"
+const FILE_CHOOSER_INTERFACE = "org.freedesktop.impl.portal.FileChooser"
+const KITTY_OBJECT_PATH = "/net/kovidgoyal/kitty/portal"
 const CHANGE_SETTINGS_INTERFACE = "net.kovidgoyal.kitty.settings"
 const DESKTOP_PORTAL_NAME = "org.freedesktop.portal.Desktop"
+const REQUEST_INTERFACE = "org.freedesktop.impl.portal.Request"
 
 // Special portal setting used to check if we are being called by xdg-desktop-portal
 const SETTINGS_CANARY_NAMESPACE = "net.kovidgoyal.kitty"
@@ -41,13 +52,20 @@ const (
 	DARK
 	LIGHT
 )
+const (
+	RESPONSE_SUCCESS uint32 = iota
+	RESPONSE_CANCELED
+	RESPONSE_ENDED
+)
 
 type SettingsMap map[string]map[string]dbus.Variant
 
 type Portal struct {
-	bus      *dbus.Conn
-	settings SettingsMap
-	lock     sync.Mutex
+	bus                         *dbus.Conn
+	settings                    SettingsMap
+	lock                        sync.Mutex
+	opts                        *Config
+	file_chooser_first_instance *exec.Cmd
 }
 
 func to_color(spec string) (v dbus.Variant, err error) {
@@ -57,8 +75,8 @@ func to_color(spec string) (v dbus.Variant, err error) {
 	return
 }
 
-func NewPortal(opts *Options) (p *Portal, err error) {
-	ans := Portal{}
+func NewPortal(opts *Config) (p *Portal, err error) {
+	ans := Portal{opts: opts}
 	ans.settings = SettingsMap{
 		SETTINGS_CANARY_NAMESPACE: map[string]dbus.Variant{
 			SETTINGS_CANARY_KEY: dbus.MakeVariant("running"),
@@ -66,16 +84,16 @@ func NewPortal(opts *Options) (p *Portal, err error) {
 	}
 	ans.settings[PORTAL_APPEARANCE_NAMESPACE] = map[string]dbus.Variant{}
 	switch opts.Color_scheme {
-	case "dark":
+	case Color_scheme_dark:
 		ans.settings[PORTAL_APPEARANCE_NAMESPACE][PORTAL_COLOR_SCHEME_KEY] = dbus.MakeVariant(uint32(DARK))
-	case "light":
+	case Color_scheme_light:
 		ans.settings[PORTAL_APPEARANCE_NAMESPACE][PORTAL_COLOR_SCHEME_KEY] = dbus.MakeVariant(uint32(LIGHT))
 	default:
 		ans.settings[PORTAL_APPEARANCE_NAMESPACE][PORTAL_COLOR_SCHEME_KEY] = dbus.MakeVariant(uint32(NO_PREFERENCE))
 	}
-	ans.settings[PORTAL_APPEARANCE_NAMESPACE][PORTAL_ACCENT_COLOR_KEY], err = to_color(opts.AccentColor)
+	ans.settings[PORTAL_APPEARANCE_NAMESPACE][PORTAL_ACCENT_COLOR_KEY], err = to_color(opts.Accent_color)
 	var contrast uint32
-	if opts.Contrast == "high" {
+	if opts.Contrast == Contrast_high {
 		contrast = 1
 	}
 	ans.settings[PORTAL_APPEARANCE_NAMESPACE][PORTAL_CONTRAST_KEY] = dbus.MakeVariant(contrast)
@@ -182,7 +200,18 @@ func (self *Portal) Start() (err error) {
 		"Read":    {{"namespace", "s", false}, {"key", "s", false}, {"value", "v", true}},
 		"ReadAll": {{"namespaces", "as", false}, {"value", "a{sa{sv}}", true}},
 	}
-	if err = ExportInterface(self.bus, self, SETTINGS_INTERFACE, SETTINGS_OBJECT_PATH, methods, props, signals); err != nil {
+	if err = ExportInterface(self.bus, self, SETTINGS_INTERFACE, DESKTOP_OBJECT_PATH, methods, props, signals); err != nil {
+		return
+	}
+	methods = MethodSpec{
+		"OpenFile": {{"handle", "o", false}, {"app_id", "s", false}, {"parent_window", "s", false}, {"title", "s", false}, {"options", "a{sv}", false},
+			{"response", "u", true}, {"results", "a{sv}", false},
+		},
+		"SaveFile": {{"handle", "o", false}, {"app_id", "s", false}, {"parent_window", "s", false}, {"title", "s", false}, {"options", "a{sv}", false},
+			{"response", "u", true}, {"results", "a{sv}", false},
+		},
+	}
+	if err = ExportInterface(self.bus, self, FILE_CHOOSER_INTERFACE, DESKTOP_OBJECT_PATH, methods, nil, nil); err != nil {
 		return
 	}
 	methods = MethodSpec{
@@ -190,7 +219,7 @@ func (self *Portal) Start() (err error) {
 		"RemoveSetting": {{"namespace", "s", false}, {"key", "s", false}},
 	}
 	props["version"].Value = uint32(1)
-	if err = ExportInterface(self.bus, self, CHANGE_SETTINGS_INTERFACE, CHANGE_SETTINGS_OBJECT_PATH, methods, props, nil); err != nil {
+	if err = ExportInterface(self.bus, self, CHANGE_SETTINGS_INTERFACE, KITTY_OBJECT_PATH, methods, props, nil); err != nil {
 		return
 	}
 	return
@@ -315,7 +344,7 @@ var WritableDataDirs = sync.OnceValue(func() (ans []string) {
 })
 
 var AllPortalInterfaces = sync.OnceValue(func() (ans []string) {
-	return []string{SETTINGS_INTERFACE}
+	return []string{SETTINGS_INTERFACE, FILE_CHOOSER_INTERFACE}
 })
 
 // enable-portal {{{
@@ -454,7 +483,7 @@ func set_variant_setting(namespace, key string, v dbus.Variant, remove_setting b
 	} else {
 		vals = append(vals, v)
 	}
-	obj := conn.Object(PORTAL_BUS_NAME, dbus.ObjectPath(CHANGE_SETTINGS_OBJECT_PATH))
+	obj := conn.Object(PORTAL_BUS_NAME, dbus.ObjectPath(KITTY_OBJECT_PATH))
 	call := obj.Call(CHANGE_SETTINGS_INTERFACE+"."+method, dbus.FlagNoAutoStart, vals...)
 	if err = call.Store(); err != nil {
 		return fmt.Errorf("failed to call %s with error: %w", method, err)
@@ -512,7 +541,7 @@ func set_color_scheme(which string) (err error) {
 	if val == nval {
 		return
 	}
-	obj := conn.Object(PORTAL_BUS_NAME, dbus.ObjectPath(CHANGE_SETTINGS_OBJECT_PATH))
+	obj := conn.Object(PORTAL_BUS_NAME, dbus.ObjectPath(KITTY_OBJECT_PATH))
 	call := obj.Call(CHANGE_SETTINGS_INTERFACE+".ChangeSetting", dbus.FlagNoAutoStart, PORTAL_APPEARANCE_NAMESPACE, PORTAL_COLOR_SCHEME_KEY, dbus.MakeVariant(nval))
 	if err = call.Store(); err != nil {
 		return fmt.Errorf("failed to call ChangeSetting with error: %w", err)
@@ -529,13 +558,13 @@ func (self *Portal) ChangeSetting(namespace, key string, value dbus.Variant) *db
 	self.settings[namespace][key] = value
 
 	if e := self.bus.Emit(
-		SETTINGS_OBJECT_PATH,
+		DESKTOP_OBJECT_PATH,
 		SETTINGS_INTERFACE+".SettingChanged",
 		namespace,
 		key,
 		value,
 	); e != nil {
-		fmt.Fprintf(os.Stderr, "Couldn't emit signal: %s", e)
+		log.Println("Couldn't emit signal:", e)
 	}
 	return nil
 }
@@ -598,4 +627,224 @@ func (self *Portal) ReadAll(namespaces []string) (ReadAllType, *dbus.Error) {
 		maps.Copy(values[namespace], self.settings[namespace])
 	}
 	return values, nil
+}
+
+type vmap map[string]dbus.Variant
+type ChooseFilesData struct {
+	Title                                        string
+	Mode                                         string
+	Cwd                                          string
+	SuggestedSaveFileName, SuggestedSaveFilePath string
+	Handle                                       dbus.ObjectPath
+}
+
+func var_to_bool_or_false(v dbus.Variant) bool {
+	if ans, ok := v.Value().(bool); ok {
+		return ans
+	}
+	return false
+}
+
+func (self *Portal) Cleanup() {
+	self.lock.Lock()
+	defer self.lock.Unlock()
+	if self.file_chooser_first_instance != nil {
+		self.file_chooser_first_instance.Process.Signal(unix.SIGTERM)
+		ch := make(chan int)
+		go func() {
+			self.file_chooser_first_instance.Wait()
+			ch <- 0
+		}()
+		select {
+		case <-ch:
+		case <-time.After(time.Second):
+			self.file_chooser_first_instance.Process.Kill()
+			self.file_chooser_first_instance.Wait()
+		}
+		self.file_chooser_first_instance = nil
+	}
+}
+
+type ChooserResponse struct {
+	Paths       []string `json:"paths"`
+	Error       string   `json:"error"`
+	Interrupted bool     `json:"interrupted"`
+}
+
+func (self *Portal) run_file_chooser(cfd ChooseFilesData) (response uint32, result_dict vmap) {
+	response = RESPONSE_ENDED
+	tdir, err := os.MkdirTemp("", "kitty-cfd")
+	if err != nil {
+		log.Println("cannot run file chooser as failed to create a temporary directory with error: ", err)
+		return
+	}
+	pid_path := filepath.Join(tdir, "pid")
+	var close_requested, child_killed atomic.Bool
+	Close := func() *dbus.Error {
+		close_requested.Store(true)
+		if !child_killed.Load() {
+			if raw, err := os.ReadFile(pid_path); err == nil {
+				if pid, err := strconv.Atoi(string(raw)); err == nil {
+					child_killed.Store(true)
+					unix.Kill(pid, unix.SIGTERM)
+				}
+			}
+		}
+		return nil
+	}
+	self.bus.ExportMethodTable(map[string]any{"Close": Close}, cfd.Handle, REQUEST_INTERFACE)
+	defer func() {
+		self.bus.ExportMethodTable(nil, cfd.Handle, REQUEST_INTERFACE)
+		_ = os.RemoveAll(tdir)
+	}()
+	output_path := filepath.Join(tdir, "output.json")
+
+	cmd := func() *exec.Cmd {
+		self.lock.Lock()
+		defer self.lock.Unlock()
+		args := []string{
+			"+kitten", "panel", "--layer=overlay", "--edge=center", "--focus-policy=exclusive",
+			"-o", "background_opacity=0.85", "--wait-for-single-instance-window-close",
+			"--single-instance", "--instance-group", "cfp-" + strconv.Itoa(os.Getpid()),
+		}
+		for _, x := range self.opts.File_chooser_kitty_conf {
+			args = append(args, `-c`, x)
+		}
+		for _, x := range self.opts.File_chooser_kitty_override {
+			args = append(args, `-o`, x)
+		}
+		if self.file_chooser_first_instance == nil {
+			fifo_path := filepath.Join(tdir, "fifo")
+			if err := unix.Mkfifo(fifo_path, 0600); err != nil {
+				log.Println("cannot run file chooser as failed to create a fifo directory with error: ", err)
+				return nil
+			}
+			fa := slices.Clone(args)
+			fa = append(fa, "--start-as-hidden", "sh", "-c", "echo a > '"+fifo_path+"'; read")
+			cmd := exec.Command(utils.KittyExe(), fa...)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			cmd.Start()
+			ch := make(chan int)
+			go func() {
+				f, err := os.OpenFile(fifo_path, os.O_RDONLY, os.ModeNamedPipe)
+				if err != nil {
+					log.Println("cannot run file chooser as failed to open fifo for read with error: ", err)
+				}
+				b := []byte{'a', 'b', 'c', 'd'}
+				f.Read(b)
+				ch <- 0
+			}()
+			select {
+			case <-ch:
+				self.file_chooser_first_instance = cmd
+			case <-time.After(5 * time.Second):
+				log.Println("cannot run file chooser as panel script timed out writing to fifo")
+				return nil
+			}
+		}
+		args = append(args, "kitten", `choose-files`, `--mode`, cfd.Mode, `--write-output-to`, output_path, `--output-format=json`)
+		if cfd.SuggestedSaveFileName != "" {
+			args = append(args, `--suggested-save-file-name`, cfd.SuggestedSaveFileName)
+		}
+		if cfd.SuggestedSaveFilePath != "" {
+			args = append(args, `--suggested-save-file-path`, cfd.SuggestedSaveFilePath)
+		}
+		if cfd.Title != "" {
+			args = append(args, "--title", cfd.Title)
+		}
+		args = append(args, "--write-pid-to", pid_path)
+		args = append(args, utils.IfElse(cfd.Cwd == "", "~", cfd.Cwd))
+		cmd := exec.Command(utils.KittyExe(), args...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd
+	}()
+	if cmd == nil || close_requested.Load() {
+		return
+	}
+	log.Println("running file chooser with args:", cmd.Path, utils.Repr(cmd.Args))
+	if err := cmd.Run(); err != nil {
+		log.Println("running file chooser failed with error: ", err)
+		return
+	}
+	if close_requested.Load() {
+		return
+	}
+	raw, err := os.ReadFile(output_path)
+	if err != nil {
+		log.Println("running file chooser failed, could not read from output file with error: ", err)
+		return
+	}
+	if close_requested.Load() {
+		return
+	}
+	var result ChooserResponse
+	if err = json.Unmarshal(raw, &result); err != nil {
+		log.Println("running file chooser failed, invalid JSON response with error: ", err)
+		return
+	}
+	if result.Error != "" {
+		log.Println("running file chooser failed, with error: ", result.Error)
+		return
+	}
+	if result.Interrupted {
+		response = RESPONSE_CANCELED
+		log.Println("running file chooser failed, interrupted by user.")
+		return
+	}
+	response = RESPONSE_SUCCESS
+	prefix := "file://" + utils.IfElse(runtime.GOOS == "windows", "/", "")
+	uris := utils.Map(func(path string) string {
+		path = filepath.ToSlash(path)
+		u := url.URL{Path: path}
+		return prefix + u.EscapedPath()
+	}, result.Paths)
+	result_dict = vmap{"uris": dbus.MakeVariant(uris)}
+	return
+}
+
+func (options vmap) get_bytearray(name string) string {
+	if v, found := options[name]; found {
+		if b, ok := v.Value().([]byte); ok {
+			// the FileChooser spec requires paths and filenames to be null
+			// terminated, so remove trailing nulls.
+			return string(bytes.TrimRight(b, "\x00"))
+		}
+	}
+	return ""
+}
+
+func (self *Portal) OpenFile(handle dbus.ObjectPath, app_id string, parent_window string, title string, options vmap) (uint32, vmap, *dbus.Error) {
+	cfd := ChooseFilesData{Title: title, Cwd: options.get_bytearray("current_folder"), Handle: handle}
+	dir_only := false
+	if v, found := options["directory"]; found && var_to_bool_or_false(v) {
+		dir_only = true
+	}
+	multiple := false
+	if v, found := options["multiple"]; found && var_to_bool_or_false(v) {
+		multiple = true
+	}
+	if dir_only {
+		cfd.Mode = utils.IfElse(multiple, "dirs", "dir")
+	} else {
+		cfd.Mode = utils.IfElse(multiple, "files", "file")
+	}
+	response, result := self.run_file_chooser(cfd)
+	return response, result, nil
+}
+
+func (self *Portal) SaveFile(handle dbus.ObjectPath, app_id string, parent_window string, title string, options vmap) (uint32, vmap, *dbus.Error) {
+	cfd := ChooseFilesData{
+		Title: title, Cwd: options.get_bytearray("current_folder"), Handle: handle,
+		SuggestedSaveFileName: options.get_bytearray("current_name"),
+		SuggestedSaveFilePath: options.get_bytearray("current_file")}
+	multiple := false
+	if v, found := options["multiple"]; found && var_to_bool_or_false(v) {
+		multiple = true
+	}
+	cfd.Mode = utils.IfElse(multiple, "save-files", "save-file")
+
+	response, result := self.run_file_chooser(cfd)
+	return response, result, nil
 }

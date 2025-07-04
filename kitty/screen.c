@@ -440,7 +440,7 @@ nuke_incomplete_single_line_multicell_chars_in_range(
         if (cpu_cells[x].is_multicell) {
             index_type mcd_x_limit = x + cpu_cells[x].width - cpu_cells[x].x;
             if (cpu_cells[x].x || mcd_x_limit > limit) nuke_in_line(cpu_cells, gpu_cells, x, MIN(mcd_x_limit, limit), replace_with_spaces ? ' ': 0);
-            x = mcd_x_limit;
+            x = mcd_x_limit - 1;
         }
     }
 }
@@ -860,8 +860,9 @@ halve_multicell_width(Screen *self, index_type x_, index_type y_) {
     y_min_limit = expected_y_min_limit;
     unsigned new_width = cp[x_].width / 2;
     while (cp[x_].x && x_ > 0) x_--;
-    index_type x_limit = MIN(self->columns, x_ + mcd_x_limit(&cp[x_]));
-    index_type half_x_limit = x_limit / 2;
+    const index_type ws = mcd_x_limit(&cp[x_]);
+    const index_type x_limit = MIN(self->columns, x_ + ws);
+    const index_type half_x_limit = MIN(self->columns, x_ + ws / 2);
     int y_max_limit = MIN(self->lines, y_ + cp[x_].scale);
     for (int y = y_min_limit + 1; y < y_max_limit; y++) {
         Line *line = range_line_(self, y); cp = line->cpu_cells; gp = line->gpu_cells;
@@ -2890,7 +2891,7 @@ shell_prompt_marking(Screen *self, char *buf) {
 }
 
 static bool
-screen_history_scroll_to_prompt(Screen *self, int num_of_prompts_to_jump) {
+screen_history_scroll_to_prompt(Screen *self, int num_of_prompts_to_jump, int scroll_offset) {
     if (self->linebuf != self->main_linebuf) return false;
     unsigned int old = self->scrolled_by;
     if (num_of_prompts_to_jump == 0) {
@@ -2902,6 +2903,7 @@ screen_history_scroll_to_prompt(Screen *self, int num_of_prompts_to_jump) {
         int y = -self->scrolled_by;
 #define ensure_y_ok if (y >= (int)self->lines || -y > (int)self->historybuf->count) return false;
         ensure_y_ok;
+        y += scroll_offset;
         while (num_of_prompts_to_jump) {
             y += delta;
             ensure_y_ok;
@@ -2909,6 +2911,7 @@ screen_history_scroll_to_prompt(Screen *self, int num_of_prompts_to_jump) {
                 num_of_prompts_to_jump--;
             }
         }
+        y -= scroll_offset;
 #undef ensure_y_ok
         self->scrolled_by = y >= 0 ? 0 : -y;
         screen_set_last_visited_prompt(self, 0);
@@ -4727,8 +4730,9 @@ scroll(Screen *self, PyObject *args) {
 static PyObject*
 scroll_to_prompt(Screen *self, PyObject *args) {
     int num_of_prompts = -1;
-    if (!PyArg_ParseTuple(args, "|i", &num_of_prompts)) return NULL;
-    if (screen_history_scroll_to_prompt(self, num_of_prompts)) { Py_RETURN_TRUE; }
+    int scroll_offset = 0;
+    if (!PyArg_ParseTuple(args, "|ii", &num_of_prompts, &scroll_offset)) return NULL;
+    if (screen_history_scroll_to_prompt(self, num_of_prompts, scroll_offset)) { Py_RETURN_TRUE; }
     Py_RETURN_FALSE;
 }
 

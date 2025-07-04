@@ -66,6 +66,7 @@ is_freebsd = 'freebsd' in _plat
 is_netbsd = 'netbsd' in _plat
 is_dragonflybsd = 'dragonfly' in _plat
 is_bsd = is_freebsd or is_netbsd or is_dragonflybsd or is_openbsd
+is_windows = sys.platform == 'win32'
 is_arm = platform.processor() == 'arm' or platform.machine() in ('arm64', 'aarch64')
 c_std = '' if is_openbsd else '-std=c11'
 Env = glfw.Env
@@ -238,6 +239,12 @@ def pkg_config(pkg: str, *args: str, extra_pc_dir: str = '', fatal: bool = True)
                 )
             )
         )
+    except FileNotFoundError:
+        if is_windows:
+            raise SystemExit(
+                f'The command {error(PKGCONFIG)} was not found. You might need to install MSYS2 and its'
+                ' mingw-w64-x86_64-pkg-config package, or use WSL.')
+        raise
     except subprocess.CalledProcessError:
         if fatal:
             raise SystemExit(f'The package {error(pkg)} was not found on your system')
@@ -310,7 +317,16 @@ def cc_version() -> Tuple[List[str], Tuple[int, int]]:
     if 'CC' in os.environ:
         q = os.environ['CC']
     else:
-        if is_macos:
+        if is_windows:
+            if shutil.which('cl.exe'):
+                q = 'cl.exe'
+            elif shutil.which('gcc'):
+                q = 'gcc'
+            elif shutil.which('clang'):
+                q = 'clang'
+            else:
+                raise SystemExit('No C compiler found. On Windows, install Visual Studio (MSVC) or MinGW-w64 (gcc/clang).')
+        elif is_macos:
             q = 'clang'
         else:
             if shutil.which('gcc'):
@@ -320,6 +336,11 @@ def cc_version() -> Tuple[List[str], Tuple[int, int]]:
             else:
                 q = 'cc'
     cc = shlex.split(q)
+    if is_windows and cc[0].lower() == 'cl.exe':
+        raw = subprocess.check_output(cc + ['/?']).decode()
+        if m := re.search(r'Compiler Version ([\d\.]+)', raw):
+            parts = tuple(map(int, m.group(1).split('.')))
+            return cc, (parts[0], parts[1])
     raw = subprocess.check_output(cc + ['-dumpversion']).decode('utf-8')
     ver_ = raw.strip().split('.')[:2]
     try:
@@ -674,36 +695,55 @@ def define(x: str) -> str:
 
 
 def run_tool(cmd: Union[str, List[str]], desc: Optional[str] = None) -> None:
-    if isinstance(cmd, str):
-        cmd = shlex.split(cmd[0])
     if verbose:
         desc = None
-    print(desc or ' '.join(cmd))
-    p = subprocess.Popen(cmd)
+
+    if is_windows:
+        # On Windows, it's generally safer to pass a single string to Popen with shell=True
+        # for commands that might involve shell built-ins or complex paths.
+        if isinstance(cmd, list):
+            wcmd_to_execute = shlex.join(cmd)
+        else:
+            wcmd_to_execute = cmd
+        print(desc or wcmd_to_execute)
+        p = subprocess.Popen(wcmd_to_execute, shell=True)
+    else:
+        # On Unix-like systems, passing a list is generally preferred for security and clarity.
+        if isinstance(cmd, str):
+            cmd_to_execute = shlex.split(cmd) # Split the string into a list of arguments
+        else:
+            cmd_to_execute = cmd
+        print(desc or ' '.join(cmd_to_execute))
+        p = subprocess.Popen(cmd_to_execute)
+
     ret = p.wait()
     if ret != 0:
         if desc:
-            print(' '.join(cmd))
+            print(wcmd_to_execute if is_windows else cmd_to_execute) # Print the actual command that was executed
         raise SystemExit(ret)
 
 
 @lru_cache
 def get_vcs_rev() -> str:
     ans = ''
+    git_exe = shutil.which('git') or 'git'
     if os.path.exists('.git'):
         try:
-            rev = subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('utf-8')
-        except FileNotFoundError:
+            rev = subprocess.check_output([git_exe, 'rev-parse', 'HEAD']).decode('utf-8')
+            ans = rev.strip()
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            # Fallback for older git versions or other issues
             try:
-                with open('.git/refs/heads/master') as f:
-                    rev = f.read()
-            except NotADirectoryError:
-                with open('.git') as f:
-                    gitloc = f.read()
-                with open(os.path.join(gitloc, 'refs/heads/master')) as f:
-                    rev = f.read()
-
-        ans = rev.strip()
+                with open(os.path.join('.git', 'HEAD')) as f:
+                    head_content = f.read().strip()
+                if head_content.startswith('ref:'):
+                    ref_path = head_content[5:].strip()
+                    with open(os.path.join('.git', ref_path)) as f:
+                        ans = f.read().strip()
+                else:
+                    ans = head_content
+            except Exception as e:
+                print(error(f'Warning: Failed to get git revision from .git directory: {e}'), file=sys.stderr)
     return ans
 
 
@@ -883,6 +923,15 @@ def add_builtin_fonts(args: Options) -> None:
         font_file = ''
         if is_macos:
             for candidate in (os.path.expanduser('~/Library/Fonts'), '/Library/Fonts', '/System/Library/Fonts', '/Network/Library/Fonts'):
+                q = os.path.join(candidate, filename)
+                if os.path.exists(q):
+                    font_file = q
+                    break
+        elif is_windows:
+            for candidate in (
+                    os.path.expandvars(r'%userprofile%\AppData\Local\Microsoft\Windows\Fonts'),
+                    os.path.expandvars(r'%windir%\Fonts'),
+            ):
                 q = os.path.join(candidate, filename)
                 if os.path.exists(q):
                     font_file = q
@@ -1192,17 +1241,25 @@ def parse_go_version(x: str) -> Tuple[int, int, int]:
     return ans[0], ans[1], ans[2]
 
 
+@lru_cache(2)
+def go_cmd() -> list[str]:
+    go = shutil.which('go')
+    if go:
+        return [go]
+    return []
+
+
 def build_static_kittens(
     args: Options, launcher_dir: str, destination_dir: str = '', for_freeze: bool = False,
     for_platform: Optional[Tuple[str, str]] = None
 ) -> str:
     sys.stdout.flush()
     sys.stderr.flush()
-    go = shutil.which('go')
+    go = go_cmd()
     if not go:
         raise SystemExit('The go tool was not found on this system. Install Go')
-    required_go_version = subprocess.check_output([go] + 'list -f {{.GoVersion}} -m'.split(), env=dict(os.environ, GO111MODULE="on")).decode().strip()
-    go_version_raw = subprocess.check_output([go, 'version']).decode().strip().split()
+    required_go_version = subprocess.check_output(go + 'list -f {{.GoVersion}} -m'.split(), env=dict(os.environ, GO111MODULE="on")).decode().strip()
+    go_version_raw = subprocess.check_output(go + ['version']).decode().strip().split()
     if go_version_raw[2] != "devel":
         current_go_version = go_version_raw[2][2:]
     else:
@@ -1214,7 +1271,7 @@ def build_static_kittens(
     if args.skip_building_kitten:
         print('Skipping building of the kitten binary because of a command line option. Build is incomplete', file=sys.stderr)
         return ''
-    cmd = [go, 'build', '-v']
+    cmd = go + ['build', '-v']
     vcs_rev = args.vcs_rev or get_vcs_rev()
     ld_flags: List[str] = []
     binary_data_flags = [f"-X kitty.VCSRevision={vcs_rev}"]
@@ -1868,7 +1925,7 @@ def package(args: Options, bundle_type: str, do_build_all: bool = True) -> None:
             os.chmod(path, 0o755 if should_be_executable(path) else 0o644)
     if not for_freeze and not bundle_type.startswith('macos-'):
         build_static_kittens(args, launcher_dir=launcher_dir)
-    if not is_macos:
+    if not is_macos and not is_windows:
         create_linux_bundle_gunk(ddir, args)
 
     if bundle_type.startswith('macos-'):
@@ -1921,14 +1978,15 @@ def clean(for_cross_compile: bool = False) -> None:
             dirs.remove(d)
         for f in files:
             ext = f.rpartition('.')[-1]
-            if ext in ('so', 'dylib', 'pyc', 'pyo') or (not for_cross_compile and is_generated(f)):
+            if ext in ('so', 'pyc', 'pyo', 'pyd', 'dylib') or (not for_cross_compile and is_generated(f)):
                 os.unlink(os.path.join(root, f))
     for x in glob.glob('glfw/wayland-*-protocol.[ch]'):
         os.unlink(x)
     for x in glob.glob('kittens/*'):
         if os.path.isdir(x) and not os.path.exists(os.path.join(x, '__init__.py')):
             shutil.rmtree(x)
-    subprocess.check_call(['go', 'clean', '-cache', '-testcache', '-modcache', '-fuzzcache'])
+    if go := go_cmd():
+        subprocess.check_call(go + ['clean', '-cache', '-testcache', '-modcache', '-fuzzcache'])
 
 
 def option_parser() -> argparse.ArgumentParser:  # {{{

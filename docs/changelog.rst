@@ -123,6 +123,19 @@ Detailed list of changes
 
 - Graphics protocol: Add a note clarifying image update behavior on re-transmission (:iss:`8701`)
 
+- Wayland GNOME: Fix incorrect OS Window tracking because GNOME has started
+  activating windows on non-current workspaces (:iss:`8716`)
+
+- Fix a regression in 0.40.0 that broke rendering of VS15 variation selectors in some circumstances (:iss:`8731`)
+
+- Fix a regression in 0.40.0 that broke serialization of tab characters as ANSI text (:iss:`8741`)
+
+- Fix a regression in 0.40.0 that broke erasing of characters in a line in the presence of wide characters (:iss:`8758`)
+
+- Fix a regression that broke using :kbd:`esc` to exit visual select window mode (:iss:`8767`)
+
+- kitten run-shell: Fix SIGINT blocked when execing the shell (:iss:`8754`)
+
 0.42.1 [2025-05-17]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

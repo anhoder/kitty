@@ -105,6 +105,14 @@ class TestScreen(BaseTest):
         self.ae(str(s.line(4)), 'a\u0306b1\u030623')
         self.ae((s.cursor.x, s.cursor.y), (2, 4))
 
+        # Test drawing of tabs
+        s = self.create_screen(cols=32)
+        txt = 'a\tb'
+        s.draw(txt)
+        ln = s.line(0)
+        self.ae(txt, ln.as_ansi())
+
+
     def test_rep(self):
         s = self.create_screen()
         s.draw('a')
@@ -694,6 +702,11 @@ class TestScreen(BaseTest):
 
     def test_variation_selectors(self):
         s = self.create_screen()
+        def tt(text_to_draw):
+            s.reset()
+            s.draw(text_to_draw)
+            self.ae(str(s.line(0)), text_to_draw)
+        tt('abc\U0001f44d\ufe0ed')
         def t(*a):
             s.reset()
             for i in range(0, len(a), 2):
