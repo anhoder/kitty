@@ -2500,48 +2500,36 @@ void _glfwPlatformMaximizeWindow(_GLFWwindow *window) {
   }
 }
 
-void _glfwPlatformShowWindow(_GLFWwindow *window) {
-  NSRunningApplication *app =
-      [[NSWorkspace sharedWorkspace] frontmostApplication];
-  window->ns.previous_front_most_application = 0;
-  if (app && app.processIdentifier != getpid())
-    window->ns.previous_front_most_application = app.processIdentifier;
-  if (window->ns.layer_shell.is_active &&
-      window->ns.layer_shell.config.type == GLFW_LAYER_SHELL_BACKGROUND) {
-    [window->ns.object orderBack:nil];
-  } else
-    [window->ns.object orderFront:nil];
-  debug("Previously active application pid: %d bundle identifier: %s\n",
-        window->ns.previous_front_most_application,
-        app ? app.bundleIdentifier.UTF8String : "");
+void _glfwPlatformShowWindow(_GLFWwindow* window)
+{
+    if (window->ns.layer_shell.is_active && window->ns.layer_shell.config.type == GLFW_LAYER_SHELL_BACKGROUND) {
+        [window->ns.object orderBack:nil];
+    } else [window->ns.object orderFront:nil];
 }
 
-void _glfwPlatformHideWindow(_GLFWwindow *window) {
-  [window->ns.object orderOut:nil];
-  pid_t prev_app_pid = window->ns.previous_front_most_application;
-  window->ns.previous_front_most_application = 0;
-  NSRunningApplication *app;
-  if (window->ns.layer_shell.is_active && prev_app_pid > 0 &&
-      (app = [NSRunningApplication
-           runningApplicationWithProcessIdentifier:prev_app_pid])) {
-    unsigned num_visible = 0;
-    for (_GLFWwindow *w = _glfw.windowListHead; w; w = w->next) {
-      if (_glfwPlatformWindowVisible(w))
-        num_visible++;
+void _glfwPlatformHideWindow(_GLFWwindow* window)
+{
+    [window->ns.object orderOut:nil];
+    pid_t prev_app_pid = _glfw.ns.previous_front_most_application; _glfw.ns.previous_front_most_application = 0;
+    NSRunningApplication *app;
+    if (window->ns.layer_shell.is_active && prev_app_pid > 0 && (app = [NSRunningApplication runningApplicationWithProcessIdentifier:prev_app_pid])) {
+        unsigned num_visible = 0;
+        for (_GLFWwindow *w = _glfw.windowListHead;  w;  w = w->next) {
+            if (_glfwPlatformWindowVisible(w)) num_visible++;
+        }
+        if (!num_visible) {
+            // yieldActivationToApplication was introduced in macOS 14 (Sonoma)
+            SEL selector = NSSelectorFromString(@"yieldActivationToApplication:");
+            if ([NSApp respondsToSelector:selector]) {
+                [NSApp performSelector:selector withObject:app];
+                [app activateWithOptions:0];
+            } else {
+                #define NSApplicationActivateIgnoringOtherApps 2
+                [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+                #undef NSApplicationActivateIgnoringOtherApps
+            }
+        }
     }
-    if (!num_visible) {
-      // yieldActivationToApplication was introduced in macOS 14 (Sonoma)
-      SEL selector = NSSelectorFromString(@"yieldActivationToApplication:");
-      if ([NSApp respondsToSelector:selector]) {
-        [NSApp performSelector:selector withObject:app];
-        [app activateWithOptions:0];
-      } else {
-#define NSApplicationActivateIgnoringOtherApps 2
-        [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
-#undef NSApplicationActivateIgnoringOtherApps
-      }
-    }
-  }
 }
 
 void _glfwPlatformRequestWindowAttention(_GLFWwindow *window UNUSED) {

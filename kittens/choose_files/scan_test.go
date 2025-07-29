@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/kovidgoyal/kitty/tools/ignorefiles"
 	"github.com/kovidgoyal/kitty/tools/utils"
 )
 
@@ -33,6 +34,7 @@ func TestAsLower(t *testing.T) {
 type node struct {
 	name     string
 	children map[string]*node
+	data     string
 }
 
 func (n node) Name() string {
@@ -87,6 +89,21 @@ func (n node) dir_entries() []fs.DirEntry {
 	return entries
 }
 
+func (n node) ReadFile(name string) ([]byte, error) {
+	if name == string(os.PathSeparator) {
+		return nil, fs.ErrNotExist
+	}
+	p := &n
+	for _, x := range strings.Split(strings.Trim(name, string(os.PathSeparator)), string(os.PathSeparator)) {
+		c, found := p.children[x]
+		if !found {
+			return nil, fs.ErrNotExist
+		}
+		p = c
+	}
+	return []byte(p.data), nil
+}
+
 func (n node) ReadDir(name string) ([]fs.DirEntry, error) {
 	if name == string(os.PathSeparator) {
 		return n.dir_entries(), nil
@@ -105,32 +122,86 @@ func (n node) ReadDir(name string) ([]fs.DirEntry, error) {
 	return p.dir_entries(), nil
 }
 
-func TestChooseFilesScoring(t *testing.T) {
+func TestChooseFilesIgnore(t *testing.T) {
 	root := node{name: string(os.PathSeparator), children: map[string]*node{
-		"b": {name: "b"},
-		"a": {name: "a"},
-		"c": {name: "c"},
+		"a":          {name: "a"},
+		"b":          {name: "b"},
+		"c.png":      {name: "c.png"},
+		".ignore":    {name: ".ignore", data: "a\nx/s/n"},
+		".gitignore": {name: ".gitignore", data: "b"},
 		"x": {name: "x", children: map[string]*node{
-			"1": {"1", nil}, "2": {"2", nil}, "3": {"3", nil},
-			"s": {"s", map[string]*node{
-				"m": {"m", nil}, "n": {"n", nil},
+			"1": {name: "1"}, "2": {name: "2"}, "3": {name: "3"},
+			"s": {name: "s", children: map[string]*node{
+				"m": {name: "m"}, "n": {name: "n"},
 			}},
 		}},
 		"y": {name: "y", children: map[string]*node{
-			"3": {"3", nil}, "4": {"4", nil}, "5": {"5", nil},
+			"3": {name: "3"}, "4": {name: "4"}, "5": {name: "5"},
+			"s": {name: "s", children: map[string]*node{
+				"3": {name: "3"}, "4": {name: "4"}, "5": {name: "5"}, "6": {name: "6"},
+			}},
+			".gitignore": {name: ".gitignore", data: "/s/5"},
+			".git": {name: ".git", children: map[string]*node{
+				"info": {name: "info", children: map[string]*node{
+					"exclude": {name: "exclude", data: "s/4"},
+				}},
+			}},
+		}},
+	}}
+	r := func(respect_ignores bool, expected string) {
+		ch := make(chan bool)
+		s := new_filesystem_scanner("/", ch, nil)
+		s.dir_reader = root.ReadDir
+		s.file_reader = root.ReadFile
+		s.global_gitignore = ignorefiles.NewGitignore()
+		s.global_ignore = ignorefiles.NewGitignore()
+		s.respect_ignores = respect_ignores
+		if err := s.global_gitignore.LoadLines("*.png", "s/3"); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.global_ignore.LoadLines("x/3"); err != nil {
+			t.Fatal(err)
+		}
+		s.Start()
+		for range ch {
+		}
+		if s.err != nil {
+			t.Fatal(s.err)
+		}
+		ci := CollectionIndex{}
+		actual := utils.Map(func(x ResultItem) string { return x.text }, s.Batch(&ci))
+		if diff := cmp.Diff(strings.Split(expected, ` `), actual); diff != "" {
+			t.Fatalf("Incorrect ignoring:\n%s", diff)
+		}
+	}
+	r(true, `x y b c.png x/s x/1 x/2 y/s y/3 y/4 y/5 x/s/m y/s/6`)
+	r(false, `x y a b c.png x/s x/1 x/2 x/3 y/s y/3 y/4 y/5 x/s/m x/s/n y/s/3 y/s/4 y/s/5 y/s/6`)
+}
+
+func TestChooseFilesScoring(t *testing.T) {
+	root := node{name: string(os.PathSeparator), children: map[string]*node{
+		"b":     {name: "b"},
+		"a":     {name: "a"},
+		"c.png": {name: "c.png"},
+		"x": {name: "x", children: map[string]*node{
+			"1": {name: "1"}, "2": {name: "2"}, "3": {name: "3"},
+			"s": {name: "s", children: map[string]*node{
+				"m": {name: "m"}, "n": {name: "n"},
+			}},
+		}},
+		"y": {name: "y", children: map[string]*node{
+			"3": {name: "3"}, "4": {name: "4"}, "5": {name: "5"},
 		}},
 	}}
 	wg := sync.WaitGroup{}
 	wg.Add(1)
-	s := NewFileSystemScorer(string(os.PathSeparator), "", false, func(err error, is_complete bool) {
+	s := NewFileSystemScorer(string(os.PathSeparator), "", Filter{}, false, func(err error, is_complete bool) {
 		if is_complete {
 			wg.Done()
 		}
 	})
-	sc := NewFileSystemScanner(s.root_dir, make(chan bool))
-	s.scanner = sc
-	sc.dir_reader = root.ReadDir
-	s.scanner.Start()
+	s.dir_reader = root.ReadDir
+	s.global_gitignore = ignorefiles.NewGitignore()
 	s.Start()
 	wg.Wait()
 	results := func() (ans []string) {
@@ -141,20 +212,33 @@ func TestChooseFilesScoring(t *testing.T) {
 		return
 	}
 	ae := func(query string, expected ...string) {
-		if query != "" {
-			wg.Add(1)
-			s.Change_query(query)
-			wg.Wait()
-		}
+		wg.Add(1)
+		s.Change_query(query)
+		wg.Wait()
 		if diff := cmp.Diff(expected, results()); diff != "" {
 			t.Fatalf("Query less scoring failed\n%s", diff)
 		}
 	}
-	ae("", "x", "y", "a", "b", "c", "x/s", "x/1", "x/2", "x/3", "y/3", "y/4", "y/5", "x/s/m", "x/s/n")
 	ae("a", "a")
 	ae("3", "x/3", "y/3")
 	ae("s", "x/s", "x/s/m", "x/s/n")
 	ae("sn", "x/s/n")
+	ae("", "x", "y", "a", "b", "c.png", "x/s", "x/1", "x/2", "x/3", "y/3", "y/4", "y/5", "x/s/m", "x/s/n")
+
+	af := func(filter string, expected ...string) {
+		f, _ := NewFilter(filter)
+		wg.Add(1)
+		s.Change_filter(*f)
+		wg.Wait()
+		if diff := cmp.Diff(expected, results()); diff != "" {
+			t.Fatalf("filter %s failed\n%s", filter, diff)
+		}
+	}
+	af("glob:a:A", "x", "y", "a", "x/s")
+	af("glob:[ab]:A", "x", "y", "a", "b", "x/s")
+	af("mime:image/png:A", "x", "y", "c.png", "x/s")
+	af("mime:image/*:A", "x", "y", "c.png", "x/s")
+	af("glob:*:All", "x", "y", "a", "b", "c.png", "x/s", "x/1", "x/2", "x/3", "y/3", "y/4", "y/5", "x/s/m", "x/s/n")
 }
 
 func TestSortedResults(t *testing.T) {
@@ -196,7 +280,7 @@ func TestSortedResults(t *testing.T) {
 		}
 	}
 	tc := func(num_before, expected_new_before int, ci CollectionIndex, expected ...[]int) {
-		ac, new_num_before := r.SplitIntoColumns(func(int) int { return 2 }, 2, num_before, ci)
+		ac, new_num_before, _ := r.SplitIntoColumns(func(int) int { return 2 }, 2, num_before, ci)
 		actual := make([][]int, len(ac))
 		for i, x := range ac {
 			actual[i] = utils.Map(func(r *ResultItem) int { return int(r.score) }, x)
@@ -258,14 +342,13 @@ func run_scoring(b *testing.B, depth, breadth int, query string) {
 		b.StopTimer()
 		wg := sync.WaitGroup{}
 		wg.Add(1)
-		s := NewFileSystemScorer(string(os.PathSeparator), query, false, func(err error, is_complete bool) {
+		s := NewFileSystemScorer(string(os.PathSeparator), query, Filter{}, false, func(err error, is_complete bool) {
 			if is_complete {
 				wg.Done()
 			}
 		})
-		sc := NewFileSystemScanner(s.root_dir, make(chan bool))
-		s.scanner = sc
-		sc.dir_reader = root.ReadDir
+		s.dir_reader = root.ReadDir
+		s.global_gitignore = ignorefiles.NewGitignore()
 		b.StartTimer()
 		s.scanner.Start()
 		s.Start()

@@ -284,7 +284,7 @@ class DumpCommands:  # {{{
                 if isinstance(x, dict):
                     return json.dumps(x)
                 return x
-            safe_print(what, *map(fmt, a))
+            safe_print(what, *map(fmt, a), flush=True)
 # }}}
 
 

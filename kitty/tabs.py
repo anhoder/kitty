@@ -55,7 +55,7 @@ from .tab_bar import TabBar, TabBarData
 from .types import ac
 from .typing_compat import EdgeLiteral, SessionTab, SessionType, TypedDict
 from .utils import cmdline_for_hold, log_error, platform_window_id, resolved_shell, shlex_split, which
-from .window import CwdRequest, Watchers, Window, WindowDict
+from .window import CwdRequest, Watchers, Window, WindowDict, global_watchers
 from .window_list import WindowList
 
 
@@ -480,6 +480,7 @@ class Tab:  # {{{
         hold: bool = False,
         pass_fds: tuple[int, ...] = (),
         remote_control_fd: int = -1,
+        hold_after_ssh: bool = False
     ) -> Child:
         check_for_suitability = True
         if cmd is None:
@@ -529,7 +530,7 @@ class Tab:  # {{{
             fenv['WINDOWID'] = str(pwid)
         ans = Child(
                 cmd, cwd or self.cwd, stdin, fenv, cwd_from, is_clone_launch=is_clone_launch,
-                add_listen_on_env_var=add_listen_on_env_var, hold=hold, pass_fds=pass_fds, remote_control_fd=remote_control_fd)
+                add_listen_on_env_var=add_listen_on_env_var, hold=hold, pass_fds=pass_fds, remote_control_fd=remote_control_fd, hold_after_ssh=hold_after_ssh)
         ans.fork()
         return ans
 
@@ -568,11 +569,12 @@ class Tab:  # {{{
         pass_fds: tuple[int, ...] = (),
         remote_control_fd: int = -1,
         next_to: Window | None = None,
+        hold_after_ssh: bool = False
     ) -> Window:
         child = self.launch_child(
             use_shell=use_shell, cmd=cmd, stdin=stdin, cwd_from=cwd_from, cwd=cwd, env=env,
             is_clone_launch=is_clone_launch, add_listen_on_env_var=False if allow_remote_control and remote_control_passwords else True,
-            hold=hold, pass_fds=pass_fds, remote_control_fd=remote_control_fd,
+            hold=hold, pass_fds=pass_fds, remote_control_fd=remote_control_fd, hold_after_ssh=hold_after_ssh
         )
         window = Window(
             self, child, self.args, override_title=override_title,
@@ -1002,9 +1004,22 @@ class TabManager:  # {{{
             self.tab_bar.layout()
             self.resize(only_tabs=True)
 
+    @property
+    def any_window(self) -> Window | None:
+        for t in self:
+            for w in t:
+                return w
+        return None
+
     def mark_tab_bar_dirty(self) -> None:
         if self.tab_bar_should_be_visible and not self.tab_bar_hidden:
             mark_tab_bar_dirty(self.os_window_id)
+        w = self.active_window or self.any_window
+        if w is not None:
+            data = {'tab_manager': self}
+            boss = get_boss()
+            for watcher in global_watchers().on_tab_bar_dirty:
+                watcher(boss, w, data)
 
     def update_tab_bar_data(self) -> None:
         self.tab_bar.update(self.tab_bar_data)

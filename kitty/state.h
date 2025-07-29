@@ -54,6 +54,7 @@ typedef struct {
     monotonic_t cursor_trail;
     float cursor_trail_decay_fast;
     float cursor_trail_decay_slow;
+    color_type cursor_trail_color;
     float cursor_trail_start_threshold;
     unsigned int url_style;
     unsigned int scrollback_pager_history_size;
@@ -332,7 +333,7 @@ typedef struct {
     bool has_pending_resizes, has_pending_closes;
     bool check_for_active_animated_images;
     struct { double x, y; } default_dpi;
-    id_type active_drag_in_window, tracked_drag_in_window;
+    id_type active_drag_in_window, tracked_drag_in_window, mouse_hover_in_window;
     int active_drag_button, tracked_drag_button;
     CloseRequest quit_request;
     bool redirect_mouse_handling;

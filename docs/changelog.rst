@@ -106,8 +106,36 @@ consumption to do the same tasks.
 Detailed list of changes
 -------------------------------------
 
-0.42.2 [future]
+0.43.0 [2025-07-16]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- A new :opt:`cursor_trail_color` setting to independently control the color of
+  cursor trails (:pull:`8830`)
+
+- Wayland: Fix incorrect window size calculation when transitioning from
+  full screen to non-full screen with client side decorations (:iss:`8826`)
+
+- macOS: Fix hiding quick access terminal window not restoring focus to
+  previously active application (:disc:`8840`)
+
+- Allow using backspace to move the cursor onto the previous line in cooked mode. This is indicated by the `bw` property in  kitty's terminfo (:iss:`8841`)
+
+- Watchers: A new event for global watchers corresponding to the tab bar being changed (:disc:`8842`)
+
+- Fix a regression in 0.40.0 that broke handling of the VS16 variation selector when it caused a character to flow to the next line (:iss:`8848`)
+
+0.42.2 [2025-07-16]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- A new :ref:`protocol extension <mouse_leave_window>` to notify terminal programs that have turned on SGR Pixel mouse reporting when the mouse leaves the window (:disc:`8808`)
+
+- clipboard kitten: Can now optionally take a password to avoid repeated
+  permission prompts when accessing the clipboard. Based on a
+  :ref:`protocol extension <clipboard_repeated_permission>`. (:iss:`8789`)
+
+- A new :option:`launch --hold-after-ssh` to not close a launched window
+  that connects directly to a remote host because of
+  :option:`launch --cwd`:code:`=current` when the connection ends (:pull:`8807`)
 
 - Fix :opt:`remember_window_position` not working because of a stupid typo (:iss:`8646`)
 
@@ -126,11 +154,13 @@ Detailed list of changes
 - Wayland GNOME: Fix incorrect OS Window tracking because GNOME has started
   activating windows on non-current workspaces (:iss:`8716`)
 
-- Fix a regression in 0.40.0 that broke rendering of VS15 variation selectors in some circumstances (:iss:`8731`)
+- Fix a regression in 0.40.0 that broke rendering of VS15 variation selectors in some circumstances (:iss:`8731`, :iss:`8794`)
 
 - Fix a regression in 0.40.0 that broke serialization of tab characters as ANSI text (:iss:`8741`)
 
 - Fix a regression in 0.40.0 that broke erasing of characters in a line in the presence of wide characters (:iss:`8758`)
+
+- Fix a regression in 0.40.0 that broke hyperlinking of wide characters (:iss:`8796`)
 
 - Fix a regression that broke using :kbd:`esc` to exit visual select window mode (:iss:`8767`)
 

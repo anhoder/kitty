@@ -88,6 +88,7 @@ from .fast_data_types import (
     wakeup_main_loop,
 )
 from .keys import keyboard_mode_name, mod_mask
+from .options.types import Options
 from .progress import Progress
 from .rgb import to_color
 from .terminfo import get_capabilities
@@ -154,7 +155,7 @@ class CwdRequest:
             return window.get_cwd_of_root_child() or ''
         return window.get_cwd_of_child(oldest=self.request_type is CwdRequestType.oldest) or ''
 
-    def modify_argv_for_launch_with_cwd(self, argv: list[str], env: dict[str, str] | None=None) -> str:
+    def modify_argv_for_launch_with_cwd(self, argv: list[str], env: dict[str, str] | None=None, hold_after_ssh: bool = False) -> str:
         window = self.window
         if not window:
             return ''
@@ -165,11 +166,13 @@ class CwdRequest:
                 run_shell = argv[0] == resolved_shell(get_options())[0]
                 server_args = [] if run_shell else list(argv)
                 from kittens.ssh.utils import set_cwd_in_cmdline, set_env_in_cmdline, set_server_args_in_cmdline
+                if ssh_kitten_cmdline and ssh_kitten_cmdline[0] == 'kitten':
+                    ssh_kitten_cmdline[0] = kitten_exe()
                 argv[:] = ssh_kitten_cmdline
-                if argv and argv[0] == 'kitten':
-                    argv[0] = kitten_exe()
                 set_cwd_in_cmdline(reported_cwd, argv)
                 set_server_args_in_cmdline(server_args, argv, allocate_tty=not run_shell)
+                if hold_after_ssh:
+                    argv[:0] = [kitten_exe(), "run-shell"]
                 if env is not None:
                     # Assume env is coming from a local process so drop env
                     # vars that can cause issues when set on the remote host
@@ -294,6 +297,7 @@ class Watchers:
     on_title_change: list[Watcher]
     on_cmd_startstop: list[Watcher]
     on_color_scheme_preference_change: list[Watcher]
+    on_tab_bar_dirty: list[Watcher]
 
     def __init__(self) -> None:
         self.on_resize = []
@@ -303,6 +307,7 @@ class Watchers:
         self.on_title_change = []
         self.on_cmd_startstop = []
         self.on_color_scheme_preference_change = []
+        self.on_tab_bar_dirty = []
 
     def add(self, others: 'Watchers') -> None:
         def merge(base: list[Watcher], other: list[Watcher]) -> None:
@@ -316,11 +321,13 @@ class Watchers:
         merge(self.on_title_change, others.on_title_change)
         merge(self.on_cmd_startstop, others.on_cmd_startstop)
         merge(self.on_color_scheme_preference_change, others.on_color_scheme_preference_change)
+        merge(self.on_tab_bar_dirty, others.on_tab_bar_dirty)
 
     def clear(self) -> None:
         del self.on_close[:], self.on_resize[:], self.on_focus_change[:]
         del self.on_set_user_var[:], self.on_title_change[:], self.on_cmd_startstop[:]
         del self.on_color_scheme_preference_change[:]
+        del self.on_tab_bar_dirty[:]
 
     def copy(self) -> 'Watchers':
         ans = Watchers()
@@ -331,12 +338,13 @@ class Watchers:
         ans.on_title_change = self.on_title_change[:]
         ans.on_cmd_startstop = self.on_cmd_startstop[:]
         ans.on_color_scheme_preference_change = self.on_color_scheme_preference_change[:]
+        ans.on_tab_bar_dirty = self.on_tab_bar_dirty[:]
         return ans
 
     @property
     def has_watchers(self) -> bool:
         return bool(self.on_close or self.on_resize or self.on_focus_change or self.on_color_scheme_preference_change
-                    or self.on_set_user_var or self.on_title_change or self.on_cmd_startstop)
+                    or self.on_set_user_var or self.on_title_change or self.on_cmd_startstop or self.on_tab_bar_dirty)
 
 
 def call_watchers(windowref: Callable[[], Optional['Window']], which: str, data: dict[str, Any]) -> None:
@@ -542,6 +550,14 @@ def color_control(cp: ColorProfile, code: int, value: str | bytes | memoryview =
         payload = ';'.join(f'{k}={v}' for k, v in responses.items())
         return f'{code};{payload}'
     return ''
+
+
+def da1(opts: Options) -> str:
+    ans = '?62;'
+    if 'write-clipboard' in opts.clipboard_control:
+        # see https://github.com/contour-terminal/vt-extensions/blob/master/clipboard-extension.md
+        ans += '52;'
+    return ans + 'c'
 
 
 class EdgeWidths:
@@ -1279,6 +1295,9 @@ class Window:
             return True
         return False
 
+    def on_da1(self) -> None:
+        self.screen.send_escape_code_to_child(ESC_CSI, da1(get_options()))
+
     def on_bell(self) -> None:
         cb = get_options().command_on_bell
         if cb and cb != ['none']:
@@ -1768,6 +1787,8 @@ class Window:
         from kittens.ssh.utils import is_kitten_cmdline
         for p in self.child.foreground_processes:
             q = list(p['cmdline'] or ())
+            if len(q) > 3 and os.path.basename(q[0]) == 'kitten' and q[1] == 'run-shell':
+                q = q[2:]  # --hold-after-ssh causes kitten run-shell wrapper to be added
             if is_kitten_cmdline(q):
                 return q
         return []

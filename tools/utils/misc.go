@@ -14,7 +14,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/kovidgoyal/kitty/tools/simdstring"
 	"golang.org/x/exp/constraints"
+	"golang.org/x/text/language"
 )
 
 var _ = fmt.Print
@@ -156,6 +158,18 @@ func Sort[T any](s []T, cmp func(a, b T) int) []T {
 func StableSort[T any](s []T, cmp func(a, b T) int) []T {
 	slices.SortStableFunc(s, cmp)
 	return s
+}
+
+func Uniq[T comparable](s []T) []T {
+	seen := NewSet[T](len(s))
+	ans := make([]T, 0, len(s))
+	for _, x := range s {
+		if !seen.Has(x) {
+			seen.Add(x)
+			ans = append(ans, x)
+		}
+	}
+	return ans
 }
 
 func sort_with_key[T any, C constraints.Ordered](stable bool, s []T, key func(a T) C) []T {
@@ -384,4 +398,61 @@ func Abs[T constraints.Integer](x T) T {
 		return -x
 	}
 	return x
+}
+
+var LanguageTag = sync.OnceValue(func() language.Tag {
+	// Check environment variables in order of precedence
+	var locale string
+	for _, v := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
+		locale = os.Getenv(v)
+		if locale != "" {
+			break
+		}
+	}
+	if locale == "" {
+		return language.English // Default/fallback
+	}
+	// Remove encoding, e.g., ".UTF-8"
+	locale = strings.Split(locale, ".")[0]
+	// Replace underscore with hyphen to match BCP47 format (en_US -> en-US)
+	locale = strings.ReplaceAll(locale, "_", "-")
+	// Validate/normalize with golang.org/x/text/language
+	tag, err := language.Parse(locale)
+	if err != nil {
+		return language.English
+	}
+	return tag
+
+})
+
+// Replace control codes by unicode codepoints that describe the codes
+// making the text safe to send to a terminal
+func ReplaceControlCodes(text, replace_tab_by, replace_newline_by string) string {
+	buf := strings.Builder{}
+	for len(text) > 0 {
+		idx := simdstring.IndexC0String(text)
+		if idx < 0 {
+			if buf.Cap() == 0 {
+				return text
+			}
+			buf.WriteString(text)
+			break
+		}
+		if buf.Cap() == 0 {
+			buf.Grow(2 * len(text))
+		}
+		buf.WriteString(text[:idx])
+		switch text[idx] {
+		case '\n':
+			buf.WriteString(replace_newline_by)
+		case '\t':
+			buf.WriteString(replace_tab_by)
+		case 0x7f:
+			buf.WriteRune(0x2421)
+		default:
+			buf.WriteRune(0x2400 + rune(text[idx]))
+		}
+		text = text[idx+1:]
+	}
+	return buf.String()
 }

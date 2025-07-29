@@ -866,7 +866,7 @@ halve_multicell_width(Screen *self, index_type x_, index_type y_) {
     int y_max_limit = MIN(self->lines, y_ + cp[x_].scale);
     for (int y = y_min_limit + 1; y < y_max_limit; y++) {
         Line *line = range_line_(self, y); cp = line->cpu_cells; gp = line->gpu_cells;
-        for (index_type x = 0; x < half_x_limit; x++) cp[x].width = new_width;
+        for (index_type x = x_; x < half_x_limit; x++) cp[x].width = new_width;
         for (index_type x = half_x_limit; x < x_limit; x++) {
             cp[x] = (CPUCell){0}; clear_sprite_position(gp[x]);
         }
@@ -944,7 +944,8 @@ move_cursor_past_multicell(Screen *self, index_type required_width) {
 }
 
 static void
-move_widened_char_past_multiline_chars(Screen *self, CPUCell* cpu_cell, GPUCell *gpu_cell, index_type xpos, index_type ypos) {
+move_widened_char_past_multiline_chars(Screen *self, text_loop_state *s, CPUCell* cpu_cell, GPUCell *gpu_cell, index_type xpos, index_type ypos) {
+    index_type before = self->cursor->y;
     self->cursor->x = xpos; self->cursor->y = ypos;
     if (move_cursor_past_multicell(self, 2)) {
         CPUCell *cp; GPUCell *gp;
@@ -957,6 +958,8 @@ move_widened_char_past_multiline_chars(Screen *self, CPUCell* cpu_cell, GPUCell 
         self->cursor->x++;
     }
     *cpu_cell = (CPUCell){0}; *gpu_cell = (GPUCell){0};
+    if (self->cursor->y == before) init_segmentation_state(self, s);
+    else init_text_loop_line(self, s);
 }
 
 static bool
@@ -984,8 +987,7 @@ draw_combining_char(Screen *self, text_loop_state *s, char_type ch) {
                 CPUCell *second = cp + xpos + 1;
                 if (second->is_multicell) {
                     if (second->y) {
-                        move_widened_char_past_multiline_chars(self, cpu_cell, gpu_cell, xpos, s->prev.y);
-                        init_segmentation_state(self, s);
+                        move_widened_char_past_multiline_chars(self, s, cpu_cell, gpu_cell, xpos, s->prev.y);
                         return;
                     }
                     nuke_multicell_char_at(self, xpos + 1, s->prev.y, false);
@@ -994,8 +996,7 @@ draw_combining_char(Screen *self, text_loop_state *s, char_type ch) {
                 self->cursor->x++;
                 *second = *cpu_cell; second->x = 1;
             } else {
-                move_widened_char_past_multiline_chars(self, cpu_cell, gpu_cell, xpos, s->prev.y);
-                init_segmentation_state(self, s);
+                move_widened_char_past_multiline_chars(self, s, cpu_cell, gpu_cell, xpos, s->prev.y);
             }
         }
     } else if (ch == VS15) {
@@ -1066,10 +1067,12 @@ draw_control_char(Screen *self, text_loop_state *s, uint32_t ch) {
     switch (ch) {
         case BEL:
             screen_bell(self); break;
-        case BS:
+        case BS: {
+            index_type before = self->cursor->y;
             screen_backspace(self);
-            init_segmentation_state(self, s);
-            break;
+            if (before == self->cursor->y) init_segmentation_state(self, s);
+            else init_text_loop_line(self, s);
+            } break;
         case HT:
             if (UNLIKELY(self->cursor->x >= self->columns)) {
                 if (self->modes.mDECAWM) {
@@ -1108,7 +1111,7 @@ draw_text_loop(Screen *self, const uint32_t *chars, size_t num_chars, text_loop_
     int char_width;
     for (size_t i = 0; i < num_chars; i++) {
         uint32_t ch = map_char(self, chars[i]);
-        if (ch < DEL && s->seg.grapheme_break == GBP_None) {  // fast path for printable ASCII
+        if (ch < DEL && s->seg.grapheme_break <= GBP_None) {  // fast path for printable ASCII
             if (ch < ' ') {
                 draw_control_char(self, s, ch);
                 continue;
@@ -1174,7 +1177,7 @@ draw_text_loop(Screen *self, const uint32_t *chars, size_t num_chars, text_loop_
                 } else nuke_multicell_char_at(self, self->cursor->x + 1, self->cursor->y, true);
             }
             zero_cells(s, fc, s->gp + self->cursor->x);
-            *fc = (CPUCell){.ch_or_idx=ch, .is_multicell=true, .width=2, .scale=1, .natural_width=true};
+            *fc = (CPUCell){.ch_or_idx=ch, .is_multicell=true, .width=2, .scale=1, .natural_width=true, .hyperlink_id=s->cc.hyperlink_id};
             *second = *fc; second->x = 1;
             s->gp[self->cursor->x + 1] = s->gp[self->cursor->x];
             s->prev.y = self->cursor->y; s->prev.x = self->cursor->x; s->prev.cc = fc;
@@ -1889,7 +1892,7 @@ screen_is_cursor_visible(const Screen *self) {
 
 void
 screen_backspace(Screen *self) {
-    screen_cursor_back(self, 1, -1);
+    screen_cursor_move(self, 1, -1);
 }
 
 void
@@ -1960,16 +1963,37 @@ screen_set_tab_stop(Screen *self) {
 }
 
 void
-screen_cursor_back(Screen *self, unsigned int count/*=1*/, int move_direction/*=-1*/) {
+screen_cursor_move(Screen *self, unsigned int count/*=1*/, int move_direction/*=-1*/) {
     if (count == 0) count = 1;
-    if (move_direction < 0 && count > self->cursor->x) self->cursor->x = 0;
-    else self->cursor->x += move_direction * count;
-    screen_ensure_bounds(self, false, cursor_within_margins(self));
+    bool in_margins = cursor_within_margins(self);
+    if (move_direction > 0) {
+        self->cursor->x += count;
+        screen_ensure_bounds(self, false, in_margins);
+    } else {
+        index_type top = in_margins && self->modes.mDECOM ? self->margin_top : 0;
+        while (count > 0) {
+            if (count <= self->cursor->x) {
+                self->cursor->x -= count;
+                count = 0;
+            } else {
+                if (self->cursor->x > 0) {
+                    count -= self->cursor->x;
+                    self->cursor->x = 0;
+                } else {
+                    if (self->cursor->y == top) count = 0;
+                    else {
+                        count--; self->cursor->y--;
+                        self->cursor->x = self->columns-1;
+                    }
+                }
+            }
+        }
+    }
 }
 
 void
 screen_cursor_forward(Screen *self, unsigned int count/*=1*/) {
-    screen_cursor_back(self, count, 1);
+    screen_cursor_move(self, count, 1);
 }
 
 void
@@ -2647,7 +2671,7 @@ report_device_attributes(Screen *self, unsigned int mode, char start_modifier) {
     if (mode == 0) {
         switch(start_modifier) {
             case 0:
-                write_escape_code_to_child(self, ESC_CSI, "?62;c");
+                CALLBACK("on_da1", NULL);
                 break;
             case '>':
                 write_escape_code_to_child(self, ESC_CSI, ">1;" xstr(PRIMARY_VERSION) ";" xstr(SECONDARY_VERSION) "c");  // VT-220 + primary version + secondary version
@@ -4437,7 +4461,7 @@ is_using_alternate_linebuf(Screen *self, PyObject *a UNUSED) {
     Py_RETURN_FALSE;
 }
 
-WRAP1E(cursor_back, 1, -1)
+WRAP1E(cursor_move, 1, -1)
 WRAP1B(erase_in_line, 0)
 WRAP1B(erase_in_display, 0)
 static PyObject* scroll_until_cursor_prompt(Screen *self, PyObject *args) { int b=false; if(!PyArg_ParseTuple(args, "|p", &b)) return NULL; screen_scroll_until_cursor_prompt(self, b); Py_RETURN_NONE; }
@@ -5538,7 +5562,7 @@ static PyMethodDef methods[] = {
     MND(reset_dirty, METH_NOARGS)
     MND(is_using_alternate_linebuf, METH_NOARGS)
     MND(is_main_linebuf, METH_NOARGS)
-    MND(cursor_back, METH_VARARGS)
+    MND(cursor_move, METH_VARARGS)
     MND(erase_in_line, METH_VARARGS)
     MND(erase_in_display, METH_VARARGS)
     MND(clear_scrollback, METH_NOARGS)

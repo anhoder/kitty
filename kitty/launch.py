@@ -141,6 +141,10 @@ oldest foreground process associated with the currently active window rather
 than the newest foreground process. Finally, the special value :code:`root`
 refers to the process that was originally started when the window was created.
 
+When opening in the same working directory as the current window causes the new
+window to connect to a remote host, you can use the :option:`--hold-after-ssh`
+flag to prevent the new window from closing when the connection is terminated.
+
 
 --env
 {env_docs}
@@ -393,6 +397,13 @@ and :option:`--config <kitty +kitten panel --config>`. Can be specified multiple
 For example, to create a desktop panel at the bottom of the screen two lines high::
 
     launch --type os-panel --os-panel lines=2 --os-panel edge=bottom sh -c "echo; echo; echo hello; sleep 5s"
+
+
+--hold-after-ssh
+type=bool-set
+When using :option:`--cwd`:code:`=current` or similar from a window that is running the ssh kitten,
+the new window will run a local shell after disconnecting from the remote host, when this option
+is specified.
 """
 
 
@@ -518,6 +529,9 @@ def load_watch_modules(watchers: Iterable[str]) -> Watchers | None:
         w = m.get('on_color_scheme_preference_change')
         if callable(w):
             ans.on_color_scheme_preference_change.append(w)
+        w = m.get('on_tab_bar_dirty')
+        if callable(w):
+            ans.on_tab_bar_dirty.append(w)
     return ans
 
 
@@ -536,6 +550,7 @@ class LaunchKwds(TypedDict):
     stdin: bytes | None
     hold: bool
     bias: float | None
+    hold_after_ssh: bool
 
 
 def apply_colors(window: Window, spec: Sequence[str]) -> None:
@@ -636,6 +651,7 @@ def _launch(
         'stdin': None,
         'hold': False,
         'bias': None,
+        'hold_after_ssh': False
     }
     spacing = {}
     if opts.spacing:
@@ -658,6 +674,11 @@ def _launch(
                 kw['cwd_from'] = CwdRequest(source_window, CwdRequestType.root)
         else:
             kw['cwd'] = opts.cwd
+    if opts.hold_after_ssh:
+        if opts.cwd not in ('current', 'last_reported', 'oldest'):
+            raise ValueError("--hold-after-ssh can only be supplied if --cwd=current or similar is also supplied")
+        kw['hold_after_ssh'] = True
+
     if opts.location != 'default':
         kw['location'] = opts.location
     if opts.copy_colors and source_window:
@@ -804,7 +825,7 @@ def clone_safe_opts() -> frozenset[str]:
     return frozenset((
         'window_title', 'tab_title', 'type', 'keep_focus', 'cwd', 'env', 'var', 'hold',
         'location', 'os_window_class', 'os_window_name', 'os_window_title', 'os_window_state',
-        'logo', 'logo_position', 'logo_alpha', 'color', 'spacing', 'next_to',
+        'logo', 'logo_position', 'logo_alpha', 'color', 'spacing', 'next_to', 'hold_after_ssh'
     ))
 
 

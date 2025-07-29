@@ -630,7 +630,7 @@ The value :code:`center` anchors the panel to all sides and covers the entire
 display (on macOS the part of the display not covered by titlebar and dock).
 The panel can be shrunk and placed using the margin parameters.
 The value :code:`none` anchors the panel to the top left corner and should be
-placed and using the margin parameters. Its size is set by :option:`--lines`
+placed using the margin parameters. Its size is set by :option:`--lines`
 and :option:`--columns`. The value :code:`center-sized` is just like :code:`none` except
 that the panel is centered instead of in the top left corner and the margins have no effect.
 
@@ -660,7 +660,8 @@ Syntax: :italic:`name=value`. For example: :option:`kitty +kitten panel -o` font
 The panel can only be displayed on a single monitor (output) at a time. This allows
 you to specify which output is used, by name. If not specified the compositor will choose an
 output automatically, typically the last output the user interacted with or the primary monitor.
-Use the special value :code:`list` to get a list of available outputs.
+Use the special value :code:`list` to get a list of available outputs. Use :code:`listjson` for
+a json encoded output.
 
 
 --class --app-id
@@ -763,6 +764,11 @@ Path to a log file to store STDOUT/STDERR when using :option:`--detach`
 
 
 --debug-rendering
+type=bool-set
+For internal debugging use.
+
+
+--debug-input
 type=bool-set
 For internal debugging use.
 '''.format(
