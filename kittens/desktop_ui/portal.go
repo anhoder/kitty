@@ -313,20 +313,21 @@ func show_settings(opts *ShowSettingsOptions) (err error) {
 }
 
 var DataDirs = sync.OnceValue(func() (ans []string) {
-	d := os.Getenv("XDG_DATA_DIRS")
-	if d == "" {
-		d = "/usr/local/share/:/usr/share/"
+	// $XDG_DATA_DIRS defines the preference-ordered set of base directories
+	// to search for data files **in addition to the $XDG_DATA_HOME** base
+	// directory. The directories in $XDG_DATA_DIRS should be separated with
+	// a colon ':'.
+	// https://specifications.freedesktop.org/basedir-spec/0.8/#variables
+
+	data_dirs := os.Getenv("XDG_DATA_DIRS")
+	if data_dirs == "" {
+		data_dirs = "/usr/local/share:/usr/share"
 	}
-	all := []string{os.Getenv("XDG_DATA_HOME")}
-	all = append(all, strings.Split(d, ":")...)
-	seen := map[string]bool{}
-	for _, x := range all {
-		if !seen[x] {
-			seen[x] = true
-			ans = append(ans, x)
-		}
+	data_home := os.Getenv("XDG_DATA_HOME")
+	if data_home == "" {
+		data_home = utils.Expanduser("~/.local/share")
 	}
-	return
+	return utils.Uniq(append([]string{data_home}, strings.Split(data_dirs, ":")...))
 })
 
 func IsDir(x string) bool {
@@ -351,6 +352,7 @@ var AllPortalInterfaces = sync.OnceValue(func() (ans []string) {
 func patch_portals_conf(text []byte) []byte {
 	lines := []string{}
 	in_preferred := false
+	patched := false
 	for _, line := range utils.Splitlines(utils.UnsafeBytesToString(text)) {
 		sl := strings.TrimSpace(line)
 		if strings.HasPrefix(sl, "[") {
@@ -359,6 +361,7 @@ func patch_portals_conf(text []byte) []byte {
 			for _, iface := range AllPortalInterfaces() {
 				lines = append(lines, iface+"=kitty")
 			}
+			patched = true
 		} else if in_preferred {
 			remove := false
 			for _, iface := range AllPortalInterfaces() {
@@ -372,6 +375,15 @@ func patch_portals_conf(text []byte) []byte {
 			}
 		}
 	}
+
+	if !patched {
+		// the file was empty or did not contain a section
+		lines = append(lines, "[preferred]")
+		for _, iface := range AllPortalInterfaces() {
+			lines = append(lines, iface+"=kitty")
+		}
+	}
+
 	return utils.UnsafeStringToBytes(strings.Join(lines, "\n"))
 }
 
@@ -381,19 +393,11 @@ func enable_portal() (err error) {
 	}
 	portals_dir := ""
 	for _, x := range WritableDataDirs() {
+		// Find-or-create the first available xdg-desktop-portals/portals directory
 		q := filepath.Join(x, "xdg-desktop-portal", "portals")
-		if unix.Access(q, unix.W_OK) == nil && IsDir(q) {
+		if (unix.Access(q, unix.W_OK) == nil && IsDir(q)) || (os.MkdirAll(q, 0o755) == nil) {
 			portals_dir = q
 			break
-		}
-	}
-	if portals_dir == "" {
-		for _, x := range WritableDataDirs() {
-			q := filepath.Join(x, "xdg-desktop-portal", "portals")
-			if err := os.MkdirAll(q, 0o755); err == nil {
-				portals_dir = q
-				break
-			}
 		}
 	}
 	if portals_dir == "" {
@@ -454,6 +458,7 @@ Exec=%s desktop-ui run-server
 			text := patch_portals_conf(text)
 			if err = os.WriteFile(q, text, 0o644); err == nil {
 				patched_file = q
+				fmt.Printf("Patched %s to use the kitty portals\n", patched_file)
 				break
 			}
 		}
@@ -466,8 +471,8 @@ Exec=%s desktop-ui run-server
 			return err
 		}
 		patched_file = q
+		fmt.Printf("Created %s to use the kitty portals\n", patched_file)
 	}
-	fmt.Printf("Patched %s to use the kitty portals\n", patched_file)
 	return
 }
 
