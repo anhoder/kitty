@@ -20,6 +20,7 @@ import (
 	"github.com/kovidgoyal/kitty/kittens/unicode_input"
 	"github.com/kovidgoyal/kitty/tools/cli/markup"
 	"github.com/kovidgoyal/kitty/tools/rsync"
+	"github.com/kovidgoyal/kitty/tools/tty"
 	"github.com/kovidgoyal/kitty/tools/tui"
 	"github.com/kovidgoyal/kitty/tools/tui/loop"
 	"github.com/kovidgoyal/kitty/tools/utils"
@@ -482,6 +483,7 @@ func (self *handler) abort_with_error(err error, delay ...time.Duration) {
 		d = delay[0]
 	}
 	self.lp.Println(`Waiting to ensure terminal cancels transfer, will quit in no more than`, d)
+	self.progress_drawn = false
 	self.manager.send(FileTransmissionCommand{Action: Action_cancel}, self.lp.QueueWriteString)
 	self.manager.state = state_canceled
 	_, _ = self.lp.AddTimer(d, false, self.do_error_quit)
@@ -1067,6 +1069,8 @@ func (self *handler) on_key_event(ev *loop.KeyEvent) error {
 	}
 	return nil
 }
+
+var debugprintln = tty.DebugPrintln
 
 func receive_loop(opts *Options, spec []string, dest string) (err error, rc int) {
 	lp, err := loop.New(loop.NoAlternateScreen, loop.NoRestoreColors)

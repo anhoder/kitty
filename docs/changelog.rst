@@ -112,6 +112,12 @@ Detailed list of changes
 - A new :opt:`cursor_trail_color` setting to independently control the color of
   cursor trails (:pull:`8830`)
 
+- macOS: Add the default :kbd:`Cmd+L` mapping from Terminal.app to erase the
+  last command and its output (:disc:`6040`)
+
+- Fix :opt:`background_opacity` being non-linear with light color themes
+  (:iss:`8869`)
+
 - Wayland: Fix incorrect window size calculation when transitioning from
   full screen to non-full screen with client side decorations (:iss:`8826`)
 
@@ -123,6 +129,9 @@ Detailed list of changes
 - Watchers: A new event for global watchers corresponding to the tab bar being changed (:disc:`8842`)
 
 - Fix a regression in 0.40.0 that broke handling of the VS16 variation selector when it caused a character to flow to the next line (:iss:`8848`)
+
+- Wayland: Update bundled copy of libwayland to 1.24 from 1.23.1 because the
+  just released mesa 25.2.0 breaks with libwayland < 1.24 (:iss:`8884`)
 
 0.42.2 [2025-07-16]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

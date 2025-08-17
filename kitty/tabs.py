@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
+import json
 import os
 import re
 import stat
@@ -19,7 +20,7 @@ from typing import (
 
 from .borders import Border, Borders
 from .child import Child
-from .cli_stub import CLIOptions
+from .cli_stub import CLIOptions, SaveAsSessionOptions
 from .constants import appname
 from .fast_data_types import (
     GLFW_MOUSE_BUTTON_LEFT,
@@ -55,7 +56,7 @@ from .tab_bar import TabBar, TabBarData
 from .types import ac
 from .typing_compat import EdgeLiteral, SessionTab, SessionType, TypedDict
 from .utils import cmdline_for_hold, log_error, platform_window_id, resolved_shell, shlex_split, which
-from .window import CwdRequest, Watchers, Window, WindowDict, global_watchers
+from .window import CwdRequest, Watchers, Window, WindowCreationSpec, WindowDict, global_watchers
 from .window_list import WindowList
 
 
@@ -128,6 +129,8 @@ class Tab:  # {{{
     total_progress: int = 0
     has_indeterminate_progress: bool = False
     last_focused_window_with_progress_id: int = 0
+    allow_relayouts: bool = True
+    created_in_session_name: str = ''
 
     def __init__(
         self,
@@ -237,7 +240,15 @@ class Tab:  # {{{
         self._current_layout_name = layout_name
         self.mark_tab_bar_dirty()
 
-    def startup(self, session_tab: 'SessionTab') -> None:
+    def startup(self, session_tab: SessionTab) -> None:
+        self.allow_relayouts = False
+        try:
+            self._startup(session_tab)
+        finally:
+            self.allow_relayouts = True
+        self.relayout()
+
+    def _startup(self, session_tab: SessionTab) -> None:
         target_tab = self
         boss = get_boss()
         for window in session_tab.windows:
@@ -246,7 +257,12 @@ class Tab:  # {{{
                 self.new_special_window(spec)
             else:
                 from .launch import launch
-                launched_window = launch(boss, spec.opts, spec.args, target_tab=target_tab, force_target_tab=True)
+                launched_window = launch(
+                    boss, spec.opts, spec.args, target_tab=target_tab, force_target_tab=True,
+                    startup_command_via_shell_integration=window.run_command_at_shell_startup)
+                if launched_window is not None:
+                    launched_window.created_in_session_name = self.created_in_session_name
+                    launched_window.serialized_id = window.serialized_id
             if window.resize_spec is not None:
                 self.resize_window(*window.resize_spec)
             if window.focus_matching_window_spec:
@@ -264,6 +280,8 @@ class Tab:  # {{{
 
         with suppress(IndexError):
             self.windows.set_active_window_group_for(self.windows.all_windows[session_tab.active_window_idx])
+        if session_tab.layout_state:
+            self.current_layout.unserialize(session_tab.layout_state, self.windows)
 
     def serialize_state(self) -> dict[str, Any]:
         return {
@@ -276,6 +294,31 @@ class Tab:  # {{{
             'enabled_layouts': self.enabled_layouts,
             'name': self.name,
         }
+
+    def serialize_state_as_session(self, ser_opts: SaveAsSessionOptions) -> list[str]:
+        import shlex
+        launch_cmds = []
+        active_idx = self.windows.active_group_idx
+        for i, g in enumerate(self.windows.iter_all_layoutable_groups()):
+            gw: list[str] = []
+            for window in g:
+                lc = window.as_launch_command(ser_opts, is_overlay=bool(gw))
+                if lc:
+                    gw.append(shlex.join(lc))
+            if gw:
+                launch_cmds.extend(gw)
+                if i == active_idx:
+                    launch_cmds.append('focus')
+        if launch_cmds:
+            return [
+                '',
+                f'new_tab {self.name}'.rstrip(),
+                f'layout {self._current_layout_name}',
+                f'enabled_layouts {",".join(self.enabled_layouts)}',
+                f'set_layout_state {json.dumps(self.current_layout.serialize(self.windows))}',
+                ''
+            ] + launch_cmds
+        return []
 
     def active_window_changed(self) -> None:
         w = self.active_window
@@ -328,9 +371,10 @@ class Tab:  # {{{
         self.mark_tab_bar_dirty()
 
     def relayout(self) -> None:
-        if self.windows:
-            self.current_layout(self.windows)
-        self.relayout_borders()
+        if self.allow_relayouts:
+            if self.windows:
+                self.current_layout(self.windows)
+            self.relayout_borders()
 
     def relayout_borders(self) -> None:
         tm = self.tab_manager_ref()
@@ -416,7 +460,9 @@ class Tab:  # {{{
 
         Switches to the named layout if another layout is current, otherwise
         switches to the last used layout. Useful to "zoom" a window temporarily
-        by switching to the stack layout. For example::
+        by switching to the stack layout. See also :opt:`scrollback_fill_enlarged_window`
+        if you would like content from the scrollback buffer to scroll down into the
+        zoomed window. For example::
 
             map f1 toggle_layout stack
         ''')
@@ -570,6 +616,15 @@ class Tab:  # {{{
         next_to: Window | None = None,
         hold_after_ssh: bool = False
     ) -> Window:
+        cs = WindowCreationSpec(
+            use_shell=use_shell, cmd=cmd, has_stdin=bool(stdin), override_title=override_title, cwd_from=cwd_from,
+            cwd=cwd, overlay_for=overlay_for, env=None if env is None else tuple(env.items()), location=location,
+            copy_colors_from=None if copy_colors_from is None else copy_colors_from.id,
+            allow_remote_control=allow_remote_control,
+            remote_control_passwords=None if remote_control_passwords is None else remote_control_passwords.copy(),
+            marker=marker, overlay_behind=overlay_behind, is_clone_launch=is_clone_launch, hold=hold, bias=bias,
+            hold_after_ssh=hold_after_ssh,
+        )
         child = self.launch_child(
             use_shell=use_shell, cmd=cmd, stdin=stdin, cwd_from=cwd_from, cwd=cwd, env=env,
             is_clone_launch=is_clone_launch, add_listen_on_env_var=False if allow_remote_control and remote_control_passwords else True,
@@ -580,6 +635,7 @@ class Tab:  # {{{
             copy_colors_from=copy_colors_from, watchers=watchers,
             allow_remote_control=allow_remote_control, remote_control_passwords=remote_control_passwords
         )
+        window.creation_spec = cs
         # Must add child before laying out so that resize_pty succeeds
         get_boss().add_child(window)
         self._add_window(window, location=location, overlay_for=overlay_for, overlay_behind=overlay_behind, bias=bias, next_to=next_to)
@@ -925,6 +981,7 @@ class TabManager:  # {{{
     def __init__(self, os_window_id: int, args: CLIOptions, wm_class: str, wm_name: str, startup_session: SessionType | None = None):
         self.os_window_id = os_window_id
         self.wm_class = wm_class
+        self.created_in_session_name = startup_session.session_name if startup_session else ''
         self.recent_mouse_events: Deque[TabMouseEvent] = deque()
         self.wm_name = wm_name
         self.args = args
@@ -935,9 +992,16 @@ class TabManager:  # {{{
         self._active_tab_idx = 0
 
         if startup_session is not None:
-            for t in startup_session.tabs:
-                self._add_tab(Tab(self, session_tab=t))
-            self._set_active_tab(max(0, min(startup_session.active_tab_idx, len(self.tabs) - 1)))
+            self.add_tabs_from_session(startup_session)
+
+    def add_tabs_from_session(self, session: SessionType) -> None:
+        before = len(self.tabs)
+        for t in session.tabs:
+            tab = Tab(self, session_tab=t)
+            tab.created_in_session_name = session.session_name
+            self._add_tab(tab)
+        num_added = len(self.tabs) - before
+        self._set_active_tab(max(0, min(num_added + session.active_tab_idx, len(self.tabs) - 1)))
 
     @property
     def active_tab_idx(self) -> int:
@@ -1128,7 +1192,7 @@ class TabManager:  # {{{
                         'is_active': tab is active_tab,
                         'title': tab.name or tab.title,
                         'layout': str(tab.current_layout.name),
-                        'layout_state': tab.current_layout.layout_state(),
+                        'layout_state': tab.current_layout.serialize(tab.windows),
                         'layout_opts': tab.current_layout.layout_opts.serialized(),
                         'enabled_layouts': tab.enabled_layouts,
                         'windows': windows,
@@ -1143,6 +1207,24 @@ class TabManager:  # {{{
             'tabs': [tab.serialize_state() for tab in self],
             'active_tab_idx': self.active_tab_idx,
         }
+
+    def serialize_state_as_session(self, ser_opts: SaveAsSessionOptions, is_first: bool = False) -> list[str]:
+        ans = []
+        hmap = {tab_id: i for i, tab_id in enumerate(self.active_tab_history)}
+        if (at := self.active_tab) is not None:
+            hmap[at.id] = len(self.active_tab_history) + 1
+        def skey(tab: Tab) -> int:
+            return hmap.get(tab.id, -1)
+        for tab in sorted(self, key=skey):
+            ans.extend(tab.serialize_state_as_session(ser_opts))
+        if ans:
+            prefix = [] if is_first else ['', '', 'new_os_window']
+            if self.wm_class:
+                prefix.append(f'os_window_class {self.wm_class}')
+            if self.wm_name:
+                prefix.append(f'os_window_name {self.wm_name}')
+            ans = prefix + ans
+        return ans
 
     @property
     def active_tab(self) -> Tab | None:

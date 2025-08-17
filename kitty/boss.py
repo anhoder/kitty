@@ -26,7 +26,7 @@ from weakref import WeakValueDictionary
 
 from .child import cached_process_data, default_env, set_default_env
 from .cli import create_opts, green, parse_args
-from .cli_stub import CLIOptions
+from .cli_stub import CLIOptions, SaveAsSessionOptions
 from .clipboard import (
     Clipboard,
     ClipboardType,
@@ -124,7 +124,7 @@ from .notifications import NotificationManager
 from .options.types import Options, nullable_colors
 from .options.utils import MINIMUM_FONT_SIZE, KeyboardMode, KeyDefinition
 from .os_window_size import initial_window_size_func
-from .session import Session, create_sessions, get_os_window_sizing_data
+from .session import Session, create_sessions, default_save_as_session_opts, get_os_window_sizing_data, goto_session, save_as_session
 from .shaders import load_shader_programs
 from .simple_cli_definitions import grab_keyboard_docs
 from .tabs import SpecialWindow, SpecialWindowInstance, Tab, TabDict, TabManager
@@ -146,7 +146,7 @@ from .utils import (
     parse_uri_list,
     platform_window_id,
     safe_print,
-    sanitize_url_for_dispay_to_user,
+    sanitize_url_for_display_to_user,
     shlex_split,
     startup_notification_handler,
     timed_debug_print,
@@ -503,6 +503,14 @@ class Boss:
                         'background_opacity': bo,
                     }
 
+    def serialize_state_as_session(self, ser_opts: SaveAsSessionOptions | None = None) -> Iterator[str]:
+        if ser_opts is None:
+            ser_opts = default_save_as_session_opts()
+        s = {current_focused_os_window_id(): 2, last_focused_os_window_id(): 1}
+        for i, os_window_id in enumerate(sorted(self.os_window_map, key=lambda wid: s.get(wid, 0))):
+            tm = self.os_window_map[os_window_id]
+            yield from tm.serialize_state_as_session(is_first=i==0, ser_opts=ser_opts)
+
     @property
     def all_tab_managers(self) -> Iterator[TabManager]:
         yield from self.os_window_map.values()
@@ -597,8 +605,14 @@ class Boss:
                         if tab is not self.active_tab:
                             tm.set_active_tab(tab, for_keep_focus=window.tabref() if for_keep_focus else None)
                         tab.set_active_window(w, for_keep_focus=window if for_keep_focus else None)
-                        if activation_token or (switch_os_window_if_needed and current_focused_os_window_id() != os_window_id):
-                            focus_os_window(os_window_id, True, activation_token)
+                        if switch_os_window_if_needed and current_focused_os_window_id() != os_window_id:
+                            if activation_token or not is_wayland():
+                                focus_os_window(os_window_id, True, activation_token)
+                            else:
+                                def doit(token: str = '') -> None:
+                                    focus_os_window(os_window_id, True, token)
+                                if not run_with_activation_token(doit):
+                                    doit()
                         return os_window_id
         return None
 
@@ -873,7 +887,7 @@ class Boss:
                     args.session = 'none'
                 else:
                     from .session import PreReadSession
-                    args.session = PreReadSession(data['session_data'], data['environ'])
+                    args.session = PreReadSession(data['session_data'], data['environ'], data['session_arg'])
             else:
                 args.session = ''
             if not os.path.isabs(args.directory):
@@ -918,7 +932,7 @@ class Boss:
             window.send_cmd_response(response)
 
     def mark_os_window_for_close(self, os_window_id: int, request_type: int = IMPERATIVE_CLOSE_REQUESTED) -> None:
-        if self.current_visual_select is not None and self.current_visual_select.os_window_id == os_window_id and request_type == IMPERATIVE_CLOSE_REQUESTED:
+        if self.current_visual_select is not None and self.current_visual_select.os_window_id == os_window_id:
             self.cancel_current_visual_select()
         mark_os_window_for_close(os_window_id, request_type)
 
@@ -1178,6 +1192,29 @@ class Boss:
             'ask', cmd, window=window, custom_callback=callback_, default_data={'response': ''}, action_on_removal=on_popup_overlay_removal
         )
 
+    def get_save_filepath(
+        self, msg: str,  # can contain newlines and ANSI formatting
+        callback: Callable[..., None],  # called with the answer or empty string when aborted
+        window: Window | None = None,  # the window associated with the confirmation
+        prompt: str = '> ',
+        initial_value: str = ''
+    ) -> None:
+        result: str = ''
+
+        def callback_(res: dict[str, Any], x: int, boss: Boss) -> None:
+            nonlocal result
+            result = res.get('response') or ''
+
+        def on_popup_overlay_removal(wid: int, boss: Boss) -> None:
+            callback(result)
+
+        cmd = ['--type', 'file', '--message', msg, '--prompt', prompt]
+        if initial_value:
+            cmd.append('--default=' + initial_value)
+        self.run_kitten_with_metadata(
+            'ask', cmd, window=window, custom_callback=callback_, default_data={'response': ''}, action_on_removal=on_popup_overlay_removal
+        )
+
     def confirm_tab_close(self, tab: Tab) -> None:
         msg, num_active_windows = self.close_windows_with_confirmation_msg(tab, tab.active_window)
         x = get_options().confirm_os_window_close[0]
@@ -1308,6 +1345,8 @@ class Boss:
             map f1 clear_terminal to_cursor active
             # Same as above except cleared lines are moved into scrollback
             map f1 clear_terminal to_cursor_scroll active
+            # Erase the last command and its output (needs shell integration to work)
+            map f1 clear_terminal last_command active
         ''')
     def clear_terminal(self, action: str, only_active: bool) -> None:
         if only_active:
@@ -1335,6 +1374,9 @@ class Boss:
         elif action == 'to_cursor_scroll':
             for w in windows:
                 w.scroll_prompt_to_top(clear_scrollback=False)
+        elif action == 'last_command':
+            for w in windows:
+                w.screen.erase_last_command()
         else:
             self.show_error(_('Unknown clear type'), _('The clear type: {} is unknown').format(action))
 
@@ -1501,6 +1543,7 @@ class Boss:
         if self.current_visual_select:
             self.current_visual_select.cancel()
             self.current_visual_select = None
+            self.mappings.pop_keyboard_mode_if_is('__visual_select__')
 
     def visual_window_select_action(
         self, tab: Tab,
@@ -1824,6 +1867,8 @@ class Boss:
         if tm is None:
             self.mark_os_window_for_close(os_window_id)
             return
+        if self.current_visual_select is not None and self.current_visual_select.os_window_id == os_window_id:
+            self.cancel_current_visual_select()
         active_window = tm.active_window
         windows = []
         for tab in tm:
@@ -1952,8 +1997,20 @@ class Boss:
     @ac('misc', 'Edit the kitty.conf config file in your favorite text editor')
     def edit_config_file(self, *a: Any) -> None:
         confpath = prepare_config_file_for_editing()
-        cmd = [kitty_exe(), '+edit'] + get_editor(get_options()) + [confpath]
-        self.new_os_window(*cmd)
+        self.edit_file(confpath)
+
+    def edit_file(self, path: str) -> None:
+        editor_cmd = get_editor(get_options())
+        exe = editor_cmd[0]
+        if not os.path.isabs(exe):
+            exe = which(exe) or ''
+            if not exe or not os.access(exe, os.X_OK):
+                self.show_error(_('Cannot find editor'), _(
+                    'Could not edit the file {0} because the editor {1} was not found.').format(editor_cmd[0]))
+                return
+            editor_cmd[0] = exe
+        path = os.path.abspath(os.path.expanduser(path))
+        self.new_os_window(*editor_cmd, path)
 
     def run_kitten_with_metadata(
         self,
@@ -2984,6 +3041,14 @@ class Boss:
         )
         return q if isinstance(q, Window) else None
 
+    @ac('misc', 'Switch to the specified session, creating it if not already present.')
+    def goto_session(self, *cmdline: str) -> None:
+        goto_session(self, cmdline)
+
+    @ac('misc', 'Save the current kitty state as a session file')
+    def save_as_session(self, *cmdline: str) -> None:
+        save_as_session(self, cmdline)
+
     @ac('tab', 'Interactively select a tab to switch to')
     def select_tab(self) -> None:
 
@@ -3167,8 +3232,8 @@ class Boss:
         pass
     mouse_discard_event = discard_event
 
-    def sanitize_url_for_dispay_to_user(self, url: str) -> str:
-        return sanitize_url_for_dispay_to_user(url)
+    def sanitize_url_for_display_to_user(self, url: str) -> str:
+        return sanitize_url_for_display_to_user(url)
 
     def on_system_color_scheme_change(self, appearance: ColorSchemes, is_initial_value: bool) -> None:
         theme_colors.on_system_color_scheme_change(appearance, is_initial_value)

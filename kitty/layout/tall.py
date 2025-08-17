@@ -76,10 +76,11 @@ class TallLayoutOpts(LayoutOpts):
             self.bias = int(data.get('bias', 50))
         except Exception:
             self.bias = 50
-        self.mirrored = to_bool(data.get('mirrored', 'false'))
+        rv: bool | str = data.get('mirrored', 'false')
+        self.mirrored = to_bool(rv) if isinstance(rv, str) else bool(rv)
 
     def serialized(self) -> dict[str, Any]:
-        return {'full_size': self.full_size, 'bias': self.bias, 'mirrored': self.mirrored}
+        return {'full_size': self.full_size, 'bias': self.bias, 'mirrored': 'y' if self.mirrored else 'n'}
 
     def build_bias_list(self) -> tuple[float, ...]:
         b = self.bias / 100
@@ -354,6 +355,7 @@ class Tall(Layout):
     def set_layout_state(self, layout_state: dict[str, Any], map_group_id: WindowMapper) -> bool:
         self.main_bias = layout_state['main_bias']
         self.biased_map = layout_state['biased_map']
+        self.layout_opts = TallLayoutOpts(layout_state['opts'])
         return True
 
 

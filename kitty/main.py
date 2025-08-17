@@ -8,6 +8,7 @@ import shutil
 import sys
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager, suppress
+from gettext import gettext as _
 
 from .borders import load_borders_program
 from .boss import Boss
@@ -86,9 +87,9 @@ def set_custom_ibeam_cursor() -> None:
         log_error(f'Failed to set custom beam cursor with error: {e}')
 
 
-def load_all_shaders(semi_transparent: bool = False) -> None:
+def load_all_shaders() -> None:
     try:
-        load_shader_programs(semi_transparent)
+        load_shader_programs()
         load_borders_program()
     except CompileError as err:
         raise SystemExit(err)
@@ -207,6 +208,9 @@ def set_cocoa_global_shortcuts(opts: Options) -> dict[str, SingleKey]:
         val = get_macos_shortcut_for(func_map, 'clear_terminal to_cursor_scroll active', lookup_name='clear_screen')
         if val is not None:
             global_shortcuts['clear_screen'] = val
+        val = get_macos_shortcut_for(func_map, 'clear_terminal last_command active', lookup_name='clear_last_command')
+        if val is not None:
+            global_shortcuts['clear_last_command'] = val
         val = get_macos_shortcut_for(func_map, 'load_config_file', lookup_name='reload_config')
         if val is not None:
             global_shortcuts['reload_config'] = val
@@ -278,7 +282,14 @@ def _run_app(opts: Options, args: CLIOptions, bad_lines: Sequence[BadLine] = (),
                     pos_x, pos_y = cached_values.get('window-pos', (None, None))
             if args.position:
                 pos_x, pos_y = map(int, args.position.lower().partition('x')[::2])
-        startup_sessions = tuple(create_sessions(opts, args, default_session=opts.startup_session))
+        startup_session_error: tuple[Exception, str] | None = None
+        try:
+            startup_sessions = tuple(create_sessions(opts, args, default_session=opts.startup_session))
+        except Exception as e:
+            startup_session_error = (e, (getattr(args, 'session', '') or opts.startup_session or ''))
+            if getattr(args, 'session', ''):
+                args.session = ''
+            startup_sessions = tuple(create_sessions(opts, args))
         wincls = (startup_sessions[0].os_window_class if startup_sessions else '') or args.cls or appname
         winname = (startup_sessions[0].os_window_name if startup_sessions else '') or args.name or wincls or appname
         window_state = (args.start_as if args.start_as and args.start_as != 'normal' else None) or (
@@ -299,6 +310,9 @@ def _run_app(opts: Options, args: CLIOptions, bad_lines: Sequence[BadLine] = (),
         if bad_lines or boss.misc_config_errors:
             boss.show_bad_config_lines(bad_lines, boss.misc_config_errors)
             boss.misc_config_errors = []
+        if startup_session_error:
+            boss.show_error(_('The startup session was invalid'), _(
+                'Loading the start session file {0} failed, with error:\n{1}').format(startup_session_error[1], startup_session_error[0]))
         try:
             boss.child_monitor.main_loop()
         finally:
@@ -532,7 +546,7 @@ def kitty_main(called_from_panel: bool = False) -> None:
     if cli_opts.detach:
         if cli_opts.session == '-':
             from .session import PreReadSession
-            cli_opts.session = PreReadSession(sys.stdin.read(), os.environ)
+            cli_opts.session = PreReadSession(sys.stdin.read(), os.environ, '-')
     if cli_opts.replay_commands:
         from kitty.client import main as client_main
         client_main(cli_opts.replay_commands)

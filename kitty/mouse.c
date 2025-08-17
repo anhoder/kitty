@@ -214,28 +214,28 @@ dispatch_mouse_event(Window *w, int button, int count, int modifiers, bool grabb
 
 static unsigned int
 window_left(Window *w) {
-    return w->geometry.left - w->padding.left;
+    return w->render_data.geometry.left - w->padding.left;
 }
 
 static unsigned int
 window_right(Window *w) {
-    return w->geometry.right + w->padding.right;
+    return w->render_data.geometry.right + w->padding.right;
 }
 
 static unsigned int
 window_top(Window *w) {
-    return w->geometry.top - w->padding.top;
+    return w->render_data.geometry.top - w->padding.top;
 }
 
 static unsigned int
 window_bottom(Window *w) {
-    return w->geometry.bottom + w->padding.bottom;
+    return w->render_data.geometry.bottom + w->padding.bottom;
 }
 
 static bool
 contains_mouse(Window *w) {
     double x = global_state.callback_os_window->mouse_x, y = global_state.callback_os_window->mouse_y;
-    return (w->visible && window_left(w) <= x && x <= window_right(w) && window_top(w) <= y && y <= window_bottom(w));
+    return (w->visible && window_left(w) <= x && x < window_right(w) && window_top(w) <= y && y < window_bottom(w));
 }
 
 static double
@@ -250,7 +250,7 @@ static bool clamp_to_window = false;
 
 static bool
 cell_for_pos(Window *w, unsigned int *x, unsigned int *y, bool *in_left_half_of_cell, OSWindow *os_window) {
-    WindowGeometry *g = &w->geometry;
+    WindowGeometry *g = &w->render_data.geometry;
     Screen *screen = w->render_data.screen;
     if (!screen) return false;
     unsigned int qx = 0, qy = 0;
@@ -323,8 +323,8 @@ bool
 drag_scroll(Window *w, OSWindow *frame) {
     unsigned int margin = frame->fonts_data->fcm.cell_height / 2;
     double y = frame->mouse_y;
-    bool upwards = y <= (w->geometry.top + margin);
-    if (upwards || y >= w->geometry.bottom - margin) {
+    bool upwards = y <= (w->render_data.geometry.top + margin);
+    if (upwards || y >= w->render_data.geometry.bottom - margin) {
         if (do_drag_scroll(w, upwards)) {
             frame->last_mouse_activity_at = monotonic();
             return true;
@@ -645,8 +645,8 @@ handle_tab_bar_mouse(int button, int modifiers, int action) {
 static bool
 mouse_in_region(Region *r) {
     if (r->left == r->right) return false;
-    if (global_state.callback_os_window->mouse_y < r->top || global_state.callback_os_window->mouse_y > r->bottom) return false;
-    if (global_state.callback_os_window->mouse_x < r->left || global_state.callback_os_window->mouse_x > r->right) return false;
+    if (global_state.callback_os_window->mouse_y < r->top || global_state.callback_os_window->mouse_y >= r->bottom) return false;
+    if (global_state.callback_os_window->mouse_x < r->left || global_state.callback_os_window->mouse_x >= r->right) return false;
     return true;
 }
 
@@ -659,7 +659,7 @@ window_for_event(unsigned int *window_idx, bool *in_tab_bar) {
     const OSWindow* w = global_state.callback_os_window;
     if (!in_central) {
         if (
-                (tab_bar.top < central.top && w->mouse_y <= central.top) ||
+                (tab_bar.top < central.top && w->mouse_y < central.top) ||
                 (tab_bar.bottom > central.bottom && w->mouse_y >= central.bottom)
            ) *in_tab_bar = true;
     }
@@ -902,6 +902,14 @@ mouse_event(const int button, int modifiers, int action) {
         }
     }
     w = window_for_event(&window_idx, &in_tab_bar);
+    if (global_state.mouse_hover_in_window) {
+        Window *old_window = window_for_id(global_state.mouse_hover_in_window);
+        if (old_window && old_window != w) {
+            global_state.mouse_hover_in_window = 0;
+            screen_mark_url(old_window->render_data.screen, 0, 0, 0, 0);
+        }
+    }
+
     if (in_tab_bar) {
         mouse_cursor_shape = POINTER_POINTER;
         handle_tab_bar_mouse(button, modifiers, action);

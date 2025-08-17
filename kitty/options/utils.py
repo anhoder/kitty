@@ -77,7 +77,7 @@ class InvalidMods(ValueError):
 @func_with_args(
     'pass_selection_to_program', 'new_window', 'new_tab', 'new_os_window',
     'new_window_with_cwd', 'new_tab_with_cwd', 'new_os_window_with_cwd',
-    'launch', 'mouse_handle_click', 'show_error',
+    'launch', 'mouse_handle_click', 'show_error', 'goto_session', 'save_as_session',
     )
 def shlex_parse(func: str, rest: str) -> FuncArgsType:
     return func, to_cmdline(rest)
@@ -213,7 +213,7 @@ def clear_terminal(func: str, rest: str) -> FuncArgsType:
         args = ['reset', True]
     else:
         action = vals[0].lower()
-        if action not in ('reset', 'scroll', 'scrollback', 'clear', 'to_cursor', 'to_cursor_scroll'):
+        if action not in ('reset', 'scroll', 'scrollback', 'clear', 'to_cursor', 'to_cursor_scroll', 'last_command'):
             log_error(f'{action} is unknown for clear_terminal, using reset')
             action = 'reset'
         args = [action, vals[1].lower() == 'active']

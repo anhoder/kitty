@@ -555,6 +555,12 @@ class TestScreen(BaseTest):
             backspace(use_bs)
             self.ae(str(s.line(0)), q[:-1] + ' ')
             self.ae(str(s.line(1)), ' ')
+        # Test that CUB does not move cursor onto previous line
+        s.reset()
+        s.draw('a'*s.columns + 'b')
+        self.ae((s.cursor.x, s.cursor.y), (1, 1))
+        parse_bytes(s, b'\x1b[100D')
+        self.ae((s.cursor.x, s.cursor.y), (0, 1))
 
     def test_margins(self):
         # Taken from vttest/main.c
@@ -1227,6 +1233,10 @@ class TestScreen(BaseTest):
             for i in range(n):
                 s.draw(f'{i}{x}'), s.index(), s.carriage_return()
 
+        from kitty.window import as_text
+        def at():
+            return as_text(s, add_history=True)
+
         s = self.create_screen(cols=5, lines=5, scrollback=15)
         draw_output(3, 'oo')
         draw_prompt('pp')
@@ -1480,6 +1490,34 @@ class TestScreen(BaseTest):
         draw_prompt('p1')
         draw_prompt('p1')
         self.ae(lco(which=3), '0a\n1a')
+
+        # erase last command
+        s = self.create_screen(cols=10, lines=10, scrollback=15)
+        s.draw('before\r\n')
+        draw_prompt('p1'), draw_output(2), mark_prompt(), s.draw('partial')
+        self.ae('before\n$ p1\n0\n1\npartial', at().rstrip())
+        self.ae(lco(), '0\n1')
+        x = s.cursor.x
+        s.erase_last_command()
+        self.ae('before\npartial', at().rstrip())
+        self.ae((x, 1), (s.cursor.x, s.cursor.y))
+        s.reset()
+        s.draw('before\r\n')
+        draw_prompt('p1'), draw_output(2), mark_prompt(), s.draw('partial')
+        x = s.cursor.x
+        s.erase_last_command(False)
+        self.ae('before\n$ p1\npartial', at().rstrip())
+        for scroll in (8, 9, 10):
+            s.reset()
+            s.draw('before'), s.carriage_return(), s.linefeed()
+            draw_prompt('p1'), draw_output(scroll), mark_prompt(), s.draw('partial')
+            s.erase_last_command()
+            self.ae('before\npartial', at().rstrip())
+        s.reset()
+        draw_multicell(s, 'A', scale=2), s.draw('a'), draw_multicell(s, 'B', scale=2), s.draw('b\r\n')
+        draw_prompt('p1'), draw_output(9), mark_prompt(), s.draw('partial')
+        s.erase_last_command()
+        self.ae(at().rstrip(), '  a  b\npartial')
 
     def test_pointer_shapes(self):
         from kitty.window import set_pointer_shape

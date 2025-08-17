@@ -11,7 +11,6 @@
 #include "control-codes.h"
 #include <structmember.h>
 #include "glfw-wrapper.h"
-#include "gl.h"
 #ifdef __APPLE__
 #include "cocoa_window.h"
 #else
@@ -425,7 +424,7 @@ framebuffer_size_callback(GLFWwindow *w, int width, int height) {
         window->live_resize.width = MAX(0, width); window->live_resize.height = MAX(0, height);
         window->live_resize.num_of_resize_events++;
         make_os_window_context_current(window);
-        update_surface_size(width, height, 0);
+        set_gpu_viewport(width, height);
         request_tick_callback();
     } else log_error("Ignoring resize request for tiny size: %dx%d", width, height);
     global_state.callback_os_window = NULL;
@@ -738,7 +737,7 @@ apple_url_open_callback(const char* url) {
 
 
 bool
-draw_window_title(OSWindow *window UNUSED, const char *text, color_type fg, color_type bg, uint8_t *output_buf, size_t width, size_t height) {
+draw_window_title(double font_sz_pts UNUSED, double ydpi UNUSED, const char *text, color_type fg, color_type bg, uint8_t *output_buf, size_t width, size_t height) {
     static char buf[2048];
     strip_csi_(text, buf, arraysz(buf));
     return cocoa_render_line_of_text(buf, fg, bg, output_buf, width, height);
@@ -786,11 +785,11 @@ draw_text_callback(GLFWwindow *window, const char *text, uint32_t fg, uint32_t b
 }
 
 bool
-draw_window_title(OSWindow *window, const char *text, color_type fg, color_type bg, uint8_t *output_buf, size_t width, size_t height) {
+draw_window_title(double font_sz_pts, double ydpi, const char *text, color_type fg, color_type bg, uint8_t *output_buf, size_t width, size_t height) {
     if (!ensure_csd_title_render_ctx()) return false;
     static char buf[2048];
     strip_csi_(text, buf, arraysz(buf));
-    unsigned px_sz = (unsigned)(window->fonts_data->font_sz_in_pts * window->fonts_data->logical_dpi_y / 72.);
+    unsigned px_sz = (unsigned)(font_sz_pts * ydpi / 72.);
     px_sz = MIN(px_sz, 3 * height / 4);
 #define RGB2BGR(x) (x & 0xFF000000) | ((x & 0xFF0000) >> 16) | (x & 0x00FF00) | ((x & 0x0000FF) << 16)
     bool ok = render_single_line(csd_title_render_ctx, buf, px_sz, RGB2BGR(fg), RGB2BGR(bg), output_buf, width, height, 0, 0, 0, false);
@@ -1381,6 +1380,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         // Also apparently mesa has introduced a bug with sRGB surfaces and Wayland.
         // Sigh. Wayland is such a pile of steaming crap.
         // See https://github.com/kovidgoyal/kitty/issues/7174#issuecomment-2000033873
+        // GL_FRAMEBUFFER_SRGB works anyway without this on Wayland.
         if (!global_state.is_wayland) glfwWindowHint(GLFW_SRGB_CAPABLE, true);
 #ifdef __APPLE__
         cocoa_set_activation_policy(OPT(macos_hide_from_tasks) || lsc != NULL);
@@ -1459,8 +1459,6 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
 #undef glfw_failure
     glfwMakeContextCurrent(glfw_window);
     if (is_first_window) gl_init();
-    // Will make the GPU automatically apply SRGB gamma curve on the resulting framebuffer
-    glEnable(GL_FRAMEBUFFER_SRGB);
     bool is_semi_transparent = glfwGetWindowAttrib(glfw_window, GLFW_TRANSPARENT_FRAMEBUFFER);
     // blank the window once so that there is no initial flash of color
     // changing, in case the background color is not black
@@ -1487,15 +1485,14 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         }
     }
     if (is_first_window) {
-        PyObject *ret = PyObject_CallFunction(load_programs, "O", is_semi_transparent ? Py_True : Py_False);
+        PyObject *ret = PyObject_CallNoArgs(load_programs);
         if (ret == NULL) return NULL;
         Py_DECREF(ret);
         get_platform_dependent_config_values(glfw_window);
-        GLint encoding;
-        glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_BACK_LEFT, GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
-        if (encoding != GL_SRGB) log_error("The output buffer does not support sRGB color encoding, colors will be incorrect.");
+        if (!global_state.supports_framebuffer_srgb) {
+            log_error("The OpenGL drivers dont support GL_FRAMEBUFFER_SRGB this will cause a small rendering performance penalty");
+        }
         is_first_window = false;
-
     }
     OSWindow *w = add_os_window();
     w->handle = glfw_window;
@@ -1704,11 +1701,6 @@ dbus_user_notification_activated(uint32_t notification_id, int type, const char*
     send_dbus_notification_event_to_python(stype, nid, action);
 }
 #endif
-
-static PyObject*
-opengl_version_string(PyObject *self UNUSED, PyObject *args UNUSED) {
-    return PyUnicode_FromString(global_state.gl_version ? gl_version_string() : "");
-}
 
 static PyObject*
 glfw_init(PyObject UNUSED *self, PyObject *args) {
@@ -2716,7 +2708,6 @@ static PyMethodDef module_methods[] = {
     METHODB(cocoa_native_previous_tab, METH_VARARGS),
     METHODB(cocoa_native_next_tab, METH_VARARGS),
     {"glfw_init", (PyCFunction)glfw_init, METH_VARARGS, ""},
-    METHODB(opengl_version_string, METH_NOARGS),
     {"glfw_terminate", (PyCFunction)glfw_terminate, METH_NOARGS, ""},
     {"glfw_get_physical_dpi", (PyCFunction)glfw_get_physical_dpi, METH_NOARGS, ""},
     {"glfw_get_key_name", (PyCFunction)glfw_get_key_name, METH_VARARGS, ""},

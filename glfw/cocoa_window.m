@@ -35,6 +35,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <float.h>
 #include <string.h>
+#include <assert.h>
 
 #define debug debug_rendering
 
@@ -3472,10 +3473,13 @@ int _glfwPlatformSetWindowBlur(_GLFWwindow *window, int radius) {
 //////                        GLFW native API                       //////
 //////////////////////////////////////////////////////////////////////////
 
-GLFWAPI id glfwGetCocoaWindow(GLFWwindow *handle) {
-  _GLFWwindow *window = (_GLFWwindow *)handle;
-  _GLFW_REQUIRE_INIT_OR_RETURN(nil);
-  return window->ns.object;
+GLFWAPI id glfwGetCocoaWindow(GLFWwindow* handle)
+{
+    _GLFWwindow* window = (_GLFWwindow*) handle;
+    assert(window != NULL);
+
+    _GLFW_REQUIRE_INIT_OR_RETURN(nil);
+    return window->ns.object;
 }
 
 GLFWAPI GLFWcocoatextinputfilterfun glfwSetCocoaTextInputFilter(

@@ -223,6 +223,7 @@ static int extensionSupportedEGL(const char* extension)
 static GLFWglproc getProcAddressEGL(const char* procname)
 {
     _GLFWwindow* window = _glfwPlatformGetTls(&_glfw.contextSlot);
+    assert(window != NULL);
 
     if (window->context.egl.client)
     {
@@ -387,6 +388,7 @@ bool _glfwInitEGL(void)
     }
 
     _glfw.egl.platform = _glfwPlatformGetEGLPlatform(&attribs);
+    _glfw.egl.display = EGL_NO_DISPLAY;
     if (_glfw.egl.platform)
     {
         _glfw.egl.display =
@@ -394,16 +396,18 @@ bool _glfwInitEGL(void)
                                      _glfwPlatformGetEGLNativeDisplay(),
                                      attribs);
     }
-    else
-        _glfw.egl.display = eglGetDisplay(_glfwPlatformGetEGLNativeDisplay());
-
     free(attribs);
 
     if (_glfw.egl.display == EGL_NO_DISPLAY)
+        _glfw.egl.display = eglGetDisplay(_glfwPlatformGetEGLNativeDisplay());
+
+
+    EGLint egl_err;
+    if (_glfw.egl.display == EGL_NO_DISPLAY && (egl_err = eglGetError()) != EGL_SUCCESS)
     {
         _glfwInputError(GLFW_API_UNAVAILABLE,
                         "EGL: Failed to get EGL display: %s",
-                        getEGLErrorString(eglGetError()));
+                        getEGLErrorString(egl_err));
 
         _glfwTerminateEGL();
         return false;
@@ -412,8 +416,8 @@ bool _glfwInitEGL(void)
     if (!eglInitialize(_glfw.egl.display, &_glfw.egl.major, &_glfw.egl.minor))
     {
         _glfwInputError(GLFW_API_UNAVAILABLE,
-                        "EGL: Failed to initialize EGL: %s",
-                        getEGLErrorString(eglGetError()));
+                        "EGL: Failed to initialize EGL: %s display_present: %d egl_platform_present: %d",
+                        getEGLErrorString(eglGetError()), _glfw.egl.display != EGL_NO_DISPLAY, _glfw.egl.platform != 0);
 
         _glfwTerminateEGL();
         return false;
@@ -542,16 +546,16 @@ bool _glfwCreateContextEGL(_GLFWwindow* window,
             flags |= EGL_CONTEXT_OPENGL_ROBUST_ACCESS_BIT_KHR;
         }
 
-        if (ctxconfig->noerror)
-        {
-            if (_glfw.egl.KHR_create_context_no_error)
-                setAttrib(EGL_CONTEXT_OPENGL_NO_ERROR_KHR, true);
-        }
-
         if (ctxconfig->major != 1 || ctxconfig->minor != 0)
         {
             setAttrib(EGL_CONTEXT_MAJOR_VERSION_KHR, ctxconfig->major);
             setAttrib(EGL_CONTEXT_MINOR_VERSION_KHR, ctxconfig->minor);
+        }
+
+        if (ctxconfig->noerror)
+        {
+            if (_glfw.egl.KHR_create_context_no_error)
+                setAttrib(EGL_CONTEXT_OPENGL_NO_ERROR_KHR, true);
         }
 
         if (mask)
@@ -789,6 +793,8 @@ GLFWAPI EGLDisplay glfwGetEGLDisplay(void)
 GLFWAPI EGLContext glfwGetEGLContext(GLFWwindow* handle)
 {
     _GLFWwindow* window = (_GLFWwindow*) handle;
+    assert(window != NULL);
+
     _GLFW_REQUIRE_INIT_OR_RETURN(EGL_NO_CONTEXT);
 
     if (window->context.client == GLFW_NO_API)
@@ -803,6 +809,8 @@ GLFWAPI EGLContext glfwGetEGLContext(GLFWwindow* handle)
 GLFWAPI EGLSurface glfwGetEGLSurface(GLFWwindow* handle)
 {
     _GLFWwindow* window = (_GLFWwindow*) handle;
+    assert(window != NULL);
+
     _GLFW_REQUIRE_INIT_OR_RETURN(EGL_NO_SURFACE);
 
     if (window->context.client == GLFW_NO_API)

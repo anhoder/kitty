@@ -1,20 +1,24 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
+import json
 import os
 import shlex
 import sys
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import suppress
 from functools import partial
-from typing import TYPE_CHECKING, Optional, Union
+from gettext import gettext as _
+from typing import TYPE_CHECKING, Any, Optional, Sequence, Union
 
-from .cli_stub import CLIOptions
+from .cli_stub import CLIOptions, SaveAsSessionOptions
+from .constants import config_dir, unserialize_launch_flag
+from .fast_data_types import get_options
 from .layout.interface import all_layouts
 from .options.types import Options
 from .options.utils import resize_window, to_layout_names, window_size
 from .os_window_size import WindowSize, WindowSizeData, WindowSizes
-from .typing_compat import SpecialWindowInstance
+from .typing_compat import BossType, SpecialWindowInstance, WindowType
 from .utils import expandvars, log_error, resolve_custom_file, resolved_shell, shlex_split
 
 if TYPE_CHECKING:
@@ -37,11 +41,13 @@ ResizeSpec = tuple[str, int]
 
 class WindowSpec:
 
-    def __init__(self, launch_spec: Union['LaunchSpec', 'SpecialWindowInstance']):
+    def __init__(self, launch_spec: Union['LaunchSpec', 'SpecialWindowInstance'], serialized_id: int = 0, run_command_at_shell_startup: Sequence[str] = ()):
         self.launch_spec = launch_spec
         self.resize_spec: ResizeSpec | None = None
         self.focus_matching_window_spec: str = ''
         self.is_background_process = False
+        self.serialized_id = serialized_id
+        self.run_command_at_shell_startup = run_command_at_shell_startup
         if hasattr(launch_spec, 'opts'):  # LaunchSpec
             from .launch import LaunchSpec
             assert isinstance(launch_spec, LaunchSpec)
@@ -58,6 +64,7 @@ class Tab:
         self.active_window_idx = 0
         self.enabled_layouts = opts.enabled_layouts
         self.layout = (self.enabled_layouts or ['tall'])[0]
+        self.layout_state: dict[str, Any] | None = None
         self.cwd: str | None = None
         self.next_title: str | None = None
 
@@ -70,6 +77,9 @@ class Tab:
 
 
 class Session:
+
+    session_name: str = ''
+    num_of_windows_in_definition: int = 0
 
     def __init__(self, default_title: str | None = None):
         self.tabs: list[Tab] = []
@@ -101,12 +111,19 @@ class Session:
             raise ValueError(f'{val} is not a valid layout')
         self.tabs[-1].layout = val
 
+    def set_layout_state(self, val: str) -> None:
+        self.tabs[-1].layout_state = json.loads(val)
+
     def add_window(self, cmd: None | str | list[str], expand: Callable[[str], str] = lambda x: x) -> None:
         from .launch import parse_launch_args
         needs_expandvars = False
         if isinstance(cmd, str) and cmd:
             needs_expandvars = True
             cmd = list(shlex_split(cmd))
+        serialize_data: dict[str, Any] = {'id': 0, 'cmd_at_shell_startup': ()}
+        if cmd and cmd[0].startswith(unserialize_launch_flag):
+            serialize_data = json.loads(cmd[0][len(unserialize_launch_flag):])
+            del cmd[0]
         spec = parse_launch_args(cmd)
         if needs_expandvars:
             assert isinstance(cmd, list)
@@ -121,7 +138,9 @@ class Session:
         if t.next_title and not spec.opts.window_title:
             spec.opts.window_title = t.next_title
         spec.opts.cwd = spec.opts.cwd or t.cwd
-        t.windows.append(WindowSpec(spec))
+        t.windows.append(WindowSpec(
+            spec, serialized_id=serialize_data['id'],
+            run_command_at_shell_startup=serialize_data.get('cmd_at_shell_startup', ())))
         t.next_title = None
         if t.pending_resize_spec is not None:
             t.windows[-1].resize_spec = t.pending_resize_spec
@@ -162,9 +181,21 @@ class Session:
         self.tabs[-1].cwd = val
 
 
-def parse_session(raw: str, opts: Options, environ: Mapping[str, str] | None = None) -> Generator[Session, None, None]:
+def session_arg_to_name(session_arg: str) -> str:
+    if session_arg in ('-', '/dev/stdin', 'none'):
+        session_arg = ''
+    session_name = os.path.basename(session_arg)
+    if session_name.rpartition('.')[2] in ('session', 'kitty-session'):
+        session_name = session_name.rpartition('.')[0]
+    return session_name
 
+
+
+def parse_session(raw: str, opts: Options, environ: Mapping[str, str] | None = None, session_arg: str = '') -> Generator[Session, None, None]:
+    session_name = session_arg_to_name(session_arg)
     def finalize_session(ans: Session) -> Session:
+        ans.session_name = session_name
+        ans.num_of_windows_in_definition = sum(len(t.windows) for t in ans.tabs)
         from .tabs import SpecialWindow
         for t in ans.tabs:
             if not t.windows:
@@ -185,7 +216,7 @@ def parse_session(raw: str, opts: Options, environ: Mapping[str, str] | None = N
             else:
                 cmd, rest = parts
             cmd, rest = cmd.strip(), rest.strip()
-            if cmd != 'launch':
+            if cmd not in ('launch', 'set_layout_state'):
                 rest = expand(rest)
             if cmd == 'new_tab':
                 ans.add_tab(opts, rest)
@@ -220,6 +251,8 @@ def parse_session(raw: str, opts: Options, environ: Mapping[str, str] | None = N
                 ans.resize_window(rest.split())
             elif cmd == 'focus_matching_window':
                 ans.focus_matching_window(rest)
+            elif cmd == 'set_layout_state':
+                ans.set_layout_state(rest)
             else:
                 raise ValueError(f'Unknown command in session file: {cmd}')
     yield finalize_session(ans)
@@ -227,10 +260,13 @@ def parse_session(raw: str, opts: Options, environ: Mapping[str, str] | None = N
 
 class PreReadSession(str):
 
-    def __new__(cls, val: str, associated_environ: Mapping[str, str]) -> 'PreReadSession':
+    associated_environ: Mapping[str, str]
+    session_arg: str
+
+    def __new__(cls, val: str, associated_environ: Mapping[str, str], session_arg: str) -> 'PreReadSession':
         ans: PreReadSession = str.__new__(cls, val)
-        ans.pre_read = True  # type: ignore
-        ans.associated_environ = associated_environ  # type: ignore
+        ans.associated_environ = associated_environ
+        ans.session_arg = session_arg
         return ans
 
 
@@ -247,10 +283,12 @@ def create_sessions(
         if args.session == "none":
             default_session = "none"
         else:
+            session_arg = args.session
             environ: Mapping[str, str] | None = None
             if isinstance(args.session, PreReadSession):
                 session_data = '' + str(args.session)
-                environ = args.session.associated_environ  # type: ignore
+                environ = args.session.associated_environ
+                session_arg = args.session.session_arg
             else:
                 if args.session == '-':
                     f = sys.stdin
@@ -258,16 +296,17 @@ def create_sessions(
                     f = open(resolve_custom_file(args.session))
                 with f:
                     session_data = f.read()
-            yield from parse_session(session_data, opts, environ=environ)
+            yield from parse_session(session_data, opts, environ=environ, session_arg=session_arg)
             return
     if default_session and default_session != 'none' and not getattr(args, 'args', None):
+        session_arg = session_arg_to_name(default_session)
         try:
             with open(default_session) as f:
                 session_data = f.read()
         except OSError:
             log_error(f'Failed to read from session file, ignoring: {default_session}')
         else:
-            yield from parse_session(session_data, opts)
+            yield from parse_session(session_data, opts, session_arg=session_arg)
             return
     ans = Session()
     current_layout = opts.enabled_layouts[0] if opts.enabled_layouts else 'tall'
@@ -283,3 +322,188 @@ def create_sessions(
         special_window = SpecialWindow(cmd, cwd_from=cwd_from, cwd=cwd, env=env_when_no_session, hold=bool(args and args.hold))
     ans.add_special_window(special_window)
     yield ans
+
+
+def window_for_session_name(boss: BossType, session_name: str) -> WindowType | None:
+    windows = [w for w in boss.all_windows if w.created_in_session_name == session_name]
+    if not windows:
+        tabs = (t for t in boss.all_tabs if t.created_in_session_name == session_name)
+        windows = [t.active_window for t in tabs if t.active_window]
+        if not windows:
+            os_windows = (tm for tm in boss.all_tab_managers if tm.created_in_session_name == session_name)
+            windows = [tm.active_window for tm in os_windows if tm.active_window]
+    if windows:
+        def skey(w: WindowType) -> float:
+            return w.last_focused_at
+        windows.sort(key=skey, reverse=True)
+        return windows[0]
+    return None
+
+
+seen_session_paths: dict[str, str] = {}
+
+
+def create_session(boss: BossType, path: str) -> str:
+    session_name = ''
+    for i, s in enumerate(create_sessions(get_options(), default_session=path)):
+        if i == 0:
+            session_name = s.session_name
+            if s.num_of_windows_in_definition == 0:  # leading new_os_window
+                continue
+            tm = boss.active_tab_manager
+            if tm is None:
+                boss.add_os_window(s)
+            else:
+                tm.add_tabs_from_session(s)
+        else:
+            boss.add_os_window(s)
+    seen_session_paths[session_name] = path
+    return session_name
+
+
+goto_session_history: list[str] = []
+
+
+def append_to_session_history(name: str) -> None:
+    with suppress(ValueError):
+        goto_session_history.remove(name)
+    goto_session_history.append(name)
+
+
+def switch_to_session(boss: BossType, session_name: str) -> bool:
+    w = window_for_session_name(boss, session_name)
+    if w is not None:
+        append_to_session_history(session_name)
+        boss.set_active_window(w, switch_os_window_if_needed=True)
+        return True
+    return False
+
+
+def resolve_session_path_and_name(path: str) -> tuple[str, str]:
+    path = os.path.expanduser(path)
+    if not os.path.isabs(path):
+        path = os.path.join(config_dir, path)
+    path = os.path.abspath(path)
+    return path, session_arg_to_name(path)
+
+
+def get_all_known_sessions() -> dict[str, str]:
+    opts = get_options()
+    all_known_sessions = seen_session_paths.copy()
+    for km in opts.keyboard_modes.values():
+        for kdefs in km.keymap.values():
+            for kd in kdefs:
+                for key_action in opts.alias_map.resolve_aliases(kd.definition, 'map'):
+                    if key_action.func == 'goto_session':
+                        path = ''
+                        for x in key_action.args:
+                            if isinstance(x, str) and not x.startswith('-'):
+                                path = x
+                                break
+                        if path:
+                            path, session_name = resolve_session_path_and_name(path)
+                            if session_name not in all_known_sessions:
+                                all_known_sessions[session_name] = path
+    return all_known_sessions
+
+
+def choose_session(boss: BossType) -> None:
+    all_known_sessions = get_all_known_sessions()
+    hmap = {n: len(goto_session_history)-i for i, n in enumerate(goto_session_history)}
+    def skey(name: str) -> tuple[int, str]:
+        return hmap.get(name, len(goto_session_history)), name.lower()
+    names = sorted(all_known_sessions, key=skey)
+
+    def chosen(name: str | None) -> None:
+        if name:
+            goto_session(boss, (all_known_sessions[name],))
+    boss.choose_entry(
+        _('Select a session to activate'), ((name, name) for name in names), chosen)
+
+
+def goto_session(boss: BossType, cmdline: Sequence[str]) -> None:
+    if not cmdline:
+        choose_session(boss)
+        return
+    path = cmdline[0]
+    if len(cmdline) == 1:
+        try:
+            idx = int(path)
+        except Exception:
+            idx = 0
+        if idx < 0:
+            nidx = max(0, len(goto_session_history) - 1 - idx)
+            switch_to_session(boss, goto_session_history[nidx])
+            return
+    else:
+        for x in cmdline:
+            if not x.startswith('-'):
+                path = x
+                break
+    path, session_name = resolve_session_path_and_name(path)
+    if not session_name:
+        boss.show_error(_('Invalid session'), _('{} is not a valid path for a session').format(path))
+        return
+    if switch_to_session(boss, session_name):
+        return
+    try:
+        session_name = create_session(boss, path)
+    except Exception:
+        import traceback
+        tb = traceback.format_exc()
+        boss.show_error(_('Failed to create session'), _('Could not create session from {0} with error:\n{1}').format(path, tb))
+    else:
+        append_to_session_history(session_name)
+
+
+def save_as_session_options() -> str:
+    return '''
+--save-only
+type=bool-set
+Only save the specified session file, dont open it in an editor to review after saving.
+
+
+--use-foreground-process
+type=bool-set
+When saving windows that were started with the default shell but are currently running some
+other process inside that shell, save that process so that when the session is used
+both the shell :bold:`and` the process running inside it are re-started. This is most useful
+when you have opened programs like editors or similar inside windows that started out running
+the shell and you want to preserve that. WARNING: Be careful when using this option, if you are
+running some dangerous command like :file:`rm` or :file:`mv` or similar in a shell, it will be re-run when
+the session is executed if you use this option. Note that this option requires :ref:`shell_integration`
+to work.
+'''
+
+
+def save_as_session_part2(boss: BossType, opts: SaveAsSessionOptions, path: str) -> None:
+    if not path:
+        return
+    from .config import atomic_save
+    path = os.path.abspath(os.path.expanduser(path))
+    session = '\n'.join(boss.serialize_state_as_session(opts))
+    atomic_save(session.encode(), path)
+    if not opts.save_only:
+        boss.edit_file(path)
+
+
+def parse_save_as_options_spec_args(args: list[str]) -> tuple[SaveAsSessionOptions, list[str]]:
+    from kitty.cli import cached_parse_cmdline
+    ans = SaveAsSessionOptions()
+    leftover_args = cached_parse_cmdline(save_as_session_options(), args, ans)
+    return ans, leftover_args
+
+
+def default_save_as_session_opts() -> SaveAsSessionOptions:
+    return parse_save_as_options_spec_args([])[0]
+
+
+def save_as_session(boss: BossType, cmdline: Sequence[str]) -> None:
+    opts, args = parse_save_as_options_spec_args(list(cmdline))
+    path = args[0] if args else ''
+    if path:
+        save_as_session_part2(boss, opts, path)
+    else:
+        boss.get_save_filepath(_(
+            'Enter the path at which to save the session, usually session files are given the .kitty-session file extension'),
+                               partial(save_as_session_part2, boss, opts))
