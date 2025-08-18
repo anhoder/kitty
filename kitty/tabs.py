@@ -32,7 +32,6 @@ from .fast_data_types import (
     buffer_keys_in_window,
     current_focused_os_window_id,
     detach_window,
-    focus_os_window,
     get_boss,
     get_click_interval,
     get_options,
@@ -275,8 +274,7 @@ class Tab:  # {{{
                             tm.set_active_tab(target_tab)
                         if target_tab.active_window is not w:
                             target_tab.set_active_window(w)
-                        if current_focused_os_window_id() != w.os_window_id:
-                            focus_os_window(w.os_window_id, True)
+                        boss.focus_os_window(w.os_window_id)
 
         with suppress(IndexError):
             self.windows.set_active_window_group_for(self.windows.all_windows[session_tab.active_window_idx])
@@ -295,14 +293,24 @@ class Tab:  # {{{
             'name': self.name,
         }
 
-    def serialize_state_as_session(self, ser_opts: SaveAsSessionOptions) -> list[str]:
+    def serialize_state_as_session(self, session_path: str, ser_opts: SaveAsSessionOptions) -> list[str]:
         import shlex
         launch_cmds = []
         active_idx = self.windows.active_group_idx
-        for i, g in enumerate(self.windows.iter_all_layoutable_groups()):
+        groups = tuple(self.windows.iter_all_layoutable_groups())
+        session_base_dir = os.path.dirname(session_path) if session_path else ''
+        def make_relative(cwd: str) -> str:
+            if session_base_dir and ser_opts.relocatable:
+                cwd = os.path.relpath(cwd, session_base_dir)
+            return cwd
+        cwds = {w.id: make_relative(w.cwd_for_serialization) for g in groups for w in g}
+        from collections import Counter
+        most_common_cwd, _ = Counter(cwds.values()).most_common(1)[0]
+        for i, g in enumerate(groups):
             gw: list[str] = []
             for window in g:
-                lc = window.as_launch_command(ser_opts, is_overlay=bool(gw))
+                cwd = cwds[window.id]
+                lc = window.as_launch_command(ser_opts, '' if cwd == most_common_cwd else cwd, is_overlay=bool(gw))
                 if lc:
                     gw.append(shlex.join(lc))
             if gw:
@@ -316,6 +324,7 @@ class Tab:  # {{{
                 f'layout {self._current_layout_name}',
                 f'enabled_layouts {",".join(self.enabled_layouts)}',
                 f'set_layout_state {json.dumps(self.current_layout.serialize(self.windows))}',
+                f'cd {most_common_cwd}',
                 ''
             ] + launch_cmds
         return []
@@ -1208,7 +1217,7 @@ class TabManager:  # {{{
             'active_tab_idx': self.active_tab_idx,
         }
 
-    def serialize_state_as_session(self, ser_opts: SaveAsSessionOptions, is_first: bool = False) -> list[str]:
+    def serialize_state_as_session(self, session_path: str, ser_opts: SaveAsSessionOptions, is_first: bool = False) -> list[str]:
         ans = []
         hmap = {tab_id: i for i, tab_id in enumerate(self.active_tab_history)}
         if (at := self.active_tab) is not None:
@@ -1216,12 +1225,12 @@ class TabManager:  # {{{
         def skey(tab: Tab) -> int:
             return hmap.get(tab.id, -1)
         for tab in sorted(self, key=skey):
-            ans.extend(tab.serialize_state_as_session(ser_opts))
+            ans.extend(tab.serialize_state_as_session(session_path, ser_opts))
         if ans:
             prefix = [] if is_first else ['', '', 'new_os_window']
-            if self.wm_class:
+            if self.wm_class and self.wm_class != appname:
                 prefix.append(f'os_window_class {self.wm_class}')
-            if self.wm_name:
+            if self.wm_name and self.wm_name != appname:
                 prefix.append(f'os_window_name {self.wm_name}')
             ans = prefix + ans
         return ans

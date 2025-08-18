@@ -177,8 +177,14 @@ class Session:
         if self.tabs[-1].layout not in self.tabs[-1].enabled_layouts:
             self.tabs[-1].layout = self.tabs[-1].enabled_layouts[0]
 
-    def set_cwd(self, val: str) -> None:
-        self.tabs[-1].cwd = val
+    def set_cwd(self, val: str, session_base_dir: str) -> None:
+        if val:
+            val = os.path.expanduser(val)
+            if not os.path.isabs(val):
+                val = os.path.abspath(os.path.join(session_base_dir, val))
+            self.tabs[-1].cwd = val
+        elif session_base_dir:
+            self.tabs[-1].cwd = session_base_dir
 
 
 def session_arg_to_name(session_arg: str) -> str:
@@ -191,8 +197,15 @@ def session_arg_to_name(session_arg: str) -> str:
 
 
 
-def parse_session(raw: str, opts: Options, environ: Mapping[str, str] | None = None, session_arg: str = '') -> Generator[Session, None, None]:
+def parse_session(
+    raw: str, opts: Options, environ: Mapping[str, str] | None = None, session_arg: str = '', session_path: str = ''
+) -> Generator[Session, None, None]:
     session_name = session_arg_to_name(session_arg)
+    if session_path:
+        session_base_dir = os.path.dirname(os.path.abspath(session_path))
+    else:
+        session_base_dir = os.getcwd()
+
     def finalize_session(ans: Session) -> Session:
         ans.session_name = session_name
         ans.num_of_windows_in_definition = sum(len(t.windows) for t in ans.tabs)
@@ -235,7 +248,7 @@ def parse_session(raw: str, opts: Options, environ: Mapping[str, str] | None = N
             elif cmd == 'enabled_layouts':
                 ans.set_enabled_layouts(rest)
             elif cmd == 'cd':
-                ans.set_cwd(rest)
+                ans.set_cwd(rest, session_base_dir)
             elif cmd == 'title':
                 ans.set_next_title(rest)
             elif cmd == 'os_window_size':
@@ -262,11 +275,13 @@ class PreReadSession(str):
 
     associated_environ: Mapping[str, str]
     session_arg: str
+    session_path: str
 
-    def __new__(cls, val: str, associated_environ: Mapping[str, str], session_arg: str) -> 'PreReadSession':
+    def __new__(cls, val: str, associated_environ: Mapping[str, str], session_arg: str, session_path: str) -> 'PreReadSession':
         ans: PreReadSession = str.__new__(cls, val)
         ans.associated_environ = associated_environ
         ans.session_arg = session_arg
+        ans.session_path = session_path
         return ans
 
 
@@ -284,11 +299,13 @@ def create_sessions(
             default_session = "none"
         else:
             session_arg = args.session
+            session_path = ''
             environ: Mapping[str, str] | None = None
             if isinstance(args.session, PreReadSession):
                 session_data = '' + str(args.session)
                 environ = args.session.associated_environ
                 session_arg = args.session.session_arg
+                session_path = args.session.session_path
             else:
                 if args.session == '-':
                     f = sys.stdin
@@ -296,17 +313,19 @@ def create_sessions(
                     f = open(resolve_custom_file(args.session))
                 with f:
                     session_data = f.read()
-            yield from parse_session(session_data, opts, environ=environ, session_arg=session_arg)
+                    session_path = f.name
+            yield from parse_session(session_data, opts, environ=environ, session_arg=session_arg, session_path=session_path)
             return
     if default_session and default_session != 'none' and not getattr(args, 'args', None):
         session_arg = session_arg_to_name(default_session)
         try:
             with open(default_session) as f:
                 session_data = f.read()
+                session_path = f.name
         except OSError:
             log_error(f'Failed to read from session file, ignoring: {default_session}')
         else:
-            yield from parse_session(session_data, opts, session_arg=session_arg)
+            yield from parse_session(session_data, opts, session_arg=session_arg, session_path=session_path)
             return
     ans = Session()
     current_layout = opts.enabled_layouts[0] if opts.enabled_layouts else 'tall'
@@ -346,17 +365,21 @@ seen_session_paths: dict[str, str] = {}
 def create_session(boss: BossType, path: str) -> str:
     session_name = ''
     for i, s in enumerate(create_sessions(get_options(), default_session=path)):
+
         if i == 0:
             session_name = s.session_name
             if s.num_of_windows_in_definition == 0:  # leading new_os_window
                 continue
             tm = boss.active_tab_manager
             if tm is None:
-                boss.add_os_window(s)
+                os_window_id = boss.add_os_window(s)
             else:
+                os_window_id = tm.os_window_id
                 tm.add_tabs_from_session(s)
         else:
-            boss.add_os_window(s)
+            os_window_id = boss.add_os_window(s)
+        if s.focus_os_window:
+            boss.focus_os_window(os_window_id)
     seen_session_paths[session_name] = path
     return session_name
 
@@ -456,6 +479,11 @@ def goto_session(boss: BossType, cmdline: Sequence[str]) -> None:
         append_to_session_history(session_name)
 
 
+save_as_session_message = '''\
+Save the current state of kitty as a session file for easy re-use. If the path at which to save the session
+file is not specified, kitty will prompt you for one.'''
+
+
 def save_as_session_options() -> str:
     return '''
 --save-only
@@ -467,12 +495,19 @@ Only save the specified session file, dont open it in an editor to review after 
 type=bool-set
 When saving windows that were started with the default shell but are currently running some
 other process inside that shell, save that process so that when the session is used
-both the shell :bold:`and` the process running inside it are re-started. This is most useful
+both the shell **and** the process running inside it are re-started. This is most useful
 when you have opened programs like editors or similar inside windows that started out running
 the shell and you want to preserve that. WARNING: Be careful when using this option, if you are
 running some dangerous command like :file:`rm` or :file:`mv` or similar in a shell, it will be re-run when
 the session is executed if you use this option. Note that this option requires :ref:`shell_integration`
 to work.
+
+
+--relocatable
+type=bool-set
+When saving the working directory for windows, do so as paths relative to the directory in which
+the session file will be saved. This allows the session file to work even when its containing
+directory is moved elsewhere.
 '''
 
 
@@ -481,7 +516,7 @@ def save_as_session_part2(boss: BossType, opts: SaveAsSessionOptions, path: str)
         return
     from .config import atomic_save
     path = os.path.abspath(os.path.expanduser(path))
-    session = '\n'.join(boss.serialize_state_as_session(opts))
+    session = '\n'.join(boss.serialize_state_as_session(path, opts))
     atomic_save(session.encode(), path)
     if not opts.save_only:
         boss.edit_file(path)
