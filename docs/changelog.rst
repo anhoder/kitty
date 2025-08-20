@@ -122,6 +122,10 @@ Detailed list of changes
 - New support for creating and switching to :doc:`sessions` easily, allowing
   users to define and use sessions/projects efficiently
 
+- macOS: Allow the window title bar to be semi-transparent when
+  :opt:`background_opacity` is less than one and :opt:`macos_titlebar_color` is
+  set to ``background`` (:pull:`8906`)
+
 - A new :opt:`cursor_trail_color` setting to independently control the color of
   cursor trails (:pull:`8830`)
 
@@ -137,7 +141,14 @@ Detailed list of changes
 - macOS: Fix hiding quick access terminal window not restoring focus to
   previously active application (:disc:`8840`)
 
-- Allow using backspace to move the cursor onto the previous line in cooked mode. This is indicated by the `bw` property in  kitty's terminfo (:iss:`8841`)
+- macOS: Fix showing the quick access terminal on a space other than the space
+  it was last active on, after full screening some application causes the quick
+  access terminal to appear on the old space (:iss:`8740`)
+
+- macOS: Fix closing an OS Window when another OS Window is minimized causing
+  the minimized window to be un-minimized (:iss:`8913`)
+
+- Allow using backspace to move the cursor onto the previous line in cooked mode. This is indicated by the `bw` property in kitty's terminfo (:iss:`8841`)
 
 - Watchers: A new event for global watchers corresponding to the tab bar being changed (:disc:`8842`)
 

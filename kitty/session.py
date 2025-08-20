@@ -41,7 +41,10 @@ ResizeSpec = tuple[str, int]
 
 class WindowSpec:
 
-    def __init__(self, launch_spec: Union['LaunchSpec', 'SpecialWindowInstance'], serialized_id: int = 0, run_command_at_shell_startup: Sequence[str] = ()):
+    def __init__(
+        self, launch_spec: Union['LaunchSpec', 'SpecialWindowInstance'], serialized_id: int = 0,
+        run_command_at_shell_startup: Sequence[str] | str = ()
+):
         self.launch_spec = launch_spec
         self.resize_spec: ResizeSpec | None = None
         self.focus_matching_window_spec: str = ''
@@ -203,6 +206,8 @@ def parse_session(
     session_name = session_arg_to_name(session_arg)
     if session_path:
         session_base_dir = os.path.dirname(os.path.abspath(session_path))
+        if session_name:
+            seen_session_paths[session_name] = session_path
     else:
         session_base_dir = os.getcwd()
 
@@ -365,7 +370,6 @@ seen_session_paths: dict[str, str] = {}
 def create_session(boss: BossType, path: str) -> str:
     session_name = ''
     for i, s in enumerate(create_sessions(get_options(), default_session=path)):
-
         if i == 0:
             session_name = s.session_name
             if s.num_of_windows_in_definition == 0:  # leading new_os_window
@@ -380,7 +384,6 @@ def create_session(boss: BossType, path: str) -> str:
             os_window_id = boss.add_os_window(s)
         if s.focus_os_window:
             boss.focus_os_window(os_window_id)
-    seen_session_paths[session_name] = path
     return session_name
 
 
@@ -481,7 +484,9 @@ def goto_session(boss: BossType, cmdline: Sequence[str]) -> None:
 
 save_as_session_message = '''\
 Save the current state of kitty as a session file for easy re-use. If the path at which to save the session
-file is not specified, kitty will prompt you for one.'''
+file is not specified, kitty will prompt you for one. If the path is :code:`.` it will save the session
+to the path of the currently active session, if there is one, otherwise prompt you for a path.
+'''
 
 
 def save_as_session_options() -> str:
@@ -508,6 +513,13 @@ type=bool-set
 When saving the working directory for windows, do so as paths relative to the directory in which
 the session file will be saved. This allows the session file to work even when its containing
 directory is moved elsewhere.
+
+
+--match
+If specified, only save all windows (and their parent tabs/OS Windows) that match the specified
+search expression. See :ref:`search_syntax` for details on the search language. In particular if
+you want to only save windows that are present in the currently active session,
+use :code:`--match=session:.`.
 '''
 
 
@@ -517,6 +529,7 @@ def save_as_session_part2(boss: BossType, opts: SaveAsSessionOptions, path: str)
     from .config import atomic_save
     path = os.path.abspath(os.path.expanduser(path))
     session = '\n'.join(boss.serialize_state_as_session(path, opts))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     atomic_save(session.encode(), path)
     if not opts.save_only:
         boss.edit_file(path)
@@ -536,6 +549,9 @@ def default_save_as_session_opts() -> SaveAsSessionOptions:
 def save_as_session(boss: BossType, cmdline: Sequence[str]) -> None:
     opts, args = parse_save_as_options_spec_args(list(cmdline))
     path = args[0] if args else ''
+    if path == '.':
+        sn = boss.active_session
+        path = seen_session_paths.get(sn) or ''
     if path:
         save_as_session_part2(boss, opts, path)
     else:

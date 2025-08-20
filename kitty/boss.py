@@ -506,10 +506,11 @@ class Boss:
     def serialize_state_as_session(self, session_path: str = '', ser_opts: SaveAsSessionOptions | None = None) -> Iterator[str]:
         if ser_opts is None:
             ser_opts = default_save_as_session_opts()
+        matched_windows = frozenset(self.match_windows(ser_opts.match)) if ser_opts.match else None
         s = {current_focused_os_window_id(): 2, last_focused_os_window_id(): 1}
         for i, os_window_id in enumerate(sorted(self.os_window_map, key=lambda wid: s.get(wid, 0))):
             tm = self.os_window_map[os_window_id]
-            yield from tm.serialize_state_as_session(session_path, is_first=i==0, ser_opts=ser_opts)
+            yield from tm.serialize_state_as_session(session_path, matched_windows, is_first=i==0, ser_opts=ser_opts)
 
     @property
     def all_tab_managers(self) -> Iterator[TabManager]:
@@ -536,6 +537,7 @@ class Boss:
             if tm is not None:
                 tab = tm.active_tab
         window_id_limit = max(self.window_id_map, default=-1) + 1
+        active_session = self.active_session
 
         def get_matches(location: str, query: str, candidates: set[int]) -> set[int]:
             if location == 'id' and query.startswith('-'):
@@ -545,7 +547,7 @@ class Boss:
                     return set()
                 if q < 0:
                     query = str(window_id_limit + q)
-            return {wid for wid in candidates if self.window_id_map[wid].matches_query(location, query, tab, self_window)}
+            return {wid for wid in candidates if self.window_id_map[wid].matches_query(location, query, tab, self_window, active_session)}
 
         for wid in search(match, (
             'id', 'title', 'pid', 'cwd', 'cmdline', 'num', 'env', 'var', 'recent', 'state', 'neighbor',
@@ -1529,6 +1531,14 @@ class Boss:
     def active_window(self) -> Window | None:
         t = self.active_tab
         return None if t is None else t.active_window
+
+    @property
+    def active_session(self) -> str:
+        if t := self.active_tab:
+            if w := t.active_window:
+                return w.created_in_session_name or t.created_in_session_name
+            return t.created_in_session_name
+        return ''
 
     def refresh_active_tab_bar(self) -> bool:
         tm = self.active_tab_manager

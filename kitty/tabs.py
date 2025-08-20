@@ -137,8 +137,10 @@ class Tab:  # {{{
         session_tab: Optional['SessionTab'] = None,
         special_window: SpecialWindowInstance | None = None,
         cwd_from: CwdRequest | None = None,
-        no_initial_window: bool = False
+        no_initial_window: bool = False,
+        session_name: str = '',
     ):
+        self.created_in_session_name = session_name
         self.tab_manager_ref = weakref.ref(tab_manager)
         self.os_window_id: int = tab_manager.os_window_id
         self.id: int = add_tab(self.os_window_id)
@@ -256,11 +258,11 @@ class Tab:  # {{{
                 self.new_special_window(spec)
             else:
                 from .launch import launch
+                spec.opts.add_to_session = self.created_in_session_name
                 launched_window = launch(
                     boss, spec.opts, spec.args, target_tab=target_tab, force_target_tab=True,
                     startup_command_via_shell_integration=window.run_command_at_shell_startup)
                 if launched_window is not None:
-                    launched_window.created_in_session_name = self.created_in_session_name
                     launched_window.serialized_id = window.serialized_id
             if window.resize_spec is not None:
                 self.resize_window(*window.resize_spec)
@@ -293,7 +295,7 @@ class Tab:  # {{{
             'name': self.name,
         }
 
-    def serialize_state_as_session(self, session_path: str, ser_opts: SaveAsSessionOptions) -> list[str]:
+    def serialize_state_as_session(self, session_path: str, matched_windows: frozenset[Window] | None, ser_opts: SaveAsSessionOptions) -> list[str]:
         import shlex
         launch_cmds = []
         active_idx = self.windows.active_group_idx
@@ -309,6 +311,8 @@ class Tab:  # {{{
         for i, g in enumerate(groups):
             gw: list[str] = []
             for window in g:
+                if matched_windows is not None and window not in matched_windows:
+                    continue
                 cwd = cwds[window.id]
                 lc = window.as_launch_command(ser_opts, '' if cwd == most_common_cwd else cwd, is_overlay=bool(gw))
                 if lc:
@@ -534,7 +538,8 @@ class Tab:  # {{{
         hold: bool = False,
         pass_fds: tuple[int, ...] = (),
         remote_control_fd: int = -1,
-        hold_after_ssh: bool = False
+        hold_after_ssh: bool = False,
+        startup_command_via_shell_integration: Sequence[str] | str = (),
     ) -> Child:
         check_for_suitability = True
         if cmd is None:
@@ -584,7 +589,9 @@ class Tab:  # {{{
             fenv['WINDOWID'] = str(pwid)
         ans = Child(
                 cmd, cwd or self.cwd, stdin, fenv, cwd_from, is_clone_launch=is_clone_launch,
-                add_listen_on_env_var=add_listen_on_env_var, hold=hold, pass_fds=pass_fds, remote_control_fd=remote_control_fd, hold_after_ssh=hold_after_ssh)
+                add_listen_on_env_var=add_listen_on_env_var, hold=hold, pass_fds=pass_fds,
+                remote_control_fd=remote_control_fd, hold_after_ssh=hold_after_ssh,
+                startup_command_via_shell_integration=startup_command_via_shell_integration)
         ans.fork()
         return ans
 
@@ -623,7 +630,8 @@ class Tab:  # {{{
         pass_fds: tuple[int, ...] = (),
         remote_control_fd: int = -1,
         next_to: Window | None = None,
-        hold_after_ssh: bool = False
+        hold_after_ssh: bool = False,
+        startup_command_via_shell_integration: Sequence[str] | str = (),
     ) -> Window:
         cs = WindowCreationSpec(
             use_shell=use_shell, cmd=cmd, has_stdin=bool(stdin), override_title=override_title, cwd_from=cwd_from,
@@ -637,7 +645,8 @@ class Tab:  # {{{
         child = self.launch_child(
             use_shell=use_shell, cmd=cmd, stdin=stdin, cwd_from=cwd_from, cwd=cwd, env=env,
             is_clone_launch=is_clone_launch, add_listen_on_env_var=False if allow_remote_control and remote_control_passwords else True,
-            hold=hold, pass_fds=pass_fds, remote_control_fd=remote_control_fd, hold_after_ssh=hold_after_ssh
+            hold=hold, pass_fds=pass_fds, remote_control_fd=remote_control_fd, hold_after_ssh=hold_after_ssh,
+            startup_command_via_shell_integration=startup_command_via_shell_integration,
         )
         window = Window(
             self, child, self.args, override_title=override_title,
@@ -949,6 +958,10 @@ class Tab:  # {{{
             if query == 'parent_focused':
                 return active_tab_manager is not None and self.tab_manager_ref() is active_tab_manager and self.os_window_id == last_focused_os_window_id()
             return False
+        if field == 'session':
+            if query == '.':
+                return self.created_in_session_name == get_boss().active_session
+            return re.search(query, self.created_in_session_name) is not None
         return False
 
     def __iter__(self) -> Iterator[Window]:
@@ -1006,8 +1019,7 @@ class TabManager:  # {{{
     def add_tabs_from_session(self, session: SessionType) -> None:
         before = len(self.tabs)
         for t in session.tabs:
-            tab = Tab(self, session_tab=t)
-            tab.created_in_session_name = session.session_name
+            tab = Tab(self, session_tab=t, session_name=self.created_in_session_name)
             self._add_tab(tab)
         num_added = len(self.tabs) - before
         self._set_active_tab(max(0, min(num_added + session.active_tab_idx, len(self.tabs) - 1)))
@@ -1217,7 +1229,10 @@ class TabManager:  # {{{
             'active_tab_idx': self.active_tab_idx,
         }
 
-    def serialize_state_as_session(self, session_path: str, ser_opts: SaveAsSessionOptions, is_first: bool = False) -> list[str]:
+    def serialize_state_as_session(
+        self, session_path: str, matched_windows: frozenset[Window] | None, ser_opts: SaveAsSessionOptions,
+        is_first: bool = False
+    ) -> list[str]:
         ans = []
         hmap = {tab_id: i for i, tab_id in enumerate(self.active_tab_history)}
         if (at := self.active_tab) is not None:
@@ -1225,7 +1240,7 @@ class TabManager:  # {{{
         def skey(tab: Tab) -> int:
             return hmap.get(tab.id, -1)
         for tab in sorted(self, key=skey):
-            ans.extend(tab.serialize_state_as_session(session_path, ser_opts))
+            ans.extend(tab.serialize_state_as_session(session_path, matched_windows, ser_opts))
         if ans:
             prefix = [] if is_first else ['', '', 'new_os_window']
             if self.wm_class and self.wm_class != appname:
@@ -1374,6 +1389,7 @@ class TabManager:  # {{{
                 has_activity_since_last_focus, t.active_fg, t.active_bg,
                 t.inactive_fg, t.inactive_bg, t.num_of_windows_with_progress,
                 t.total_progress, t.last_focused_window_with_progress_id,
+                t.created_in_session_name,
             ))
         return ans
 
