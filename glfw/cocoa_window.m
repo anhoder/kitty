@@ -2558,12 +2558,18 @@ int _glfwPlatformWindowBell(_GLFWwindow *window UNUSED) {
   return true;
 }
 
-void _glfwPlatformFocusWindow(_GLFWwindow *window) {
-  // Make us the active application
-  if ([window->ns.object canBecomeKeyWindow]) {
-    [NSApp activateIgnoringOtherApps:YES];
-    [window->ns.object makeKeyAndOrderFront:nil];
-  }
+void _glfwPlatformFocusWindow(_GLFWwindow* window)
+{
+    if (_glfwPlatformWindowIconified(window)) {
+        // miniaturized windows return false in canBecomeKeyWindow therefore
+        // unminiaturize first
+        [window->ns.object deminiaturize:nil];
+    }
+    if ([window->ns.object canBecomeKeyWindow]) {
+        // Make us the active application
+        [NSApp activateIgnoringOtherApps:YES];
+        [window->ns.object makeKeyAndOrderFront:nil];
+    }
 }
 
 void _glfwPlatformSetWindowMonitor(_GLFWwindow *window, _GLFWmonitor *monitor,

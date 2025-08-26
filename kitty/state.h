@@ -24,7 +24,7 @@ typedef enum { LEFT_EDGE = 1, TOP_EDGE = 2, RIGHT_EDGE = 4, BOTTOM_EDGE = 8 } Ed
 typedef enum { REPEAT_MIRROR, REPEAT_CLAMP, REPEAT_DEFAULT } RepeatStrategy;
 typedef enum { WINDOW_NORMAL, WINDOW_FULLSCREEN, WINDOW_MAXIMIZED, WINDOW_MINIMIZED, WINDOW_HIDDEN } WindowState;
 
-typedef struct {
+typedef struct UrlPrefix {
     char_type string[16];
     size_t len;
 } UrlPrefix;
@@ -38,7 +38,7 @@ struct MenuItem {
     const char *definition;
 };
 
-typedef struct {
+typedef struct Options {
     monotonic_t visual_bell_duration, cursor_blink_interval, cursor_stop_blinking_after, click_interval;
     struct {
         monotonic_t hide_wait, unhide_wait;
@@ -146,13 +146,13 @@ typedef struct {
     unsigned int left, top, right, bottom;
 } WindowGeometry;
 
-typedef struct {
+typedef struct WindowRenderData {
     ssize_t vao_idx;
     WindowGeometry geometry;
     Screen *screen;
 } WindowRenderData;
 
-typedef struct {
+typedef struct Click {
     monotonic_t at;
     int button, modifiers;
     double x, y;
@@ -160,7 +160,7 @@ typedef struct {
 } Click;
 
 #define CLICK_QUEUE_SZ 3
-typedef struct {
+typedef struct ClickQueue {
     Click clicks[CLICK_QUEUE_SZ];
     unsigned int length;
 } ClickQueue;
@@ -190,11 +190,9 @@ typedef struct WindowBarData {
     bool needs_render;
 } WindowBarData;
 
-typedef struct {
+typedef struct Window {
     id_type id;
     bool visible;
-    float cursor_opacity_at_last_render;
-    CursorShape last_cursor_shape;
     PyObject *title;
     WindowRenderData render_data;
     WindowLogoRenderData window_logo;
@@ -218,19 +216,19 @@ typedef struct {
     } pending_clicks;
 } Window;
 
-typedef struct {
+typedef struct BorderRect {
     float left, top, right, bottom;
     uint32_t color;
 } BorderRect;
 
-typedef struct {
+typedef struct BorderRects {
     BorderRect *rect_buf;
     unsigned int num_border_rects, capacity;
     bool is_dirty;
     ssize_t vao_idx;
 } BorderRects;
 
-typedef struct {
+typedef struct CursorTrail {
     bool needs_render;
     monotonic_t updated_at;
     float opacity;
@@ -240,7 +238,7 @@ typedef struct {
     float cursor_edge_y[2];
 } CursorTrail;
 
-typedef struct {
+typedef struct Tab {
     id_type id;
     unsigned int active_window, num_windows, capacity;
     Window *windows;
@@ -251,7 +249,7 @@ typedef struct {
 enum RENDER_STATE { RENDER_FRAME_NOT_REQUESTED, RENDER_FRAME_REQUESTED, RENDER_FRAME_READY };
 typedef enum { NO_CLOSE_REQUESTED, CONFIRMABLE_CLOSE_REQUESTED, CLOSE_BEING_CONFIRMED, IMPERATIVE_CLOSE_REQUESTED } CloseRequest;
 
-typedef struct {
+typedef struct LiveResizeInfo {
     monotonic_t last_resize_event_at;
     bool in_progress;
     bool from_os_notification;
@@ -278,7 +276,7 @@ typedef struct BackgroundImageRenderSettings {
     bool linear; uint32_t bgcolor; float opacity;
 } BackgroundImageRenderSettings;
 
-typedef struct {
+typedef struct OSWindow {
     void *handle;
     id_type id;
     monotonic_t created_at;
@@ -313,10 +311,10 @@ typedef struct {
     bool viewport_size_dirty, viewport_updated_at_least_once;
     monotonic_t viewport_resized_at;
     LiveResizeInfo live_resize;
-    bool has_pending_resizes, is_semi_transparent, shown_once, ignore_resize_events;
+    bool has_pending_resizes, shown_once, ignore_resize_events;
     unsigned int redraw_count;
     WindowChromeState last_window_chrome;
-    float background_opacity;
+    struct { float alpha; bool os_forces_opaque, supports_transparency; } background_opacity;
     FONTS_DATA_HANDLE fonts_data;
     id_type temp_font_group_id;
     enum RENDER_STATE render_state;
@@ -327,8 +325,13 @@ typedef struct {
     bool is_layer_shell, hide_on_focus_loss;
 } OSWindow;
 
+static inline float
+effective_os_window_alpha(OSWindow *w) {
+    return (!w->background_opacity.supports_transparency || w->background_opacity.os_forces_opaque) ?
+        1.f : w->background_opacity.alpha;
+}
 
-typedef struct {
+typedef struct GlobalState {
     Options opts;
 
     id_type os_window_id_counter, tab_id_counter, window_id_counter;

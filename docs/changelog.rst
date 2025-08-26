@@ -116,7 +116,7 @@ consumption to do the same tasks.
 Detailed list of changes
 -------------------------------------
 
-0.43.0 [2025-07-16]
+0.43.0 [future]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - New support for creating and switching to :doc:`sessions` easily, allowing
@@ -134,6 +134,11 @@ Detailed list of changes
 
 - Fix :opt:`background_opacity` being non-linear with light color themes
   (:iss:`8869`)
+
+- Add support for blinking text. Text marked as blinking now blinks in exact
+  rhythm with the cursor. The blinking animation and max duration are
+  controlled by :opt:`cursor_blink_interval` and
+  :opt:`cursor_stop_blinking_after`. (:pull:`8551`)
 
 - Wayland: Fix incorrect window size calculation when transitioning from
   full screen to non-full screen with client side decorations (:iss:`8826`)

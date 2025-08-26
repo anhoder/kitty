@@ -277,6 +277,7 @@ CELL_BG_PROGRAM: int
 BLIT_PROGRAM: int
 ROUNDED_RECT_PROGRAM: int
 DECORATION: int
+BLINK: int
 DIM: int
 GRAPHICS_ALPHA_MASK_PROGRAM: int
 GRAPHICS_PROGRAM: int
@@ -1200,6 +1201,7 @@ class Cursor:
     bold: bool
     italic: bool
     blink: bool
+    text_blink: bool
     shape: int
 
 

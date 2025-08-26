@@ -124,7 +124,16 @@ from .notifications import NotificationManager
 from .options.types import Options, nullable_colors
 from .options.utils import MINIMUM_FONT_SIZE, KeyboardMode, KeyDefinition
 from .os_window_size import initial_window_size_func
-from .session import Session, create_sessions, default_save_as_session_opts, get_os_window_sizing_data, goto_session, save_as_session
+from .session import (
+    Session,
+    close_session_with_confirm,
+    create_sessions,
+    default_save_as_session_opts,
+    get_os_window_sizing_data,
+    goto_session,
+    most_recent_session,
+    save_as_session,
+)
 from .shaders import load_shader_programs
 from .simple_cli_definitions import grab_keyboard_docs
 from .tabs import SpecialWindow, SpecialWindowInstance, Tab, TabDict, TabManager
@@ -526,9 +535,10 @@ class Boss:
         for tab in self.all_tabs:
             yield from tab
 
-    def match_windows(self, match: str, self_window: Optional['Window'] = None) -> Iterator[Window]:
+    def match_windows(self, match: str, self_window: Optional['Window'] = None, all_windows: Iterable[Window] | None = None) -> Iterator[Window]:
+        all_windows = self.all_windows if all_windows is None else all_windows
         if match == 'all':
-            yield from self.all_windows
+            yield from all_windows
             return
         from .search_query_parser import search
         tab = self.active_tab
@@ -536,8 +546,10 @@ class Boss:
             tm = self.os_window_map.get(last_focused_os_window_id())
             if tm is not None:
                 tab = tm.active_tab
-        window_id_limit = max(self.window_id_map, default=-1) + 1
+        wids = {w.id for w in all_windows}
+        window_id_limit = max(wids, default=-1) + 1
         active_session = self.active_session
+        prev_active_session = most_recent_session()
 
         def get_matches(location: str, query: str, candidates: set[int]) -> set[int]:
             if location == 'id' and query.startswith('-'):
@@ -547,31 +559,27 @@ class Boss:
                     return set()
                 if q < 0:
                     query = str(window_id_limit + q)
-            return {wid for wid in candidates if self.window_id_map[wid].matches_query(location, query, tab, self_window, active_session)}
+            return {wid for wid in candidates if self.window_id_map[wid].matches_query(location, query, tab, self_window, active_session, prev_active_session)}
 
         for wid in search(match, (
-            'id', 'title', 'pid', 'cwd', 'cmdline', 'num', 'env', 'var', 'recent', 'state', 'neighbor',
-        ), set(self.window_id_map), get_matches):
+            'id', 'title', 'pid', 'cwd', 'cmdline', 'num', 'env', 'var', 'recent', 'state', 'neighbor', 'session',
+        ), wids, get_matches):
             yield self.window_id_map[wid]
 
-    def tab_for_window(self, window: Window) -> Tab | None:
-        for tab in self.all_tabs:
-            for w in tab:
-                if w.id == window.id:
-                    return tab
-        return None
-
-    def match_tabs(self, match: str) -> Iterator[Tab]:
+    def match_tabs(self, match: str, all_tabs: Iterable[Tab] | None = None) -> Iterator[Tab]:
+        all_tabs = self.all_tabs if all_tabs is None else all_tabs
         if match == 'all':
-            yield from self.all_tabs
+            yield from all_tabs
             return
         from .search_query_parser import search
         tm = self.active_tab_manager
         if current_focused_os_window_id() <= 0:
             tm = self.os_window_map.get(last_focused_os_window_id()) or tm
-        tim = {t.id: t for t in self.all_tabs}
+        tim = {t.id: t for t in all_tabs}
         tab_id_limit = max(tim, default=-1) + 1
         window_id_limit = max(self.window_id_map, default=-1) + 1
+        active_session = self.active_session
+        prev_active_session = most_recent_session()
 
         def get_matches(location: str, query: str, candidates: set[int]) -> set[int]:
             if location in ('id', 'window_id') and query.startswith('-'):
@@ -582,17 +590,18 @@ class Boss:
                 if q < 0:
                     limit = tab_id_limit if location == 'id' else window_id_limit
                     query = str(limit + q)
-            return {wid for wid in candidates if tim[wid].matches_query(location, query, tm)}
+            return {wid for wid in candidates if tim[wid].matches_query(location, query, tm, active_session, prev_active_session)}
 
         found = False
         for tid in search(match, (
-                'id', 'index', 'title', 'window_id', 'window_title', 'pid', 'cwd', 'env', 'var', 'cmdline', 'recent', 'state'
+            'id', 'index', 'title', 'window_id', 'window_title', 'pid', 'cwd', 'env', 'var',
+            'cmdline', 'recent', 'state', 'session',
         ), set(tim), get_matches):
             found = True
             yield tim[tid]
 
         if not found:
-            tabs = {self.tab_for_window(w) for w in self.match_windows(match)}
+            tabs = {w.tabref() for w in self.match_windows(match)}
             for q in tabs:
                 if q:
                     yield q
@@ -638,7 +647,14 @@ class Boss:
         else:
             sw = self.args_to_special_window(args, cwd_from) if args else None
         startup_session = next(create_sessions(get_options(), special_window=sw, cwd_from=cwd_from))
-        return self.add_os_window(startup_session)
+        startup_session.session_name = ''
+        ans = self.add_os_window(startup_session)
+        if cwd_from is not None and (sow := cwd_from.window) and (tm := self.os_window_map.get(ans)) and sow.created_in_session_name:
+            for tab in tm:
+                tab.created_in_session_name = sow.created_in_session_name
+                for w in tab:
+                    w.created_in_session_name = sow.created_in_session_name
+        return ans
 
     @ac('win', 'New OS Window')
     def new_os_window(self, *args: str) -> None:
@@ -1027,7 +1043,7 @@ class Boss:
     def close_window(self) -> None:
         self.mark_window_for_close(self.window_for_dispatch)
 
-    def close_windows_with_confirmation_msg(self, windows: Iterable[Window], active_window: Window | None) -> tuple[str, int]:
+    def close_windows_with_confirmation_msg(self, windows: Iterable[Window], active_window: Window | None = None) -> tuple[str, int]:
         num_running_programs = 0
         num_background_programs = 0
         count_background = get_options().confirm_os_window_close[1]
@@ -1268,6 +1284,12 @@ class Boss:
         if self.current_visual_select is not None and self.current_visual_select.tab_id == tab.id:
             self.cancel_current_visual_select()
         for window in tab:
+            self.mark_window_for_close(window)
+
+    def close_windows_no_confirm(self, windows: Sequence[Window]) -> None:
+        if self.current_visual_select is not None:
+            self.cancel_current_visual_select()
+        for window in windows:
             self.mark_window_for_close(window)
 
     @ac('win', 'Toggle the fullscreen status of the active OS Window')
@@ -1540,6 +1562,14 @@ class Boss:
             return t.created_in_session_name
         return ''
 
+    @property
+    def all_loaded_session_names(self) -> Iterator[str]:
+        seen = set()
+        for w in self.all_windows:
+            if w.created_in_session_name and w.created_in_session_name not in seen:
+                seen.add(w.created_in_session_name)
+                yield w.created_in_session_name
+
     def refresh_active_tab_bar(self) -> bool:
         tm = self.active_tab_manager
         if tm:
@@ -1615,8 +1645,13 @@ class Boss:
             self.mouse_handler = self.visual_window_select_mouse_handler
         else:
             self.visual_window_select_action_trigger(self.current_visual_select.window_ids[0] if self.current_visual_select.window_ids else 0)
-            if get_options().enable_audio_bell:
-                ring_bell(tab.os_window_id)
+            self.ring_bell_if_allowed(tab.os_window_id)
+
+    def ring_bell_if_allowed(self, os_window_id: int = 0) -> bool:
+        if get_options().enable_audio_bell:
+            ring_bell(os_window_id or getattr(self.active_tab_manager, 'os_window_id', 0))
+            return True
+        return False
 
     def visual_window_select_action_trigger(self, window_id: int = 0) -> None:
         if self.current_visual_select:
@@ -1659,8 +1694,7 @@ class Boss:
                 selectable_windows.append((w.id, w.title))
         if len(selectable_windows) < 2:
             self.visual_window_select_action_trigger(selectable_windows[0][0] if selectable_windows else 0)
-            if get_options().enable_audio_bell:
-                ring_bell(tab.os_window_id)
+            self.ring_bell_if_allowed(tab.os_window_id)
             return None
         cvs = self.current_visual_select
 
@@ -2744,11 +2778,14 @@ class Boss:
             args = args[1:]
             allow_remote_control = True
         if args:
-            return tab.new_special_window(
+            w = tab.new_special_window(
                 self.args_to_special_window(args, cwd_from=cwd_from),
                 location=location, allow_remote_control=allow_remote_control)
         else:
-            return tab.new_window(cwd_from=cwd_from, location=location, allow_remote_control=allow_remote_control)
+            w = tab.new_window(cwd_from=cwd_from, location=location, allow_remote_control=allow_remote_control)
+        if cwd_from is not None and (sw := cwd_from.window):
+            w.created_in_session_name = sw.created_in_session_name
+        return w
 
     @ac('win', 'Create a new window')
     def new_window(self, *args: str) -> None:
@@ -2983,7 +3020,7 @@ class Boss:
         window = window or self.active_window
         if not window:
             return
-        src_tab = self.tab_for_window(window)
+        src_tab = window.tabref()
         if src_tab is None:
             return
         with self.suppress_focus_change_events():
@@ -3065,13 +3102,28 @@ class Boss:
         )
         return q if isinstance(q, Window) else None
 
-    @ac('misc', 'Switch to the specified session, creating it if not already present. See :ref:`goto_session`.')
+    @ac('session', 'Switch to the specified session, creating it if not already present. See :ref:`goto_session`.')
     def goto_session(self, *cmdline: str) -> None:
         goto_session(self, cmdline)
 
-    @ac('misc', 'Save the current kitty state as a session file. See :ref:`save_as_session`.')
+    @ac('session', 'Save the current kitty state as a session file. See :ref:`save_as_session`.')
     def save_as_session(self, *cmdline: str) -> None:
         save_as_session(self, cmdline)
+
+    @ac('session', '''
+        Close a session, that is, close all windows that belong to the session.
+        Examples::
+            # Ask for the session to close
+            map f1 close_session
+            # Close the currently active session
+            map f1 close_session .
+            # Close session by name
+            map f1 close_session "my session"
+            # Close session by path to session file
+            map f1 close_session "/path/to/session/file.kitty-session"
+    ''')
+    def close_session(self, *cmdline: str) -> None:
+        close_session_with_confirm(self, cmdline)
 
     @ac('tab', 'Interactively select a tab to switch to')
     def select_tab(self) -> None:

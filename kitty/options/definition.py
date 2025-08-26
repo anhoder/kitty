@@ -363,14 +363,16 @@ it will go from opaque to transparent and then back again over the next half. Yo
 different easing functions for the two halves, for example: :code:`-1 linear ease-out`. kitty
 supports all the :link:`CSS easing functions <https://developer.mozilla.org/en-US/docs/Web/CSS/easing-function>`.
 Note that turning on animations uses extra power as it means the screen is redrawn multiple times
-per blink interval. See also, :opt:`cursor_stop_blinking_after`.
+per blink interval. See also, :opt:`cursor_stop_blinking_after`. This setting also controls blinking
+text, which blinks in exact rhythm with the cursor.
 ''')
 
 opt('cursor_stop_blinking_after', '15.0',
     option_type='positive_float', ctype='time',
     long_text='''
 Stop blinking cursor after the specified number of seconds of keyboard
-inactivity. Set to zero to never stop blinking.
+inactivity. Set to zero to never stop blinking. This setting also controls
+blinking text, which blinks in exact rhythm with the cursor.
 ''')
 
 opt('cursor_trail', '0',
@@ -1386,6 +1388,18 @@ The tab bar style, can be one of:
 '''
     )
 
+opt('tab_bar_filter', '', long_text='''
+A :ref:`search expression <search_syntax>`. Only tabs that match this expression
+will be shown in the tab bar. The currently active tab is :italic:`always` shown,
+regardless of whether it matches or not. When using this option, the tab bar may
+be displayed with less tabs than specified in :opt:`tab_bar_min_tabs`, as evaluating
+the filter is expensive and is done only at display time. This is most useful when
+using :ref:`sessions <sessions>`. An expression of :code:`session:~ or session:^$`
+will show only tabs that belong to the current session or no session. The various
+tab navigation actions such as :ac:`goto_tab`, :ac:`next_tab`, :ac:`previous_tab`, etc.
+are automatically restricted to work only on matching tabs.
+''')
+
 opt('tab_bar_align', 'left',
     choices=('left', 'center', 'right'),
     long_text='''
@@ -1473,6 +1487,8 @@ use :code:`{sup.index}`. All data available is:
     The current layout name.
 :code:`session_name`
     The name of the kitty session file from which this tab was created, if any.
+:code:`active_session_name`
+    The name of the kitty session file from which the active window in this tab was created, if any.
 :code:`num_windows`
     The number of windows in the tab.
 :code:`num_window_groups`

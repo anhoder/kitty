@@ -55,9 +55,14 @@ easily swap between them, kitty has you covered. You can use the
    map f7>h goto_session ~/path/to/hot/hot.kitty-session
    # Browse and select from the list of known projects defined via goto_session commands
    map f7>/ goto_session
+   # Go to the previously active session (larger negative numbers jump further back in history)
+   map f7>- goto_session -1
 
 In this manner you can define as many projects/sessions as you like and easily
 switch between them with a keypress.
+
+You can also close sessions using the :ac:`close_session` action, which closes
+all windows in the session with a single keypress.
 
 
 Displaying the currently active session name
@@ -182,12 +187,14 @@ Making newly created windows join an existing session
 
 Normally, after activating a session, if you create new windows/tabs
 they don't belong to the session. If you would prefer to have them belong
-to the currently active session, you can use the :option:`launch --add-to-session`
-option, like this:
+to the currently active session, you can use the :ac:`new_window_with_cwd`
+and :ac:`new_tab_with_cwd` actions instead, like this::
 
-    map kitty_mod+enter launch --add-to-session=.
+    map kitty_mod+enter new_window_with_cwd
+    map kitty_mod+t new_tab_with_cwd
+    map kitty_mod+n new_os_window_with_cwd
 
-This will cause newly created windows to belong to the currently active
+This will cause newly created windows and tabs to belong to the currently active
 session, if any. Note that adding a window to a session in this way is
 temporary, it does not edit the session file. If you wish to update the
 session file of the currently active session, you can use the following
@@ -196,7 +203,46 @@ mapping for it::
     map f5 save_as_session --relocatable --use-foreground-process --match=session:. .
 
 The two can be combined, using the :ac:`combine` action.
+For even more control of what session a window is added to use
+the :doc:`launch <launch>` command with the :option:`launch --add-to-session`
+flag.
 
+
+Sessions with remote connections
+-------------------------------------
+
+If you use the :doc:`ssh kitten </kittens/ssh>` to connect to remote computers,
+:ac:`save_as_session` is smart enough to save the ssh kitten invocation to your
+session file, preserving the remote working directory and even the currently
+running program on the remote host! Try it, run kitty with::
+
+    kitty -o 'map f1 save_as_session --use-foreground-process --relocatable' --session <(echo "layout vertical\nlaunch\nlaunch")
+
+Now in both windows, run::
+
+    kitten ssh localhost
+
+To connect them both to a remote computer (replace ``localhost`` with another
+computer if you like). In one window change the directory to /tmp and in the
+other start some program. Then press :kbd:`F1` to save the session file.
+When you run the session file in another kitty instance you will see both
+windows re-created, as expected with the correct working directories and
+running programs.
+
+Managing multi tab sessions in a single OS Window
+----------------------------------------------------
+
+The natural way to organise sessions in kitty is one per :term:`os_window`.
+However, if you prefer to manage multiple sessions in a single OS Window, you
+can configure the kitty tab bar to only show tabs that belong to the currently
+active session. To do so, use :opt:`tab_bar_filter` in :file:`kitty.conf` set::
+
+    tab_bar_filter session:~ or session:^$
+
+This will restrict the tab bar to only showing tabs from the currently active
+session as well tabs that do not belong to any session. Furthermore, when you
+are in a window or tab that does not belong to any session, the tab bar will
+show the tabs from the most recent active session, to maintain context.
 
 Keyword reference
 ---------------------

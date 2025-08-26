@@ -32,7 +32,7 @@ typedef struct UIRenderData {
     Window *window; Screen *screen; OSWindow *os_window;
     GraphicsRenderData grd;
     WindowLogoRenderData *window_logo;
-    float inactive_text_alpha;
+    float bg_alpha, inactive_text_alpha;
     bool has_background_image;
     color_type background_color; // RGB only
 } UIRenderData;
@@ -434,15 +434,15 @@ has_bgimage(OSWindow *w) {
 }
 
 static color_type
-cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, CursorRenderInfo *cursor, OSWindow *os_window, float inactive_text_alpha) {
+cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, CursorRenderInfo *cursor, OSWindow *os_window, float inactive_text_alpha, float bg_alpha) {
     struct GPUCellRenderData {
         GLfloat use_cell_bg_for_selection_fg, use_cell_fg_for_selection_color, use_cell_for_selection_bg;
 
         GLuint default_fg, highlight_fg, highlight_bg, cursor_fg, cursor_bg, url_color, url_style, inverted;
 
-        GLuint columns, lines, sprites_xnum, sprites_ynum, cursor_fg_sprite_idx, cell_width, cell_height;
+        GLuint columns, lines, sprites_xnum, sprites_ynum, cursor_shape, cell_width, cell_height;
         GLuint cursor_x1, cursor_x2, cursor_y1, cursor_y2;
-        GLfloat cursor_opacity, inactive_text_alpha, dim_opacity;
+        GLfloat cursor_opacity, inactive_text_alpha, dim_opacity, blink_opacity;
 
         GLuint bg_colors0, bg_colors1, bg_colors2, bg_colors3, bg_colors4, bg_colors5, bg_colors6, bg_colors7;
         GLfloat bg_opacities0, bg_opacities1, bg_opacities2, bg_opacities3, bg_opacities4, bg_opacities5, bg_opacities6, bg_opacities7;
@@ -457,7 +457,7 @@ cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, C
     rd->default_fg = COLOR(default_fg);
     rd->highlight_fg = COLOR(highlight_fg); rd->highlight_bg = COLOR(highlight_bg);
     rd->bg_colors0 = COLOR(default_bg);
-    rd->bg_opacities0 = os_window->is_semi_transparent ? os_window->background_opacity : 1.0f;
+    rd->bg_opacities0 = bg_alpha;
 #define SETBG(which) { \
     colorprofile_to_transparent_color(cp, which - 1, &rd->bg_colors##which, &rd->bg_opacities##which); }
     SETBG(1); SETBG(2); SETBG(3); SETBG(4); SETBG(5); SETBG(6); SETBG(7);
@@ -474,23 +474,14 @@ cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, C
     }
     rd->use_cell_for_selection_bg = IS_SPECIAL_COLOR(highlight_bg) ? 1. : 0.;
     // Cursor position
-    enum { BLOCK_IDX = 0, BEAM_IDX = 2, UNDERLINE_IDX = 3, UNFOCUSED_IDX = 4 };
     Line *line_for_cursor = NULL;
-    if (cursor->opacity > 0) {
+    rd->cursor_opacity = MAX(0, MIN(cursor->cursor_opacity, 1));
+    rd->blink_opacity = MAX(0, MIN(cursor->text_blink_opacity, 1));
+    if (rd->cursor_opacity != 0 && cursor->is_visible) {
         rd->cursor_x1 = cursor->x, rd->cursor_y1 = cursor->y;
         rd->cursor_x2 = cursor->x, rd->cursor_y2 = cursor->y;
-        rd->cursor_opacity = cursor->opacity;
         CursorShape cs = (cursor->is_focused || OPT(cursor_shape_unfocused) == NO_CURSOR_SHAPE) ? cursor->shape : OPT(cursor_shape_unfocused);
-        switch(cs) {
-            case CURSOR_BEAM:
-                rd->cursor_fg_sprite_idx = BEAM_IDX; break;
-            case CURSOR_UNDERLINE:
-                rd->cursor_fg_sprite_idx = UNDERLINE_IDX; break;
-            case CURSOR_BLOCK: case NUM_OF_CURSOR_SHAPES: case NO_CURSOR_SHAPE:
-                rd->cursor_fg_sprite_idx = BLOCK_IDX; break;
-            case CURSOR_HOLLOW:
-                rd->cursor_fg_sprite_idx = UNFOCUSED_IDX; break;
-        };
+        rd->cursor_shape = cs;
         color_type cell_fg = rd->default_fg, cell_bg = rd->bg_colors0;
         index_type cell_color_x = cursor->x;
         bool reversed = false;
@@ -536,6 +527,7 @@ cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, C
         // store last rendered cursor color for trail rendering
         screen->last_rendered.cursor_bg = rd->cursor_bg;
     } else {
+        rd->cursor_shape = 0;
         rd->cursor_x1 = screen->columns + 1; rd->cursor_x2 = screen->columns;
         rd->cursor_y1 = screen->lines + 1; rd->cursor_y2 = screen->lines;
     }
@@ -568,8 +560,8 @@ cell_prepare_to_render(ssize_t vao_idx, Screen *screen, FONTS_DATA_HANDLE fonts_
     ensure_sprite_map(fonts_data);
     const Cursor *cursor = screen->paused_rendering.expires_at ? &screen->paused_rendering.cursor : screen->cursor;
 
-    bool cursor_pos_changed = cursor->x != screen->last_rendered.cursor_x
-                           || cursor->y != screen->last_rendered.cursor_y;
+    bool cursor_pos_changed = cursor->x != screen->last_rendered.cursor.x \
+                           || cursor->y != screen->last_rendered.cursor.y;
     bool disable_ligatures = screen->disable_ligatures == DISABLE_LIGATURES_CURSOR;
     bool screen_resized = screen->last_rendered.columns != screen->columns || screen->last_rendered.lines != screen->lines;
 
@@ -584,11 +576,6 @@ cell_prepare_to_render(ssize_t vao_idx, Screen *screen, FONTS_DATA_HANDLE fonts_
     if (screen->paused_rendering.expires_at) {
         if (!screen->paused_rendering.cell_data_updated) update_cell_data;
     } else if (screen->reload_all_gpu_data || screen->scroll_changed || screen->is_dirty || screen_resized || (disable_ligatures && cursor_pos_changed)) update_cell_data;
-
-    if (cursor_pos_changed) {
-        screen->last_rendered.cursor_x = cursor->x;
-        screen->last_rendered.cursor_y = cursor->y;
-    }
 
 #define update_selection_data { \
     sz = (size_t)screen->lines * screen->columns; \
@@ -616,6 +603,7 @@ cell_prepare_to_render(ssize_t vao_idx, Screen *screen, FONTS_DATA_HANDLE fonts_
 #undef update_cell_data
     screen->last_rendered.columns = screen->columns;
     screen->last_rendered.lines = screen->lines;
+    screen->last_rendered.cursor = screen->cursor_render_info;
 
     return changed;
 }
@@ -805,7 +793,7 @@ render_a_bar(const UIRenderData *ui, WindowBarData *bar, PyObject *title, bool a
     const unsigned sh = ui->full_framebuffer_height;
     // first blank the area to be drawn to background
     enable_scissor_using_top_left_origin(border_rect, sh);
-    blank_canvas(ui->os_window->is_semi_transparent ? ui->os_window->background_opacity : 1.f, bg, false);
+    blank_canvas(ui->bg_alpha, bg, false);
     disable_scissor();
     // then draw the rendered text
     save_viewport_using_top_left_origin(
@@ -1034,9 +1022,10 @@ draw_cells(const WindowRenderData *srd, OSWindow *os_window, bool is_active_wind
     // - There's only a single window and the os window is not focused
     // - There are multiple windows and the current window is not active
     float current_inactive_text_alpha = is_tab_bar || (!is_single_window && is_active_window) || (is_single_window && screen->cursor_render_info.is_focused) ? 1.0f : (float)OPT(inactive_text_alpha);
+    float bg_alpha = effective_os_window_alpha(os_window);
 
     color_type default_bg = cell_update_uniform_block(
-            srd->vao_idx, screen, uniform_buffer, &screen->cursor_render_info, os_window, current_inactive_text_alpha);
+            srd->vao_idx, screen, uniform_buffer, &screen->cursor_render_info, os_window, current_inactive_text_alpha, bg_alpha);
     set_cell_uniforms(screen->reload_all_gpu_data);
     WindowLogoRenderData *wl;
     if (window && (wl = &window->window_logo) && wl->id && (wl->instance = find_window_logo(global_state.all_window_logos, wl->id)) && wl->instance->load_from_disk_ok) {
@@ -1054,7 +1043,7 @@ draw_cells(const WindowRenderData *srd, OSWindow *os_window, bool is_active_wind
         .full_framebuffer_width = os_window->viewport_width, .full_framebuffer_height = os_window->viewport_height,
         .window = window, .screen = screen, .os_window = os_window, .grd = grman_render_data(grman), .window_logo = wl,
         .inactive_text_alpha = current_inactive_text_alpha, .has_background_image = has_bgimage(os_window),
-        .background_color = default_bg,
+        .background_color = default_bg, .bg_alpha=effective_os_window_alpha(os_window),
     };
     screen->reload_all_gpu_data = false;
     save_viewport_using_top_left_origin(
@@ -1094,7 +1083,7 @@ create_border_vao(void) {
 
 void
 draw_borders(ssize_t vao_idx, unsigned int num_border_rects, BorderRect *rect_buf, bool rect_data_is_dirty, color_type active_window_bg, unsigned int num_visible_windows, bool all_windows_have_same_bg, OSWindow *w) {
-    float background_opacity = w->is_semi_transparent ? w->background_opacity: 1.0f;
+    float background_opacity = effective_os_window_alpha(w);
     if (!num_border_rects) return;
     bind_program(BORDERS_PROGRAM); bind_vertex_array(vao_idx);
     const bool has_background_image = has_bgimage(w);
@@ -1153,7 +1142,7 @@ draw_bg_image(OSWindow *os_window) {
     BackgroundImageRenderSettings s = {
         .os_window.width = os_window->viewport_width, .os_window.height = os_window->viewport_height,
         .instance_id = os_window->bgimage->id, .layout=OPT(background_image_layout),
-        .linear=OPT(background_image_linear), .bgcolor=OPT(background), .opacity=os_window->background_opacity,
+        .linear=OPT(background_image_linear), .bgcolor=OPT(background), .opacity=effective_os_window_alpha(os_window),
     };
     bind_program(BGIMAGE_PROGRAM);
     GLfloat iwidth = os_window->bgimage->width, iheight = os_window->bgimage->height;
@@ -1242,7 +1231,7 @@ blank_os_window(OSWindow *osw) {
             }
         }
     }
-    blank_canvas(osw->is_semi_transparent ? osw->background_opacity : 1.0f, color, true);
+    blank_canvas(effective_os_window_alpha(osw), color, true);
 }
 
 static void

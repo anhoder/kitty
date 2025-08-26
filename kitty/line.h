@@ -17,8 +17,9 @@ typedef union CellAttrs {
         uint16_t reverse : 1;
         uint16_t strike : 1;
         uint16_t dim : 1;
+        uint16_t blink: 1;
         uint16_t mark : 2;
-        uint32_t : 22;
+        uint32_t : 21;
     };
     uint32_t val;
 } CellAttrs;
@@ -179,17 +180,18 @@ cell_first_char(const CPUCell *c, const TextCache *tc) {
 static inline CellAttrs
 cursor_to_attrs(const Cursor *c) {
     CellAttrs ans = {
-        .decoration=c->decoration, .bold=c->bold, .italic=c->italic, .reverse=c->reverse,
-        .strike=c->strikethrough, .dim=c->dim};
+        .decoration=c->sgr.decoration, .bold=c->sgr.bold, .italic=c->sgr.italic, .reverse=c->sgr.reverse,
+        .strike=c->sgr.strikethrough, .dim=c->sgr.dim, .blink=c->sgr.blink};
     return ans;
 }
 
 static inline void
 attrs_to_cursor(const CellAttrs attrs, Cursor *c) {
-    c->decoration = attrs.decoration; c->bold = attrs.bold;  c->italic = attrs.italic;
-    c->reverse = attrs.reverse; c->strikethrough = attrs.strike; c->dim = attrs.dim;
+    c->sgr.decoration = attrs.decoration; c->sgr.bold = attrs.bold;  c->sgr.italic = attrs.italic;
+    c->sgr.reverse = attrs.reverse; c->sgr.strikethrough = attrs.strike; c->sgr.dim = attrs.dim;
+    c->sgr.blink = attrs.blink;
 }
 
-#define cursor_as_gpu_cell(cursor) {.attrs=cursor_to_attrs(cursor), .fg=(cursor->fg & COL_MASK), .bg=(cursor->bg & COL_MASK), .decoration_fg=cursor->decoration_fg & COL_MASK}
+#define cursor_as_gpu_cell(cursor) {.attrs=cursor_to_attrs(cursor), .fg=(cursor->sgr.fg & COL_MASK), .bg=(cursor->sgr.bg & COL_MASK), .decoration_fg=cursor->sgr.decoration_fg & COL_MASK}
 
 

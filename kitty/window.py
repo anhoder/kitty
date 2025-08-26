@@ -820,55 +820,6 @@ class Window:
     def __repr__(self) -> str:
         return f'Window(title={self.title}, id={self.id})'
 
-    def as_dict(self, is_focused: bool = False, is_self: bool = False, is_active: bool = False) -> WindowDict:
-        return {
-            'id': self.id,
-            'is_focused': is_focused,
-            'is_active': is_active,
-            'title': self.title,
-            'pid': self.child.pid,
-            'cwd': self.child.current_cwd or self.child.cwd,
-            'cmdline': self.child.cmdline,
-            'last_reported_cmdline': self.last_cmd_cmdline,
-            'last_cmd_exit_status': self.last_cmd_exit_status,
-            'env': self.child.environ or self.child.final_env,
-            'foreground_processes': self.child.foreground_processes,
-            'is_self': is_self,
-            'at_prompt': self.at_prompt,
-            'lines': self.screen.lines,
-            'columns': self.screen.columns,
-            'user_vars': self.user_vars,
-            'created_at': self.created_at,
-            'in_alternate_screen': self.screen.is_using_alternate_linebuf(),
-        }
-
-    def serialize_state(self) -> dict[str, Any]:
-        ans = {
-            'version': 1,
-            'id': self.id,
-            'child_title': self.child_title,
-            'override_title': self.override_title,
-            'default_title': self.default_title,
-            'title_stack': list(self.title_stack),
-            'allow_remote_control': self.allow_remote_control,
-            'remote_control_passwords': self.remote_control_passwords,
-            'cwd': self.child.current_cwd or self.child.cwd,
-            'env': self.child.environ,
-            'cmdline': self.child.cmdline,
-            'last_reported_cmdline': self.last_cmd_cmdline,
-            'last_cmd_exit_status': self.last_cmd_exit_status,
-            'margin': self.margin.serialize(),
-            'user_vars': self.user_vars,
-            'padding': self.padding.serialize(),
-        }
-        if self.window_custom_type:
-            ans['window_custom_type'] = self.window_custom_type
-        if self.overlay_type is not OverlayType.transient:
-            ans['overlay_type'] = self.overlay_type.value
-        if self.user_vars:
-            ans['user_vars'] = self.user_vars
-        return ans
-
     @property
     def overlay_parent(self) -> Optional['Window']:
         tab = self.tabref()
@@ -888,7 +839,7 @@ class Window:
     def has_running_program(self) -> bool:
         return not self.at_prompt
 
-    def matches(self, field: str, pat: MatchPatternType, active_session: str) -> bool:
+    def matches(self, field: str, pat: MatchPatternType, active_session: str, most_recent_session: str) -> bool:
         if isinstance(pat, tuple):
             if field == 'env':
                 return key_val_matcher(self.child.environ.items(), *pat)
@@ -910,14 +861,19 @@ class Window:
                     return True
             return False
         if field == 'session':
-            if pat.pattern == '.':
-                return self.created_in_session_name == active_session
+            match pat.pattern:
+                case '.':
+                    return self.created_in_session_name == active_session
+                case '~':
+                    return self.created_in_session_name == active_session or self.created_in_session_name == most_recent_session
+
             return pat.search(self.created_in_session_name) is not None
         return False
 
     def matches_query(
         self, field: str, query: str, active_tab: TabType | None = None,
-        self_window: Optional['Window'] = None, active_session: str = ''
+        self_window: Optional['Window'] = None, active_session: str = '',
+        most_recent_session: str = '',
     ) -> bool:
         if field in ('num', 'recent'):
             if active_tab is not None:
@@ -967,7 +923,7 @@ class Window:
             return gid is not None and t.windows.active_window_in_group_id(gid) is self
 
         pat = compile_match_query(query, field not in ('env', 'var'))
-        return self.matches(field, pat, active_session)
+        return self.matches(field, pat, active_session, most_recent_session)
 
     def set_visible_in_layout(self, val: bool) -> None:
         val = bool(val)
@@ -1516,8 +1472,7 @@ class Window:
         self.kitten_result_processors.append(callback)
 
     def handle_overlay_ready(self, msg: memoryview) -> None:
-        boss = get_boss()
-        tab = boss.tab_for_window(self)
+        tab = self.tabref()
         if tab is not None:
             tab.move_window_to_top_of_group(self)
         if self.keys_redirected_till_ready_from:
@@ -1827,19 +1782,22 @@ class Window:
     def child_is_remote(self) -> bool:
         for p in self.child.foreground_processes:
             q = list(p['cmdline'] or ())
-            if q and q[0].lower() == 'ssh':
+            if q and os.path.basename(q[0]).lower() == 'ssh':
                 return True
         return False
 
-    def ssh_kitten_cmdline(self) -> list[str]:
+    def ssh_kitten_cmdline_with_pid(self) -> tuple[int, list[str]]:
         from kittens.ssh.utils import is_kitten_cmdline
         for p in self.child.foreground_processes:
             q = list(p['cmdline'] or ())
             if len(q) > 3 and os.path.basename(q[0]) == 'kitten' and q[1] == 'run-shell':
                 q = q[2:]  # --hold-after-ssh causes kitten run-shell wrapper to be added
             if is_kitten_cmdline(q):
-                return q
-        return []
+                return p['pid'], q
+        return -1, []
+
+    def ssh_kitten_cmdline(self) -> list[str]:
+        return self.ssh_kitten_cmdline_with_pid()[1]
 
     def pipe_data(self, text: str, has_wrap_markers: bool = False) -> PipeData:
         text = text or ''
@@ -1954,6 +1912,56 @@ class Window:
         ' Return the last position at which a mouse event was received by this window '
         return get_mouse_data_for_window(self.os_window_id, self.tab_id, self.id)
 
+    # Serialization {{{
+    def as_dict(self, is_focused: bool = False, is_self: bool = False, is_active: bool = False) -> WindowDict:
+        return {
+            'id': self.id,
+            'is_focused': is_focused,
+            'is_active': is_active,
+            'title': self.title,
+            'pid': self.child.pid,
+            'cwd': self.child.current_cwd or self.child.cwd,
+            'cmdline': self.child.cmdline,
+            'last_reported_cmdline': self.last_cmd_cmdline,
+            'last_cmd_exit_status': self.last_cmd_exit_status,
+            'env': self.child.environ or self.child.final_env,
+            'foreground_processes': self.child.foreground_processes,
+            'is_self': is_self,
+            'at_prompt': self.at_prompt,
+            'lines': self.screen.lines,
+            'columns': self.screen.columns,
+            'user_vars': self.user_vars,
+            'created_at': self.created_at,
+            'in_alternate_screen': self.screen.is_using_alternate_linebuf(),
+        }
+
+    def serialize_state(self) -> dict[str, Any]:
+        ans = {
+            'version': 1,
+            'id': self.id,
+            'child_title': self.child_title,
+            'override_title': self.override_title,
+            'default_title': self.default_title,
+            'title_stack': list(self.title_stack),
+            'allow_remote_control': self.allow_remote_control,
+            'remote_control_passwords': self.remote_control_passwords,
+            'cwd': self.child.current_cwd or self.child.cwd,
+            'env': self.child.environ,
+            'cmdline': self.child.cmdline,
+            'last_reported_cmdline': self.last_cmd_cmdline,
+            'last_cmd_exit_status': self.last_cmd_exit_status,
+            'margin': self.margin.serialize(),
+            'user_vars': self.user_vars,
+            'padding': self.padding.serialize(),
+        }
+        if self.window_custom_type:
+            ans['window_custom_type'] = self.window_custom_type
+        if self.overlay_type is not OverlayType.transient:
+            ans['overlay_type'] = self.overlay_type.value
+        if self.user_vars:
+            ans['user_vars'] = self.user_vars
+        return ans
+
     @property
     def cwd_for_serialization(self) -> str:
         cwd = self.get_cwd_of_child(oldest=False) or self.get_cwd_of_child(oldest=True) or self.child.cwd
@@ -2012,28 +2020,47 @@ class Window:
             t = 'overlay-main' if self.overlay_type is OverlayType.main else 'overlay'
             ans.append(f'--type={t}')
 
+        from kittens.ssh.utils import is_kitten_cmdline as is_ssh_kitten_cmdline
+        from kittens.ssh.utils import remove_env_var_from_cmdline, set_cwd_in_cmdline, set_single_env_var_in_cmdline
         cmd: list[str] = []
         if self.creation_spec and self.creation_spec.cmd:
             if self.creation_spec.cmd != resolved_shell(get_options()):
                 cmd = self.creation_spec.cmd
+                if is_ssh_kitten_cmdline(cmd):
+                    if self.at_prompt:
+                        if self.screen.last_reported_cwd:
+                            set_cwd_in_cmdline(path_from_osc7_url(self.screen.last_reported_cwd), cmd)
         unserialize_data: dict[str, int | list[str] | str] = {'id': self.id}
-        if not cmd and ser_opts.use_foreground_process and not self.at_prompt:
-            if self.last_cmd_cmdline:
-                unserialize_data['cmd_at_shell_startup'] = self.last_cmd_cmdline
-            elif self.child.pid != (pid := self.child.pid_for_cwd) and pid is not None:
-                # we have a shell running some command
-                with suppress(Exception):
-                    fcmd = self.child.cmdline_of_pid(pid)
-                    if fcmd:
-                        unserialize_data['cmd_at_shell_startup'] = fcmd
-                        if not os.path.isabs(fcmd[0]):
-                            with suppress(Exception):
-                                from .child import abspath_of_exe
-                                fcmd[0] = abspath_of_exe(pid)
+        if not cmd and ser_opts.use_foreground_process:
+            def make_exe_absolute(cmd: list[str], pid: int) -> None:
+                if cmd and not os.path.isabs(cmd[0]):
+                    with suppress(Exception):
+                        from .child import abspath_of_exe
+                        cmd[0] = abspath_of_exe(pid)
+            kssh_cmdline = self.ssh_kitten_cmdline()
+            if kssh_cmdline:
+                remove_env_var_from_cmdline('KITTY_SI_RUN_COMMAND_AT_STARTUP', kssh_cmdline)
+                if self.at_prompt:
+                    if self.screen.last_reported_cwd:
+                        set_cwd_in_cmdline(path_from_osc7_url(self.screen.last_reported_cwd), kssh_cmdline)
+                else:
+                    if self.last_cmd_cmdline:
+                        set_single_env_var_in_cmdline('KITTY_SI_RUN_COMMAND_AT_STARTUP', self.last_cmd_cmdline, kssh_cmdline)
+                unserialize_data['cmd_at_shell_startup'] = kssh_cmdline
+            elif not self.at_prompt:
+                if self.last_cmd_cmdline:
+                    unserialize_data['cmd_at_shell_startup'] = self.last_cmd_cmdline
+                elif self.child.pid != (pid := self.child.pid_for_cwd) and pid is not None:
+                    # we have a shell running some command
+                    with suppress(Exception):
+                        fcmd = self.child.cmdline_of_pid(pid)
+                        if fcmd:
+                            make_exe_absolute(fcmd, pid)
+                            unserialize_data['cmd_at_shell_startup'] = fcmd
         ans.insert(1, unserialize_launch_flag + json.dumps(unserialize_data))
         ans.extend(cmd)
         return ans
-
+    # }}}
 
     # actions {{{
 

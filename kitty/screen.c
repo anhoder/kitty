@@ -31,6 +31,7 @@
 #include "char-props.h"
 #include "wcswidth.h"
 #include <stdalign.h>
+#include <stdio.h>
 #include "keys.h"
 #include "vt-parser.h"
 #include "resize.h"
@@ -173,6 +174,7 @@ static Line* range_line_(Screen *self, int y);
 void
 screen_reset(Screen *self) {
     screen_pause_rendering(self, false, 0);
+    self->extra_cursors.count = 0;
     self->main_pointer_shape_stack.count = 0; self->alternate_pointer_shape_stack.count = 0;
     if (self->linebuf == self->alt_linebuf) screen_toggle_screen_buffer(self, true, true);
     if (screen_is_overlay_active(self)) {
@@ -189,6 +191,10 @@ screen_reset(Screen *self) {
     self->last_graphic_char = 0;
     self->main_savepoint.is_valid = false;
     self->alt_savepoint.is_valid = false;
+    if (self->extra_cursors.count) {
+        self->extra_cursors.count = 0;
+        self->extra_cursors.dirty = true;
+    }
     linebuf_clear(self->linebuf, BLANK_CHAR);
     historybuf_clear(self->historybuf);
     clear_hyperlink_pool(self->hyperlink_pool);
@@ -673,6 +679,7 @@ dealloc(Screen* self) {
     free_hyperlink_pool(self->hyperlink_pool);
     free(self->as_ansi_buf.buf);
     free(self->last_rendered_window_char.canvas);
+    free(self->extra_cursors.locations); free(self->paused_rendering.extra_cursors.locations);
     if (self->lc) { cleanup_list_of_chars(self->lc); free(self->lc); self->lc = NULL; }
     Py_TYPE(self)->tp_free((PyObject*)self);
 } // }}}
@@ -1201,8 +1208,8 @@ draw_text_loop(Screen *self, const uint32_t *chars, size_t num_chars, text_loop_
         .cc=(CPUCell){.hyperlink_id=self->active_hyperlink_id}, \
         .g=(GPUCell){ \
             .attrs=attrs, \
-            .fg=self->cursor->fg & COL_MASK, .bg=self->cursor->bg & COL_MASK, \
-            .decoration_fg=force_underline ? ((OPT(url_color) & COL_MASK) << 8) | 2 : self->cursor->decoration_fg & COL_MASK, \
+            .fg=self->cursor->sgr.fg & COL_MASK, .bg=self->cursor->sgr.bg & COL_MASK, \
+            .decoration_fg=force_underline ? ((OPT(url_color) & COL_MASK) << 8) | 2 : self->cursor->sgr.decoration_fg & COL_MASK, \
         } \
     };
 
@@ -1390,7 +1397,10 @@ select_graphic_rendition(Screen *self, int *params, unsigned int count, bool is_
                 }
             }
         }
-    } else cursor_from_sgr(self->cursor, params, count, is_group);
+    } else {
+        cursor_from_sgr(self->cursor, params, count, is_group);
+        self->sgr_blink_was_used |= self->cursor->sgr.blink;
+    }
 }
 
 static void
@@ -1546,6 +1556,10 @@ screen_toggle_screen_buffer(Screen *self, bool save_cursor, bool clear_alt_scree
     self->is_dirty = true;
     grman_mark_layers_dirty(self->grman);
     clear_all_selections(self);
+    if (self->extra_cursors.count) {
+        self->extra_cursors.count = 0;
+        self->extra_cursors.dirty = true;
+    }
     global_state.check_for_active_animated_images = true;
 }
 
@@ -2475,6 +2489,10 @@ screen_erase_in_display(Screen *self, unsigned int how, bool private) {
             /* fallthrough */
         case 2:
         case 3:
+            if (self->extra_cursors.count) {
+                self->extra_cursors.count = 0;
+                self->extra_cursors.dirty = true;
+            }
             grman_clear(self->grman, how == 3, self->cell_size);
             a = 0; b = self->lines; nuke_multicell_chars = false;
             break;
@@ -2838,6 +2856,121 @@ screen_set_cursor(Screen *self, unsigned int mode, uint8_t secondary) {
     }
 }
 
+#define NAME multi_cursor_map
+#define KEY_TY index_type
+#define VAL_TY uint8_t
+#include "kitty-verstable.h"
+
+unsigned
+screen_multi_cursor_count(const Screen *self) {
+    return self->paused_rendering.expires_at ? self->paused_rendering.extra_cursors.count : self->extra_cursors.count;
+}
+
+void
+screen_multi_cursor(Screen *self, int queried_shape, int *params, unsigned num_params) {
+    // printf("%d;", queried_shape); for (unsigned i = 0; i < num_params; i++) {printf("%d:", params[i]);} printf("\n");
+    if (!num_params) {
+        if (params == NULL) {
+            write_escape_code_to_child(self, ESC_CSI, ">-2;-1;1;2;3 q");
+        } else if (queried_shape == -2) {
+            size_t sz = self->extra_cursors.count * 32 + 64;
+            RAII_ALLOC(char, buf, malloc(sz)); sz -= 4;
+            if (buf) {
+                char *p = buf + snprintf(buf, sz, ">-2;");
+                for (unsigned i = 0; i < self->extra_cursors.count; i++) {
+                    index_type cell = self->extra_cursors.locations[i].cell, shape = self->extra_cursors.locations[i].shape;
+                    index_type y = cell / self->columns, x = cell - (y * self->columns);
+                    int n = snprintf(p, sz - (p - buf), "%d:2:%u:%u;", shape > 3 ? -1 : (int)shape, y+1, x+1);
+                    if (n < 0 || (unsigned)n > (sz - (p - buf))) break;
+                    p += n;
+                }
+                if (*(p-1) == ';') p--;
+                *(p++) = ' '; *(p++) = 'q'; *(p++) = 0;
+                write_escape_code_to_child(self, ESC_CSI, buf);
+            }
+        }
+        return;
+    }
+    uint8_t shape = 0;
+    if (queried_shape < 0) {
+        shape = 4;
+    } else {
+        shape = MIN(queried_shape, 3);
+    }
+    self->extra_cursors.dirty = true;
+    int type = params[0]; params++; num_params--;
+    int extra[2];
+    switch (type) {
+    case 0:
+        extra[0] = MIN(self->cursor->y, self->lines-1) + 1;
+        extra[1] = MIN(self->cursor->x, self->columns-1) + 1;
+        params = extra; num_params = 2;
+        /* fallthrough */
+    case 2: {
+        multi_cursor_map s; vt_init(&s);
+        for (unsigned i = 0; i < self->extra_cursors.count; i++) {
+            vt_insert(&s, self->extra_cursors.locations[i].cell, self->extra_cursors.locations[i].shape);
+        }
+        for (unsigned i = 0; i+1 < num_params; i+=2) {
+            index_type y = params[i]-1, x = params[i+1]-1;
+            if (!shape) { vt_erase(&s, y * self->columns + x); }
+            else if (y < self->lines && x < self->columns) vt_insert(&s, y * self->columns + x, shape);
+        }
+        self->extra_cursors.count = vt_size(&s);
+        ensure_space_for(&self->extra_cursors, locations, ExtraCursor, self->extra_cursors.count, capacity, 20 * 80, false);
+        self->extra_cursors.count = 0;
+        vt_create_for_loop(multi_cursor_map_itr, i, &s) {
+            self->extra_cursors.locations[self->extra_cursors.count++] = (ExtraCursor){
+                .shape = i.data->val, .cell = i.data->key};
+        }
+        vt_cleanup(&s);
+    } break;
+    case 4: {
+        if (num_params < 4) {  // full screen
+            switch(shape) {
+                default: self->extra_cursors.count = 0; break;
+                case 1: case 2: case 3: case 4:
+                    ensure_space_for(&self->extra_cursors, locations, ExtraCursor, self->lines * self->columns, capacity, 20 * 80, false);
+                    self->extra_cursors.count = self->lines * self->columns;
+                    for (index_type cell = 0; cell < self->lines * self->columns; cell++) {
+                        self->extra_cursors.locations[cell].shape = shape;
+                        self->extra_cursors.locations[cell].cell = cell;
+                    }
+                    break;
+            }
+            break;
+        }
+        unsigned count = 0;
+        for (unsigned i = 0; i < self->extra_cursors.count; i++) {
+            bool in_some_region = false;
+            index_type y = self->extra_cursors.locations[i].cell / self->columns, x = self->extra_cursors.locations[i].cell - (self->columns * y);
+            for (unsigned i = 0; i + 3 < num_params && !in_some_region; i += 4) {
+                index_type top = params[i]-1, left = params[i+1]-1, bottom = params[i+2]-1, right = params[i+3]-1;
+                in_some_region = top <= y && y <= bottom && left <= x && x <= right;
+            }
+            if (!in_some_region) self->extra_cursors.locations[count++] = self->extra_cursors.locations[i];
+        }
+        self->extra_cursors.count = count;
+        if (shape) {
+            for (unsigned i = 0; i + 3 < num_params; i += 4) {
+                index_type top = params[i]-1, left = params[i+1]-1, bottom = params[i+2]-1, right = params[i+3]-1;
+                bottom = MIN(bottom, self->lines-1); right = MIN(right, self->columns -1);
+                if (right < left || bottom < top) continue;
+                size_t xnum = right + 1 - left, ynum = bottom + 1 - top;
+                ensure_space_for(&self->extra_cursors, locations, ExtraCursor,
+                        self->extra_cursors.count + xnum * ynum, capacity, 20 * 80, false);
+                for (index_type y = top; y <= bottom; y++) {
+                    for (index_type x = left; x <= right; x++) {
+                        self->extra_cursors.locations[self->extra_cursors.count++] = (ExtraCursor){
+                            .shape=shape, .cell=y*self->columns + x};
+                    }
+                }
+            }
+        }
+    } break;
+    }
+}
+
 void
 set_title(Screen *self, PyObject *title) {
     CALLBACK("title_changed", "O", title);
@@ -3079,8 +3212,11 @@ screen_pause_rendering(Screen *self, bool pause, int for_in_ms) {
         self->is_dirty = true;
         // ensure selection data is updated on GPU
         self->selections.last_rendered_count = SIZE_MAX; self->url_ranges.last_rendered_count = SIZE_MAX;
+        self->extra_cursors.dirty = true;
         // free grman data
         grman_pause_rendering(NULL, self->paused_rendering.grman);
+        // free extra cursors
+        free(self->paused_rendering.extra_cursors.locations); zero_at_ptr(&self->paused_rendering.extra_cursors);
         return true;
     }
     if (self->paused_rendering.expires_at) return false;
@@ -3107,6 +3243,14 @@ screen_pause_rendering(Screen *self, bool pause, int for_in_ms) {
     }
     copy_selections(&self->paused_rendering.selections, &self->selections);
     copy_selections(&self->paused_rendering.url_ranges, &self->url_ranges);
+    if (self->extra_cursors.count) {
+        self->paused_rendering.extra_cursors.locations = calloc(self->extra_cursors.count, sizeof(self->extra_cursors.locations[0]));
+        if (self->paused_rendering.extra_cursors.locations) {
+            self->paused_rendering.extra_cursors.count = self->extra_cursors.count;
+            self->paused_rendering.extra_cursors.dirty = self->extra_cursors.dirty;
+            memcpy(self->paused_rendering.extra_cursors.locations, self->extra_cursors.locations, sizeof(self->extra_cursors.locations[0]) * self->extra_cursors.count);
+        }
+    }
     grman_pause_rendering(self->grman, self->paused_rendering.grman);
     return true;
 }
@@ -3345,7 +3489,7 @@ screen_update_cell_data(Screen *self, void *address, FONTS_DATA_HANDLE fonts_dat
         lnum = y - self->scrolled_by;
         linebuf_init_line(self->linebuf, lnum);
         if (self->linebuf->line->attrs.has_dirty_text ||
-            (cursor_has_moved && (self->cursor->y == lnum || self->last_rendered.cursor_y == lnum))) {
+            (cursor_has_moved && (self->cursor->y == lnum || self->last_rendered.cursor.y == lnum))) {
             render_line(fonts_data, self->linebuf->line, lnum, self->cursor, self->disable_ligatures, self->lc);
             screen_render_line_graphics(self, self->linebuf->line, y - self->scrolled_by);
             if (self->linebuf->line->attrs.has_dirty_text && screen_has_marker(self)) mark_text_in_line(
@@ -3558,7 +3702,13 @@ screen_apply_selection(Screen *self, void *address, size_t size) {
         if (OPT(underline_hyperlinks) == UNDERLINE_NEVER && s->is_hyperlink) continue;
         apply_selection(self, address, s, 2);
     }
+    uint8_t *a = address;
     sel->last_rendered_count = sel->count;
+    ExtraCursors *ec = self->paused_rendering.expires_at ? &self->paused_rendering.extra_cursors : &self->extra_cursors;
+    for (unsigned i = 0; i < ec->count; i++) {
+        if (ec->locations[i].cell < size) a[ec->locations[i].cell] |= (ec->locations[i].shape & 7) << 2;
+    }
+    ec->dirty = false;
 }
 
 static index_type
@@ -3962,7 +4112,7 @@ screen_draw_overlay_line(Screen *self) {
     self->modes.mIRM = false;
     Cursor *orig_cursor = self->cursor;
     self->cursor = &(self->overlay_line.original_line.cursor);
-    self->cursor->reverse ^= true;
+    self->cursor->sgr.reverse ^= true;
     self->cursor->x = xstart;
     self->cursor->y = self->overlay_line.ynum;
     self->overlay_line.xnum = 0;
@@ -4010,7 +4160,7 @@ screen_draw_overlay_line(Screen *self) {
         self->overlay_line.xnum += len;
     }
     self->overlay_line.cursor_x = self->cursor->x;
-    self->cursor->reverse ^= true;
+    self->cursor->sgr.reverse ^= true;
     self->cursor = orig_cursor;
     self->modes.mDECAWM = orig_line_wrap_mode;
     self->modes.mDECTCEM = orig_cursor_enable_mode;
@@ -4804,7 +4954,7 @@ screen_is_selection_dirty(Screen *self) {
     IterationData q;
     if (self->paused_rendering.expires_at) return false;
     if (self->scrolled_by != self->last_rendered.scrolled_by) return true;
-    if (self->selections.last_rendered_count != self->selections.count || self->url_ranges.last_rendered_count != self->url_ranges.count) return true;
+    if (self->selections.last_rendered_count != self->selections.count || self->url_ranges.last_rendered_count != self->url_ranges.count || self->extra_cursors.dirty) return true;
     for (size_t i = 0; i < self->selections.count; i++) {
         iteration_data(self->selections.items + i, &q, self->columns, 0, self->scrolled_by);
         if (memcmp(&q, &self->selections.items[i].last_rendered, sizeof(IterationData)) != 0) return true;

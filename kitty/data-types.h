@@ -211,20 +211,23 @@ typedef struct {
 
 typedef struct {
     PyObject_HEAD
-
-    bool bold, italic, reverse, strikethrough, dim, non_blinking;
     monotonic_t position_changed_by_client_at;
     unsigned int x, y;
-    uint8_t decoration;
+    bool non_blinking;
     CursorShape shape;
-    color_type fg, bg, decoration_fg;
+
+    struct {
+        bool bold, italic, reverse, strikethrough, dim, blink;
+        uint8_t decoration;
+        color_type fg, bg, decoration_fg;
+    } sgr;
 } Cursor;
 
 typedef struct {
-    bool is_focused, render_even_when_unfocused;
+    bool is_focused, render_even_when_unfocused, is_visible;
     CursorShape shape;
-    unsigned int x, y;
-    float opacity;
+    unsigned x, y, multicursor_count;
+    float cursor_opacity, text_blink_opacity;
 } CursorRenderInfo;
 
 typedef enum DynamicColorType {

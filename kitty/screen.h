@@ -11,7 +11,6 @@
 #include "monotonic.h"
 #include "line-buf.h"
 #include "history.h"
-#include "window_logo.h"
 
 typedef enum ScrollTypes { SCROLL_LINE = -999999, SCROLL_PAGE, SCROLL_FULL } ScrollType;
 
@@ -88,6 +87,18 @@ typedef struct {
     } last_ime_pos;
 } OverlayLine;
 
+typedef struct ExtraCursor {
+    CursorShape shape;
+    index_type cell;
+} ExtraCursor;
+
+typedef struct ExtraCursors {
+    ExtraCursor *locations;
+    unsigned count, capacity;
+    bool dirty;
+} ExtraCursors;
+
+
 typedef struct {
     PyObject_HEAD
 
@@ -98,11 +109,12 @@ typedef struct {
     id_type window_id;
     Selections selections, url_ranges;
     struct {
-        unsigned int cursor_x, cursor_y, scrolled_by;
+        unsigned int scrolled_by;
         index_type lines, columns;
         color_type cursor_bg;
+        CursorRenderInfo cursor;
     } last_rendered;
-    bool is_dirty, scroll_changed, reload_all_gpu_data;
+    bool is_dirty, scroll_changed, reload_all_gpu_data, sgr_blink_was_used;
     Cursor *cursor;
     Savepoint main_savepoint, alt_savepoint;
     PyObject *callbacks, *test_child;
@@ -171,10 +183,12 @@ typedef struct {
         LineBuf *linebuf;
         GraphicsManager *grman;
         Selections selections, url_ranges;
+        ExtraCursors extra_cursors;
     } paused_rendering;
     CharsetState charset;
     ListOfChars *lc;
     monotonic_t parsing_at;
+    ExtraCursors extra_cursors;
 } Screen;
 
 
@@ -252,6 +266,7 @@ bool screen_has_selection(Screen*);
 bool screen_invert_colors(Screen *self);
 void screen_update_cell_data(Screen *self, void *address, FONTS_DATA_HANDLE, bool cursor_has_moved);
 bool screen_is_cursor_visible(const Screen *self);
+unsigned screen_multi_cursor_count(const Screen *self);
 bool screen_selection_range_for_line(Screen *self, index_type y, index_type *start, index_type *end);
 bool screen_selection_range_for_word(Screen *self, const index_type x, const index_type y, index_type *, index_type *, index_type *start, index_type *end, bool);
 void screen_start_selection(Screen *self, index_type x, index_type y, bool, bool, SelectionExtendMode);
@@ -292,6 +307,7 @@ bool parse_sgr(Screen *screen, const uint8_t *buf, unsigned int num, const char 
 bool screen_pause_rendering(Screen *self, bool pause, int for_in_ms);
 void screen_check_pause_rendering(Screen *self, monotonic_t now);
 void screen_designate_charset(Screen *self, uint32_t which, uint32_t as);
+void screen_multi_cursor(Screen *self, int queried_shape, int *params, unsigned num_params);
 #define DECLARE_CH_SCREEN_HANDLER(name) void screen_##name(Screen *screen);
 DECLARE_CH_SCREEN_HANDLER(bell)
 DECLARE_CH_SCREEN_HANDLER(backspace)

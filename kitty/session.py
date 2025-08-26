@@ -199,7 +199,6 @@ def session_arg_to_name(session_arg: str) -> str:
     return session_name
 
 
-
 def parse_session(
     raw: str, opts: Options, environ: Mapping[str, str] | None = None, session_arg: str = '', session_path: str = ''
 ) -> Generator[Session, None, None]:
@@ -208,6 +207,7 @@ def parse_session(
         session_base_dir = os.path.dirname(os.path.abspath(session_path))
         if session_name:
             seen_session_paths[session_name] = session_path
+            append_to_session_history(session_name)
     else:
         session_base_dir = os.getcwd()
 
@@ -379,7 +379,7 @@ def create_session(boss: BossType, path: str) -> str:
                 os_window_id = boss.add_os_window(s)
             else:
                 os_window_id = tm.os_window_id
-                tm.add_tabs_from_session(s)
+                tm.add_tabs_from_session(s, session_name)
         else:
             os_window_id = boss.add_os_window(s)
         if s.focus_os_window:
@@ -394,6 +394,10 @@ def append_to_session_history(name: str) -> None:
     with suppress(ValueError):
         goto_session_history.remove(name)
     goto_session_history.append(name)
+
+
+def most_recent_session() -> str:
+    return goto_session_history[-1] if goto_session_history else ''
 
 
 def switch_to_session(boss: BossType, session_name: str) -> bool:
@@ -433,6 +437,58 @@ def get_all_known_sessions() -> dict[str, str]:
     return all_known_sessions
 
 
+def close_session_with_confirm(boss: BossType, cmdline: Sequence[str]) -> None:
+    if not cmdline:
+        names = sorted(boss.all_loaded_session_names, key=lambda x: x.lower())
+        if not names:
+            boss.ring_bell_if_allowed()
+            return
+        if len(names) == 1:
+            return close_session_with_confirm(boss, names)
+        def chosen(name: str | None) -> None:
+            if name:
+                close_session_with_confirm(boss, (name,))
+        boss.choose_entry(
+            _('Select a session to close'), ((name, name) for name in names), chosen)
+        return
+    if len(cmdline) != 1:
+        boss.show_error(_('Invalid close_session specification'), _('{} is not a valid argument to close_session').format(shlex.join(cmdline)))
+        return
+    path_or_name = cmdline[0]
+    if path_or_name == '.':
+        if name := boss.active_session:
+            close_session_with_confirm(boss, (name,))
+        else:
+            boss.ring_bell_if_allowed()
+        return
+    if '/' in path_or_name:
+        path_to_name = {v: k for k, v in get_all_known_sessions().items()}
+        name = path_to_name.get(path_or_name, '')
+        if not name:
+            boss.ring_bell_if_allowed()
+            return
+    else:
+        name = path_or_name
+    windows = tuple(w for w in boss.all_windows if w.created_in_session_name == name)
+    if not windows:
+        return
+    msg, num_active_windows = boss.close_windows_with_confirmation_msg(windows, boss.active_window)
+    x = get_options().confirm_os_window_close[0]
+    num = num_active_windows if x < 0 else len(windows)
+    needs_confirmation = x != 0 and num >= abs(x)
+
+    def do_close(confirmed: bool) -> None:
+        if confirmed:
+            boss.close_windows_no_confirm(windows)
+
+    if needs_confirmation:
+        msg = msg or _('It has {} windows?').format(num)
+        msg = _('Are you sure you want to close this session?') + ' ' + msg
+        boss.confirm(msg, do_close, window=boss.active_window, title=_('Close session?'))
+    else:
+        do_close(True)
+
+
 def choose_session(boss: BossType) -> None:
     all_known_sessions = get_all_known_sessions()
     hmap = {n: len(goto_session_history)-i for i, n in enumerate(goto_session_history)}
@@ -458,8 +514,16 @@ def goto_session(boss: BossType, cmdline: Sequence[str]) -> None:
         except Exception:
             idx = 0
         if idx < 0:
-            nidx = max(0, len(goto_session_history) - 1 - idx)
-            switch_to_session(boss, goto_session_history[nidx])
+            if boss.active_session:
+                nidx = max(0, len(goto_session_history) - 1 + idx)
+                if nidx < len(goto_session_history):
+                    switch_to_session(boss, goto_session_history[nidx])
+                    return
+            else:
+                if goto_session_history:
+                    switch_to_session(boss, goto_session_history[-1])
+                    return
+            boss.ring_bell_if_allowed()
             return
     else:
         for x in cmdline:
@@ -479,7 +543,8 @@ def goto_session(boss: BossType, cmdline: Sequence[str]) -> None:
         tb = traceback.format_exc()
         boss.show_error(_('Failed to create session'), _('Could not create session from {0} with error:\n{1}').format(path, tb))
     else:
-        append_to_session_history(session_name)
+        # Ensure newly created session is focused needed when it doesn't create its own OS Windows.
+        switch_to_session(boss, session_name)
 
 
 save_as_session_message = '''\
