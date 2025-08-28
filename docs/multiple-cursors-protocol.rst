@@ -25,7 +25,7 @@ An example, showing how to use the protocol:
 .. code-block:: sh
 
     # Show cursors of the same shape as the main cursor at y=4, x=5
-    printf "\e[>-1;2:4:5 q"
+    printf "\e[>29;2:4:5 q"
     # Show more cursors on the seventh line, of various shapes, the underline shape is shown twice
     printf "\e[>1;2:7:1 q\e[>2;2:7:3 q\e[>3;2:7:5;2:7:7 q"
 
@@ -38,12 +38,14 @@ they are present for readability only)::
 Here ``CSI`` is the two bytes ESC (``0x1b``) and [ (``0x5b``). ``SHAPE`` can be
 one of:
 
-* ``-2``: Used for querying currently set cursors
-* ``-1``: Follow the shape of the main cursor
 * ``0``: No cursor
 * ``1``: Block cursor
 * ``2``: Beam cursor
 * ``3``: Underline cursor
+* ``29``: Follow the shape of the main cursor
+* ``30``: Change the color of text under extra cursors
+* ``40``: Change the color of extra cursors
+* ``100``: Used for querying currently set cursors
 
 ``CO-ORD TYPE`` can be one of:
 
@@ -92,7 +94,7 @@ protocol by sending the escape code::
 
 In this case a supporting terminal must reply with::
 
-    CSI > -2;-1;1;2;3 TRAILER
+    CSI > 1;2;3;29;30;40;100;101 TRAILER
 
 Here, the list of numbers indicates the cursor shapes and other operations
 the terminal supports and can be any subset of the above. No numbers
@@ -119,27 +121,88 @@ For more precise control different co-ordinate types can be used. This is
 particularly important for multiplexers that split up the screen and therefore
 need to re-write these escape codes.
 
+.. _extra_cursor_color:
+
+Changing the color of extra cursors
+---------------------------------------
+
+In order to visually distinguish extra cursors from the main cursor, it is
+possible to specify a color pair for extra cursors. Note that for performance
+reasons, there is only a single color pair that all extra cursors share.
+The color pair consists of the cursor color and the color for text in the cell
+the cursor is on.
+
+To change this color pair use an escape code of the form::
+
+    CSI > WHICH ; COLOR_SPACE : COLOR_PARAMETER1 : COLOR_PARAMETER2 : ... TRAILER
+
+Here, ``WHICH`` is ``30`` to set the color of text under the cursor and ``40``
+to set the color of the cursor itself (these numbers mimic the SGR codes for
+foreground and background respectively).
+
+The ``COLOR_SPACE`` parameter sets the type of color, it can take values:
+
+``0`` - unset color is same as for main cursor. No color parameters.
+``1`` - *special* which typically means some kind of reverse video effect, see below
+``2`` - sRGB color, with three color parameters, red, green and blue as numbers
+from 0 to 255
+``5`` - Indexed color with one color parameter which is an index into the color
+table from 0 to 255
+
+When the cursor color is set to *special* via ``40`` it means the block cursor
+must be rendered with a reverse video effect where the cursor color becomes the
+foreground color of the cell under the cursor and the foreground color of the
+cell becomes its background color. Implementations are free to adjust these
+colors to ensure suitable contrast levels. In this case the text color set by
+``30`` must be ignored.
+
+When the cursor color is not set to *special* but the text color via ``30`` is
+set to special, then that means the foreground color of the cell with the
+cursor must be changed to its background color for a partial reverse video
+effect.
+
+When unset, aka, set to ``0`` the cursors must be the same color as the main
+cursor. In particular if the main color is using a reverse video effect, the
+extra cursors must use the exact same colors as the main cursor, not the colors
+of the cells they are on.
+
 Querying for already set cursors
 --------------------------------------
 
 Programs can ask the terminal what extra cursors are currently set, by sending
 the escape code::
 
-    CSI > -2 TRAILER
+    CSI > 100 TRAILER
 
 The terminal must respond with **one** escape code::
 
-    CSI > -2; SHAPE:CO-ORDINATE TYPE:CO-ORDINATES ; ... TRAILER
+    CSI > 100; SHAPE:CO-ORDINATE TYPE:CO-ORDINATES ; ... TRAILER
 
 Here, the ``SHAPE:CO-ORDINATE TYPE:CO-ORDINATES`` block can be repeated any
 number of times, separated by ``;``. This response gives the set of shapes and
 positions currently active. If no cursors are currently active, there will be
 no blocks, just an empty response of the form::
 
-    CSI > -2 TRAILER
+    CSI > 100 TRAILER
 
 Again, terminals **must** respond in FIFO order so that multiplexers know where
 to direct the responses.
+
+Querying for extra cursor colors
+-------------------------------------
+
+Programs can ask the terminal what cursor colors are currently set, by sending
+escape code::
+
+    CSI > 101 TRAILER
+
+The terminal must respond with **one** escape code::
+
+    CSI > 101 ; 30 : COLOR_SPACE : COLOR_PARAMETERS ; 40 : COLOR_SPACE : COLOR_PARAMETERS TRAILER
+
+The number and type of ``COLOR_PARAMETERS`` depends on the preceding
+``COLOR_SPACE`` and can be omitted for some ``COLOR_SPACE`` values. See the
+section :ref:`extra_cursor_color` for details.
 
 
 Interaction with other terminal controls and state

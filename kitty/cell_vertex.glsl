@@ -7,7 +7,7 @@
 layout(std140) uniform CellRenderData {
     float use_cell_bg_for_selection_fg, use_cell_fg_for_selection_fg, use_cell_for_selection_bg;
 
-    uint default_fg, highlight_fg, highlight_bg, cursor_fg, cursor_bg, url_color, url_style, inverted;
+    uint default_fg, highlight_fg, highlight_bg, main_cursor_fg, main_cursor_bg, url_color, url_style, inverted, extra_cursor_fg, extra_cursor_bg;
 
     uint columns, lines, sprites_xnum, sprites_ynum, cursor_shape, cell_width, cell_height;
     uint cursor_x1, cursor_x2, cursor_y1, cursor_y2;
@@ -47,16 +47,16 @@ const uint cursor_shape_map[] = uint[5](  // maps cursor shape to foreground spr
 out vec3 background;
 out vec4 effective_background_premul;
 #ifndef ONLY_BACKGROUND
+out float effective_text_alpha;
 out vec3 sprite_pos;
 out vec3 underline_pos;
 out vec3 cursor_pos;
-out vec4 cursor_color_premult;
 out vec3 strike_pos;
 flat out uint underline_exclusion_pos;
-out vec3 foreground;
+out vec3 cell_foreground;
+out vec4 cursor_color_premult;
 out vec3 decoration_fg;
 out float colored_sprite;
-out float effective_text_alpha;
 #endif
 
 
@@ -65,7 +65,7 @@ const uint BYTE_MASK = uint(0xFF);
 const uint SPRITE_INDEX_MASK = uint(0x7fffffff);
 const uint SPRITE_COLORED_MASK = uint(0x80000000);
 const uint SPRITE_COLORED_SHIFT = 31u;
-const uint ONE = 1u;
+const uint BIT_MASK = 1u;
 const uint DECORATION_MASK = uint({DECORATION_MASK});
 
 vec3 color_to_vec(uint c) {
@@ -92,6 +92,55 @@ vec3 to_color(uint c, uint defval) {
     return color_to_vec(resolve_color(c, defval));
 }
 
+vec3 resolve_dynamic_color(uint c, vec3 special_val, vec3 defval) {
+    float type = float((c >> 24) & BYTE_MASK);
+#define q(which, val) one_if_equal_zero_otherwise(type, which) * val
+    return (
+        q(COLOR_IS_RGB, color_to_vec(c)) + q(COLOR_IS_INDEX, color_to_vec(color_table[c & BYTE_MASK])) +
+        q(COLOR_IS_SPECIAL, special_val) + q(COLOR_NOT_SET, defval)
+    );
+#undef q
+}
+
+float contrast_ratio(float under_luminance, float over_luminance) {
+    return clamp((max(under_luminance, over_luminance) + 0.05f) / (min(under_luminance, over_luminance) + 0.05f), 1.f, 21.f);
+}
+
+float contrast_ratio(vec3 a, vec3 b) {
+    return contrast_ratio(dot(a, Y), dot(b, Y));
+}
+
+struct ColorPair {
+    vec3 bg, fg;
+};
+
+float contrast_ratio(ColorPair a) { return contrast_ratio(a.bg, a.fg); }
+
+ColorPair if_less_than_pair(float a, float b, ColorPair thenval, ColorPair elseval) {
+    return ColorPair(if_less_than(a, b, thenval.bg, elseval.bg),
+            if_less_than(a, b, thenval.fg, elseval.fg));
+}
+
+ColorPair if_one_then_pair(float condition, ColorPair thenval, ColorPair elseval) {
+    return ColorPair(if_one_then(condition, thenval.bg, elseval.bg),
+            if_one_then(condition, thenval.fg, elseval.fg));
+}
+
+ColorPair resolve_extra_cursor_colors_for_special_cursor(vec3 cell_bg, vec3 cell_fg) {
+    ColorPair cell = ColorPair(cell_fg, cell_bg), base = ColorPair(color_to_vec(default_fg), color_to_vec(bg_colors0));
+    float cr = contrast_ratio(cell), br = contrast_ratio(base);
+    ColorPair higher_contrast_pair = if_less_than_pair(cr, br, base, cell);
+    return if_less_than_pair(cr, 2.5, higher_contrast_pair, cell);
+}
+
+ColorPair resolve_extra_cursor_colors(vec3 cell_bg, vec3 cell_fg, ColorPair main_cursor) {
+    ColorPair ans = ColorPair(
+        resolve_dynamic_color(extra_cursor_bg, main_cursor.bg, main_cursor.bg),
+        resolve_dynamic_color(extra_cursor_fg, cell_bg, main_cursor.fg)
+    );
+    ColorPair special = resolve_extra_cursor_colors_for_special_cursor(cell_bg, cell_fg);
+    return if_one_then_pair(zero_or_one(abs(float(extra_cursor_bg & BYTE_MASK) - COLOR_IS_SPECIAL)), ans, special);
+}
 
 uvec3 to_sprite_coords(uint idx) {
     uint sprites_per_page = sprites_xnum * sprites_ynum;
@@ -128,7 +177,7 @@ uint read_sprite_decorations_idx() {
 
 uvec2 get_decorations_indices(uint in_url /* [0, 1] */, uint text_attrs) {
     uint decorations_idx = read_sprite_decorations_idx();
-    uint strike_style = ((text_attrs >> STRIKE_SHIFT) & ONE); // 0 or 1
+    uint strike_style = ((text_attrs >> STRIKE_SHIFT) & BIT_MASK); // 0 or 1
     uint strike_idx = decorations_idx * strike_style;
     uint underline_style = ((text_attrs >> DECORATION_SHIFT) & DECORATION_MASK);
     underline_style = in_url * url_style + (1u - in_url) * underline_style; // [0, 5]
@@ -147,9 +196,10 @@ struct CellData {
     float has_cursor, has_block_cursor;
     uvec2 pos;
     uint cursor_fg_sprite_idx;
+    ColorPair cursor;
 } cell_data;
 
-CellData set_vertex_position() {
+CellData set_vertex_position(vec3 cell_fg, vec3 cell_bg) {
     uint instance_id = uint(gl_InstanceID);
     float dx = 2.0 / float(columns);
     float dy = 2.0 / float(lines);
@@ -166,14 +216,18 @@ CellData set_vertex_position() {
     sprite_pos = to_sprite_pos(pos, sprite_idx[0] & SPRITE_INDEX_MASK);
     colored_sprite = float((sprite_idx[0] & SPRITE_COLORED_MASK) >> SPRITE_COLORED_SHIFT);
 #endif
+    // Cursor shape and colors
     float has_main_cursor = is_cursor(column, row);
     float multicursor_shape = float((is_selected >> 2) & 3u);
-    float multicursor_uses_main_cursor_shape = float((is_selected >> 4) & ONE);
+    float multicursor_uses_main_cursor_shape = float((is_selected >> 4) & BIT_MASK);
     multicursor_shape = if_one_then(multicursor_uses_main_cursor_shape, cursor_shape, multicursor_shape);
     float final_cursor_shape = if_one_then(has_main_cursor, cursor_shape, multicursor_shape);
     float has_cursor = zero_or_one(final_cursor_shape);
     float is_block_cursor = has_cursor * one_if_equal_zero_otherwise(final_cursor_shape, 1.0);
-    return CellData(has_cursor, is_block_cursor, pos, cursor_shape_map[int(final_cursor_shape)]);
+    ColorPair main_cursor = ColorPair(color_to_vec(main_cursor_bg), color_to_vec(main_cursor_fg));
+    ColorPair extra_cursor = resolve_extra_cursor_colors(cell_bg, cell_fg, main_cursor);
+    ColorPair cursor = if_one_then_pair(has_main_cursor, main_cursor, extra_cursor);
+    return CellData(has_cursor, is_block_cursor, pos, cursor_shape_map[int(final_cursor_shape)], cursor);
 }
 
 float background_opacity_for(uint bg, uint colorval, float opacity_if_matched) {  // opacity_if_matched if bg == colorval else 1
@@ -210,8 +264,6 @@ vec3 fg_override(float under_luminance, float over_lumininace, vec3 under, vec3 
 
 #else
 
-float contrast_ratio(float under_luminance, float over_luminance) {
-    return clamp((max(under_luminance, over_luminance) + 0.05f) / (min(under_luminance, over_luminance) + 0.05f), 1.f, 21.f);
 }
 
 vec3 fg_override(float under_luminance, float over_luminance, vec3 under, vec3 over) {
@@ -240,38 +292,38 @@ vec3 override_foreground_color(vec3 over, vec3 under) {
 
 void main() {
 
-    CellData cell_data = set_vertex_position();
 
     // set cell color indices {{{
     uvec2 default_colors = uvec2(default_fg, bg_colors0);
     uint text_attrs = sprite_idx[1];
-    uint is_reversed = ((text_attrs >> REVERSE_SHIFT) & ONE);
+    uint is_reversed = ((text_attrs >> REVERSE_SHIFT) & BIT_MASK);
     uint is_inverted = is_reversed + inverted;
     int fg_index = fg_index_map[is_inverted];
     int bg_index = 1 - fg_index;
     int mark = int(text_attrs >> MARK_SHIFT) & MARK_MASK;
     uint has_mark = uint(step(1, float(mark)));
     uint bg_as_uint = resolve_color(colors[bg_index], default_colors[bg_index]);
-    bg_as_uint = has_mark * color_table[NUM_COLORS + mark - 1] + (ONE - has_mark) * bg_as_uint;
+    bg_as_uint = has_mark * color_table[NUM_COLORS + mark - 1] + (BIT_MASK - has_mark) * bg_as_uint;
+    float cell_has_default_bg = 1.f - step(1.f, abs(float(bg_as_uint - bg_colors0))); // 1 if has default bg else 0
     vec3 bg = color_to_vec(bg_as_uint);
     uint fg_as_uint = resolve_color(colors[fg_index], default_colors[fg_index]);
-    float cell_has_default_bg = 1.f - step(1.f, abs(float(bg_as_uint - bg_colors0))); // 1 if has default bg else 0
+    fg_as_uint = has_mark * color_table[NUM_COLORS + MARK_MASK + mark] + (1u - has_mark) * fg_as_uint;
+    vec3 foreground = color_to_vec(fg_as_uint);
+    CellData cell_data = set_vertex_position(foreground, bg);
     // }}}
 
     // Foreground {{{
 #ifndef ONLY_BACKGROUND // background does not depend on foreground
-    fg_as_uint = has_mark * color_table[NUM_COLORS + MARK_MASK + mark] + (ONE - has_mark) * fg_as_uint;
-    foreground = color_to_vec(fg_as_uint);
-    float has_dim = float((text_attrs >> DIM_SHIFT) & ONE), has_blink = float((text_attrs >> BLINK_SHIFT) & ONE);
+    float has_dim = float((text_attrs >> DIM_SHIFT) & BIT_MASK), has_blink = float((text_attrs >> BLINK_SHIFT) & BIT_MASK);
     effective_text_alpha = inactive_text_alpha * if_one_then(has_dim, dim_opacity, 1.0) * if_one_then(
             has_blink, blink_opacity, 1.0);
-    float in_url = float((is_selected >> 1) & ONE);
+    float in_url = float((is_selected >> 1) & BIT_MASK);
     decoration_fg = if_one_then(in_url, color_to_vec(url_color), to_color(colors[2], fg_as_uint));
     // Selection
     vec3 selection_color = if_one_then(use_cell_bg_for_selection_fg, bg, color_to_vec(highlight_fg));
     selection_color = if_one_then(use_cell_fg_for_selection_fg, foreground, selection_color);
-    foreground = if_one_then(float(is_selected & ONE), selection_color, foreground);
-    decoration_fg = if_one_then(float(is_selected & ONE), selection_color, decoration_fg);
+    foreground = if_one_then(float(is_selected & BIT_MASK), selection_color, foreground);
+    decoration_fg = if_one_then(float(is_selected & BIT_MASK), selection_color, decoration_fg);
     // Underline and strike through (rendered via sprites)
     uvec2 decs = get_decorations_indices(uint(in_url), text_attrs);
     strike_pos = to_sprite_pos(cell_data.pos, decs[0]);
@@ -279,8 +331,8 @@ void main() {
     underline_exclusion_pos = to_underline_exclusion_pos();
 
     // Cursor
-    cursor_color_premult = vec4(color_to_vec(cursor_bg) * cursor_opacity, cursor_opacity);
-    vec3 final_cursor_text_color = mix(foreground, color_to_vec(cursor_fg), cursor_opacity);
+    cursor_color_premult = vec4(cell_data.cursor.bg * cursor_opacity, cursor_opacity);
+    vec3 final_cursor_text_color = mix(foreground, cell_data.cursor.fg, cursor_opacity);
     foreground = if_one_then(cell_data.has_block_cursor, final_cursor_text_color, foreground);
     decoration_fg = if_one_then(cell_data.has_block_cursor, final_cursor_text_color, decoration_fg);
     cursor_pos = to_sprite_pos(cell_data.pos, cell_data.cursor_fg_sprite_idx * uint(cell_data.has_cursor));
@@ -292,7 +344,7 @@ void main() {
     // we use max so that opacity of the block cursor cell background goes from bg_alpha to 1
     float effective_cursor_opacity = max(cursor_opacity, bg_alpha);
     // is_special_cell is either 0 or 1
-    float is_special_cell = cell_data.has_block_cursor + float(is_selected & ONE);
+    float is_special_cell = cell_data.has_block_cursor + float(is_selected & BIT_MASK);
     is_special_cell += float(is_reversed);  // reverse video cells should be opaque as well
     is_special_cell = zero_or_one(is_special_cell);
     cell_has_default_bg = if_one_then(is_special_cell, 0., cell_has_default_bg);
@@ -301,8 +353,8 @@ void main() {
     bg_alpha = if_one_then(is_special_cell, 1.f, bg_alpha);
     // Selection and cursor
     bg_alpha = if_one_then(cell_data.has_block_cursor, effective_cursor_opacity, bg_alpha);
-    bg = if_one_then(float(is_selected & ONE), if_one_then(use_cell_for_selection_bg, color_to_vec(fg_as_uint), color_to_vec(highlight_bg)), bg);
-    vec3 background_rgb = if_one_then(cell_data.has_block_cursor, mix(bg, color_to_vec(cursor_bg), cursor_opacity), bg);
+    bg = if_one_then(float(is_selected & BIT_MASK), if_one_then(use_cell_for_selection_bg, color_to_vec(fg_as_uint), color_to_vec(highlight_bg)), bg);
+    vec3 background_rgb = if_one_then(cell_data.has_block_cursor, mix(bg, cell_data.cursor.bg, cursor_opacity), bg);
     background = background_rgb;
     // }}}
 
@@ -319,5 +371,9 @@ void main() {
     float draw_bg = step(0.5, float(draw_bg_bitfield & draw_bg_mask));
     bgpremul *= draw_bg;
     effective_background_premul = bgpremul;
+#endif
+
+#ifndef ONLY_BACKGROUND
+    cell_foreground = foreground;
 #endif
 }

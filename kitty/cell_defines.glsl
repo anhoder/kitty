@@ -12,6 +12,10 @@
 #define MARK_MASK {MARK_MASK}
 #define USE_SELECTION_FG
 #define NUM_COLORS 256
+#define COLOR_NOT_SET {COLOR_NOT_SET}
+#define COLOR_IS_SPECIAL {COLOR_IS_SPECIAL}
+#define COLOR_IS_RGB {COLOR_IS_RGB}
+#define COLOR_IS_INDEX {COLOR_IS_INDEX}
 
 #if {ONLY_BACKGROUND} == 1
 #define ONLY_BACKGROUND
@@ -21,5 +25,5 @@
 #define ONLY_FOREGROUND
 #endif
 
-// sRGB luminance values
+// Linear space luminance values
 const vec3 Y = vec3(0.2126, 0.7152, 0.0722);

@@ -95,6 +95,7 @@ typedef struct ExtraCursor {
 typedef struct ExtraCursors {
     ExtraCursor *locations;
     unsigned count, capacity;
+    struct { DynamicColor cursor, text; } color;
     bool dirty;
 } ExtraCursors;
 

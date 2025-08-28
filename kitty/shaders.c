@@ -414,9 +414,8 @@ create_graphics_vao(void) {
 #define IS_SPECIAL_COLOR(name) (screen->color_profile->overridden.name.type == COLOR_IS_SPECIAL || (screen->color_profile->overridden.name.type == COLOR_NOT_SET && screen->color_profile->configured.name.type == COLOR_IS_SPECIAL))
 
 static void
-pick_cursor_color(Line *line, const ColorProfile *color_profile, color_type cell_fg, color_type cell_bg, index_type cell_color_x, color_type *cursor_fg, color_type *cursor_bg, color_type default_fg, color_type default_bg) {
+pick_cursor_color(color_type cell_fg, color_type cell_bg, color_type *cursor_fg, color_type *cursor_bg, color_type default_fg, color_type default_bg) {
     ARGB32 fg, bg, dfg, dbg;
-    (void) line; (void) color_profile; (void) cell_color_x;
     fg.rgb = cell_fg; bg.rgb = cell_bg;
     *cursor_fg = cell_bg; *cursor_bg = cell_fg;
     double cell_contrast = rgb_contrast(fg, bg);
@@ -438,7 +437,7 @@ cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, C
     struct GPUCellRenderData {
         GLfloat use_cell_bg_for_selection_fg, use_cell_fg_for_selection_color, use_cell_for_selection_bg;
 
-        GLuint default_fg, highlight_fg, highlight_bg, cursor_fg, cursor_bg, url_color, url_style, inverted;
+        GLuint default_fg, highlight_fg, highlight_bg, main_cursor_fg, main_cursor_bg, url_color, url_style, inverted, extra_cursor_fg, extra_cursor_bg;
 
         GLuint columns, lines, sprites_xnum, sprites_ynum, cursor_shape, cell_width, cell_height;
         GLuint cursor_x1, cursor_x2, cursor_y1, cursor_y2;
@@ -456,6 +455,8 @@ cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, C
 #define COLOR(name) colorprofile_to_color(cp, cp->overridden.name, cp->configured.name).rgb
     rd->default_fg = COLOR(default_fg);
     rd->highlight_fg = COLOR(highlight_fg); rd->highlight_bg = COLOR(highlight_bg);
+    rd->extra_cursor_fg = screen->extra_cursors.color.text.val;
+    rd->extra_cursor_bg = screen->extra_cursors.color.cursor.val;
     rd->bg_colors0 = COLOR(default_bg);
     rd->bg_opacities0 = bg_alpha;
 #define SETBG(which) { \
@@ -513,19 +514,20 @@ cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, C
                 };
             }
         }
+        // If you change the following algorithm remember to change it in the cell shader for extra cursors too
         if (IS_SPECIAL_COLOR(cursor_color)) {
-            if (line_for_cursor) pick_cursor_color(line_for_cursor, cp, cell_fg, cell_bg, cell_color_x, &rd->cursor_fg, &rd->cursor_bg, rd->default_fg, rd->bg_colors0);
-            else { rd->cursor_fg = rd->bg_colors0; rd->cursor_bg = rd->default_fg; }
+            if (line_for_cursor) pick_cursor_color(cell_fg, cell_bg, &rd->main_cursor_fg, &rd->main_cursor_bg, rd->default_fg, rd->bg_colors0);
+            else { rd->main_cursor_fg = rd->bg_colors0; rd->main_cursor_bg = rd->default_fg; }
             if (cell_bg == cell_fg) {
-                rd->cursor_fg = rd->bg_colors0; rd->cursor_bg = rd->default_fg;
-            } else { rd->cursor_fg = cell_bg; rd->cursor_bg = cell_fg; }
+                rd->main_cursor_fg = rd->bg_colors0; rd->main_cursor_bg = rd->default_fg;
+            } else { rd->main_cursor_fg = cell_bg; rd->main_cursor_bg = cell_fg; }
         } else {
-            rd->cursor_bg = COLOR(cursor_color);
-            if (IS_SPECIAL_COLOR(cursor_text_color)) rd->cursor_fg = cell_bg;
-            else rd->cursor_fg = COLOR(cursor_text_color);
+            rd->main_cursor_bg = COLOR(cursor_color);
+            if (IS_SPECIAL_COLOR(cursor_text_color)) rd->main_cursor_fg = cell_bg;
+            else rd->main_cursor_fg = COLOR(cursor_text_color);
         }
         // store last rendered cursor color for trail rendering
-        screen->last_rendered.cursor_bg = rd->cursor_bg;
+        screen->last_rendered.cursor_bg = rd->main_cursor_bg;
     } else {
         rd->cursor_shape = 0;
         rd->cursor_x1 = screen->columns + 1; rd->cursor_x2 = screen->columns;
