@@ -10,9 +10,12 @@
 #include "cleanup.h"
 #include "colors.h"
 #include <stddef.h>
+#include <string.h>
+#include "text-cache.h"
 #include "window_logo.h"
 #include "srgb_gamma.h"
 #include "uniforms_generated.h"
+#include "state.h"
 
 enum {
     CELL_PROGRAM, CELL_FG_PROGRAM, CELL_BG_PROGRAM, CELL_PROGRAM_SENTINEL,
@@ -651,7 +654,9 @@ setup_texture_as_render_target(unsigned width, unsigned height, GLuint *texture_
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    // We use GL_RGBA16 to avoid incorrect colors due to quantization loss when
+    // blending, see https://github.com/kovidgoyal/kitty/issues/8953
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     bind_framebuffer_for_output(*framebuffer_id);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, *texture_id, 0);
 }
@@ -736,22 +741,16 @@ draw_visual_bell(const UIRenderData *ui) {
 }
 
 static bool
-has_scrollbar(Screen *screen) {
-    return OPT(scrollback_indicator_opacity) > 0 && screen->linebuf == screen->main_linebuf && screen->scrolled_by;
-}
-
-static bool
-draw_scroll_indicator(color_type bar_color, GLfloat alpha, float frac, const UIRenderData *ui) {
-    bind_program(TINT_PROGRAM);
-#define C(shift) srgb_color((bar_color >> shift) & 0xFF) * alpha
-    glUniform4f(tint_program_layout.uniforms.tint_color, C(16), C(8), C(0), alpha);
-#undef C
-    float bar_width = 0.5f * gl_size(ui->cell_width, ui->screen_width);
-    float bar_height = gl_size(ui->cell_height, ui->screen_height);
-    float bottom = -1.f + MAX(0, 2.f - bar_height) * frac;
-    glUniform4f(tint_program_layout.uniforms.edges, 1.f - bar_width, bottom + bar_height, 1.f, bottom);
-    draw_quad(true, 0);
-    return true;
+has_scrollbar(Window *w, Screen *screen) {
+    if (screen->linebuf != screen->main_linebuf || !screen->historybuf->count) return false;
+    switch (OPT(scrollbar)) {
+        case SCROLLBAR_NEVER: return false;
+        case SCROLLBAR_ALWAYS: return true;
+        case SCROLLBAR_ON_SCROLLED: return screen->scrolled_by > 0;
+        case SCROLLBAR_ON_HOVERED: return w->scrollbar.is_hovering;
+        case SCROLLBAR_ON_SCROLL_AND_HOVER: return screen->scrolled_by > 0 && w->scrollbar.is_hovering;
+    }
+    return false;
 }
 
 static unsigned
@@ -876,13 +875,116 @@ draw_window_number(const UIRenderData *ui) {
 #undef lr
 }
 
+// Helper function to extract and apply opacity to color components
+static void
+set_color_uniform_with_opacity(color_type color, float opacity) {
+    float r = srgb_color((color >> 16) & 0xFF) * opacity;
+    float g = srgb_color((color >> 8) & 0xFF) * opacity;
+    float b = srgb_color(color & 0xFF) * opacity;
+    glUniform4f(tint_program_layout.uniforms.tint_color, r, g, b, opacity);
+}
+
+static color_type
+scrollbar_color(Screen *screen, unsigned val) {
+    switch (val & 0xff) {
+#define C(which) colorprofile_to_color(screen->color_profile, screen->color_profile->overridden.which, screen->color_profile->configured.which).rgb
+        case 0: return C(default_fg);
+        case 1: return C(highlight_bg);
+#undef C
+        default: return val >> 8;
+    }
+}
+
 static void
 draw_scrollbar(const UIRenderData *ui) {
-    if (!has_scrollbar(ui->screen)) return;
     Screen *screen = ui->screen;
-    color_type bar_color = colorprofile_to_color(screen->color_profile, screen->color_profile->overridden.highlight_bg, screen->color_profile->configured.highlight_bg).rgb;
-    float bar_frac = (float)screen->scrolled_by / (float)screen->historybuf->count;
-    draw_scroll_indicator(bar_color, OPT(scrollback_indicator_opacity), bar_frac, ui);
+    Window *window = ui->window;
+    if (!window || !screen || !has_scrollbar(window, screen)) return;
+
+    color_type bar_color = scrollbar_color(screen, OPT(scrollbar_handle_color)), track_color = scrollbar_color(screen, OPT(scrollbar_track_color));
+    float bar_frac = (float)screen->scrolled_by / MAX(1u, (float)screen->historybuf->count);
+    float opacity = OPT(scrollbar_handle_opacity);
+    float track_opacity = window->scrollbar.is_hovering ? OPT(scrollbar_track_hover_opacity) : OPT(scrollbar_track_opacity);
+    GLsizei scrollbar_width_px = (GLsizei)(OPT(scrollbar_width) * ui->cell_width);
+    if (window->scrollbar.is_hovering) scrollbar_width_px = (GLsizei)(OPT(scrollbar_hover_width) * ui->cell_width);
+    GLsizei scrollbar_gap_px = (GLsizei)(OPT(scrollbar_gap) * ui->cell_width);
+    unsigned scrollbar_radius = (unsigned)(OPT(scrollbar_radius) * ui->cell_width);
+
+    // Calculate window boundaries including padding
+    GLsizei window_right_edge = ui->screen_left + ui->screen_width + window->render_data.geometry.spaces.right;
+    GLsizei window_top_edge = ui->screen_top - window->render_data.geometry.spaces.top;
+    GLsizei window_height = ui->screen_height + window->render_data.geometry.spaces.top + window->render_data.geometry.spaces.bottom;
+
+    // Position scrollbar on right side with gap
+    GLsizei scrollbar_left = window_right_edge - scrollbar_width_px - scrollbar_gap_px;
+    GLsizei scrollbar_top = window_top_edge + scrollbar_gap_px;
+    GLsizei scrollbar_height = window_height - 2 * scrollbar_gap_px;
+
+    // Calculate thumb size and position
+    float visible_fraction = (float)screen->lines / (float)(screen->lines + screen->historybuf->count);
+    float min_thumb_height_fraction = (OPT(scrollbar_min_handle_height) * ui->cell_height) / (float)window_height;
+    float thumb_height_fraction = MAX(min_thumb_height_fraction, visible_fraction);
+
+    // Convert to OpenGL coordinates (range -1.0 to 1.0, total span = 2.0)
+    const float GL_COORD_SPAN = 2.0f;
+    float thumb_height_gl = thumb_height_fraction * GL_COORD_SPAN;
+    float available_space = GL_COORD_SPAN - thumb_height_gl;
+    float thumb_bottom_gl = -1.0f + available_space * bar_frac;
+    float thumb_top_gl = thumb_bottom_gl + thumb_height_gl;
+
+    // Store thumb position for mouse interaction (normalized window coordinates)
+    float scrollbar_top_in_window = (float)(window_top_edge + scrollbar_gap_px) / (float)ui->full_framebuffer_height;
+    float scrollbar_height_in_window = (float)(window_height - 2 * scrollbar_gap_px) / (float)ui->full_framebuffer_height;
+    float thumb_top_fraction = (1.0f - thumb_top_gl) / 2.0f;
+    float thumb_bottom_fraction = (1.0f - thumb_bottom_gl) / 2.0f;
+    window->scrollbar.thumb_top = scrollbar_top_in_window + thumb_top_fraction * scrollbar_height_in_window;
+    window->scrollbar.thumb_bottom = scrollbar_top_in_window + thumb_bottom_fraction * scrollbar_height_in_window;
+
+    // Set viewport for scrollbar area
+    save_viewport_using_top_left_origin(
+        scrollbar_left, scrollbar_top, scrollbar_width_px, scrollbar_height,
+        ui->full_framebuffer_height
+    );
+
+    // Draw scrollbar track (background)
+    if (track_opacity > 0) {
+        bind_program(TINT_PROGRAM);
+        set_color_uniform_with_opacity(track_color, track_opacity);
+        glUniform4f(tint_program_layout.uniforms.edges, -1.f, 1.f, 1.f, -1.f);
+        draw_quad(true, 0);
+    }
+
+    // Draw scrollbar thumb (handle)
+    if (scrollbar_radius > 0) {
+        // Rounded thumb - use separate viewport and rounded rect program
+        GLsizei thumb_height_px = (GLsizei)(thumb_height_fraction * scrollbar_height);
+        GLsizei thumb_top_px = scrollbar_top + (GLsizei)(thumb_top_fraction * scrollbar_height);
+
+        restore_viewport();
+
+        bind_program(ROUNDED_RECT_PROGRAM);
+        color_vec4(rounded_rect_program_layout.uniforms.color, bar_color, opacity);
+        color_vec4(rounded_rect_program_layout.uniforms.background_color, 0, 0.0f);
+
+        float y = (float)ui->full_framebuffer_height - (float)(thumb_top_px + thumb_height_px);
+        glUniform4f(rounded_rect_program_layout.uniforms.rect,
+                    (float)scrollbar_left, y,
+                    (float)scrollbar_width_px, (float)thumb_height_px);
+
+        float thickness = (float)MAX(scrollbar_width_px, thumb_height_px);
+        glUniform2f(rounded_rect_program_layout.uniforms.params, thickness, (float)scrollbar_radius);
+
+        save_viewport_using_top_left_origin(scrollbar_left, thumb_top_px,
+                                           scrollbar_width_px, thumb_height_px,
+                                           ui->full_framebuffer_height);
+        draw_quad(true, 0);
+        restore_viewport();
+    } else {
+        set_color_uniform_with_opacity(bar_color, opacity);
+        glUniform4f(tint_program_layout.uniforms.edges, -1.f, thumb_top_gl, 1.f, thumb_bottom_gl);
+        draw_quad(true, 0);
+        restore_viewport();
+    }
 }
 
 static void
@@ -930,7 +1032,7 @@ draw_window_logo(const UIRenderData *ui) {
 
 bool
 screen_needs_rendering_in_layers(OSWindow *os_window, Window *w, Screen *screen) {
-    const bool has_ui = has_visual_bell(screen) || has_scrollbar(screen) || has_hyperlink_target(os_window, w, screen) || has_window_number(w, screen);
+    const bool has_ui = has_visual_bell(screen) || has_scrollbar(w, screen) || has_hyperlink_target(os_window, w, screen) || has_window_number(w, screen);
     GraphicsManager *grman = screen->paused_rendering.expires_at && screen->paused_rendering.grman ? screen->paused_rendering.grman : screen->grman;
     return has_ui || (w && w->window_logo.id) || grman_has_images(grman);
 }

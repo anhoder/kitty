@@ -27,6 +27,7 @@ choices_for_macos_colorspace = typing.Literal['srgb', 'default', 'displayp3']
 choices_for_macos_show_window_title_in = typing.Literal['all', 'menubar', 'none', 'window']
 choices_for_placement_strategy = typing.Literal['top-left', 'top', 'top-right', 'left', 'center', 'right', 'bottom-left', 'bottom', 'bottom-right']
 choices_for_pointer_shape_when_grabbed = choices_for_default_pointer_shape
+choices_for_scrollbar = typing.Literal['scrolled', 'always', 'never', 'hovered', 'scrolled-and-hovered']
 choices_for_strip_trailing_spaces = typing.Literal['always', 'never', 'smart']
 choices_for_tab_bar_align = typing.Literal['left', 'center', 'right']
 choices_for_tab_bar_style = typing.Literal['fade', 'hidden', 'powerline', 'separator', 'slant', 'custom']
@@ -411,10 +412,23 @@ option_names = (
     'resize_debounce_time',
     'resize_in_steps',
     'scrollback_fill_enlarged_window',
-    'scrollback_indicator_opacity',
     'scrollback_lines',
     'scrollback_pager',
     'scrollback_pager_history_size',
+    'scrollbar',
+    'scrollbar_gap',
+    'scrollbar_handle_color',
+    'scrollbar_handle_opacity',
+    'scrollbar_hitbox_expansion',
+    'scrollbar_hover_width',
+    'scrollbar_interactive',
+    'scrollbar_jump_on_click',
+    'scrollbar_min_handle_height',
+    'scrollbar_radius',
+    'scrollbar_track_color',
+    'scrollbar_track_hover_opacity',
+    'scrollbar_track_opacity',
+    'scrollbar_width',
     'select_by_word_characters',
     'select_by_word_characters_forward',
     'selection_background',
@@ -585,10 +599,23 @@ class Options:
     resize_debounce_time: tuple[float, float] = (0.1, 0.5)
     resize_in_steps: bool = False
     scrollback_fill_enlarged_window: bool = False
-    scrollback_indicator_opacity: float = 1.0
     scrollback_lines: int = 2000
     scrollback_pager: list[str] = ['less', '--chop-long-lines', '--RAW-CONTROL-CHARS', '+INPUT_LINE_NUMBER']
     scrollback_pager_history_size: int = 0
+    scrollbar: choices_for_scrollbar = 'scrolled'
+    scrollbar_gap: float = 0.1
+    scrollbar_handle_color: int = 0
+    scrollbar_handle_opacity: float = 0.5
+    scrollbar_hitbox_expansion: float = 0.25
+    scrollbar_hover_width: float = 1.0
+    scrollbar_interactive: bool = True
+    scrollbar_jump_on_click: bool = True
+    scrollbar_min_handle_height: float = 1.0
+    scrollbar_radius: float = 0.3
+    scrollbar_track_color: int = 0
+    scrollbar_track_hover_opacity: float = 0.1
+    scrollbar_track_opacity: float = 0
+    scrollbar_width: float = 0.5
     select_by_word_characters: str = '@-./_~?&=%+#'
     select_by_word_characters_forward: str = ''
     selection_background: kitty.fast_data_types.Color | None = Color(255, 250, 205)
@@ -939,7 +966,7 @@ defaults.map = [
 ]
 
 if is_macos:
-    defaults.map.append(KeyDefinition(trigger=SingleKey(mods=8, key=99), definition='copy_to_clipboard'))
+    defaults.map.append(KeyDefinition(trigger=SingleKey(mods=8, key=99), definition='copy_or_noop'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=8, key=118), definition='paste_from_clipboard'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=10, key=57354), definition='scroll_line_up'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=8, key=57352), definition='scroll_line_up'))

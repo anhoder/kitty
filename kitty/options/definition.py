@@ -20,6 +20,7 @@ definition.add_deprecation('deprecated_hide_window_decorations_aliases', 'x11_hi
 definition.add_deprecation('deprecated_macos_show_window_title_in_menubar_alias', 'macos_show_window_title_in_menubar')
 definition.add_deprecation('deprecated_send_text', 'send_text')
 definition.add_deprecation('deprecated_adjust_line_height', 'adjust_line_height', 'adjust_column_width', 'adjust_baseline')
+definition.add_deprecation('deprecated_scrollback_indicator_opacity', 'scrollback_indicator_opacity')
 
 agr = definition.add_group
 egr = definition.end_group
@@ -441,13 +442,81 @@ is changed it will only affect newly created windows, not existing ones.
 '''
     )
 
-opt('scrollback_indicator_opacity', '1.0',
-    option_type='unit_float', ctype='float', long_text='''
-The opacity of the scrollback indicator which is a small colored rectangle that moves
-along the right hand side of the window as you scroll, indicating what fraction you
-have scrolled. The default is one which means fully opaque, aka visible.
-Set to a value between zero and one to make the indicator less visible.''')
+opt('scrollbar', 'scrolled', ctype='scrollbar', choices=(
+    'scrolled', 'always', 'never', 'hovered', 'scrolled-and-hovered'), long_text='''\
+Control when the scrollbar is displayed.
 
+:code:`scrolled`
+    means when the scrolling backwards has started.
+:code:`hovered`
+    means when the mouse is hovering on the right edge of the window.
+:code:`scrolled-and-hovered`
+    means when the mouse is over the scrollbar region *and* scrolling backwards has started.
+:code:`always`
+    means whenever any scrollback is present
+:code:`never`
+    means disable the scrollbar.
+''')
+
+opt('scrollbar_interactive', 'yes', option_type='to_bool', ctype='bool', long_text='''
+If disabled, the scrollbar will not be controllable via th emouse and all mouse events
+will pass through the scrollbar.''')
+
+opt('scrollbar_jump_on_click', 'yes', option_type='to_bool', ctype='bool', long_text='''
+When enabled clicking in the scrollbar track will cause the scroll position to
+jump to the clicked location, otherwise the scroll position will only move
+towards the position by a single screenful, which is how traditional scrollbars behave.''')
+
+opt('scrollbar_width', '0.5', option_type='positive_float', ctype='float', long_text='''
+The width of the scroll bar in units of cell width.
+''')
+
+opt('scrollbar_hover_width', '1', option_type='positive_float', ctype='float', long_text='''
+The width of the scroll bar when the mouse is hovering over it, in units of cell width.
+''')
+
+opt('scrollbar_handle_opacity', '0.5', option_type='positive_float', ctype='float', long_text='''
+The opacity of the scrollbar handle, 0 being fully transparent and 1 being full opaque.
+''')
+
+opt('scrollbar_radius', '0.3', option_type='positive_float', ctype='float', long_text='''
+The radius (curvature) of the scrollbar handle in units of cell width. Should be less than
+:opt:`scrollbar_width`.
+''')
+
+opt('scrollbar_gap', '0.1', option_type='positive_float', ctype='float', long_text='''
+The gap between the scrollbar and the window edge in units of cell width.
+''')
+
+opt('scrollbar_min_handle_height', '1', option_type='positive_float', ctype='float', long_text='''
+The minimum height of the scrollbar handle in units of cell height. Prevents the handle
+from becoming too small when there is a lot of scrollback.''')
+
+opt('scrollbar_hitbox_expansion', '0.25', option_type='positive_float', ctype='float', long_text='''
+The extra area around the handle to allow easier grabbing of the scollbar in units of cell width.''')
+
+opt('scrollbar_track_opacity', '0', option_type='positive_float', ctype='float', long_text='''
+The opacity of the scrollbar track, 0 being fully transparent and 1 being full opaque.
+''')
+
+opt('scrollbar_track_hover_opacity', '0.1', option_type='positive_float', ctype='float', long_text='''
+The opacity of the scrollbar track when the mouse is over the scrollbar,
+0 being fully transparent and 1 being full opaque.
+''')
+
+opt('scrollbar_handle_color', 'foreground', option_type='scrollbar_color', ctype='uint', long_text='''
+The color of the scrollbar handle. A value of :code:`foreground` means to use
+the current foreground text color, a value of :code:`selection_background` means to
+use the current selection background color. Also, you can use an
+arbitrary color, such as :code:`#12af59` or :code:`red`.
+''')
+
+opt('scrollbar_track_color', 'foreground', option_type='scrollbar_color', ctype='uint', long_text='''
+The color of the scrollbar track. A value of :code:`foreground` means to use
+the current foreground text color, a value of :code:`selection_background` means to
+use the current selection background color. Also, you can use an
+arbitrary color, such as :code:`#12af59` or :code:`red`.
+''')
 
 opt('scrollback_pager', 'less --chop-long-lines --RAW-CONTROL-CHARS +INPUT_LINE_NUMBER',
     option_type='to_cmdline',
@@ -3725,10 +3794,12 @@ There is also a :ac:`copy_or_interrupt` action that can be optionally mapped
 to :kbd:`Ctrl+C`. It will copy only if there is a selection and send an
 interrupt otherwise. Similarly, :ac:`copy_and_clear_or_interrupt` will copy
 and clear the selection or send an interrupt if there is no selection.
+The :ac:`copy_or_noop` action will copy if there is a selection and pass
+the key through to the application running in the terminal if there is no selection.
 '''
     )
-map('Copy to clipboard',
-    'copy_to_clipboard cmd+c copy_to_clipboard',
+map('Copy to clipboard or pass through',
+    'copy_or_noop cmd+c copy_or_noop',
     only='macos',
     )
 

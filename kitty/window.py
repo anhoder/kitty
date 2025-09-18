@@ -970,7 +970,9 @@ class Window:
             mark_os_window_dirty(self.os_window_id)
 
         self.geometry = g = new_geometry
-        set_window_render_data(self.os_window_id, self.tab_id, self.id, self.screen, *g[:4])
+        set_window_render_data(self.os_window_id, self.tab_id, self.id, self.screen,
+                             g.left, g.top, g.right, g.bottom,
+                             g.spaces.left, g.spaces.top, g.spaces.right, g.spaces.bottom)
         self.update_effective_padding()
         if update_ime_position:
             update_ime_position_for_window(self.id, True)
@@ -2141,6 +2143,15 @@ class Window:
         else:
             self.scroll_end()
             self.write_to_child(self.encoded_key(KeyEvent(key=ord('c'), mods=GLFW_MOD_CONTROL)))
+
+    @ac('cp', 'Copy the selected text from the active window to the clipboard, if no selection,'
+        ' pass the key through to the application running in the terminal.')
+    def copy_or_noop(self) -> bool:
+        text = self.text_for_selection()
+        if text:
+            set_clipboard_string(text)
+            return False
+        return True
 
     @ac('cp', 'Copy the selected text from the active window to the clipboard and clear selection, if no selection, send SIGINT (aka :kbd:`ctrl+c`)')
     def copy_and_clear_or_interrupt(self) -> None:

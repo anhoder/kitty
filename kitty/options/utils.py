@@ -857,17 +857,31 @@ def allow_hyperlinks(x: str) -> int:
     return 1 if to_bool(x) else 0
 
 
-def titlebar_color(x: str) -> int:
+def color_with_special_values(x: str, special_values: dict[str, int], error_msg: str) -> int:
     x = x.strip('"')
-    if x == 'system':
-        return 0
-    if x == 'background':
-        return 1
+    if (ans := special_values.get(x)) is not None:
+        return ans & 0xff
     try:
-        return (color_as_int(to_color(x)) << 8) | 2
-    except ValueError:
-        log_error(f'Ignoring invalid title bar color: {x}')
+        return (color_as_int(to_color(x)) << 8) | len(special_values)
+    except Exception:
+        log_error(error_msg.format(x=x))
     return 0
+
+
+def titlebar_color(x: str) -> int:
+    return color_with_special_values(
+        x,
+        {'system': 0, 'background': 1},
+        'Ignoring invalid title bar color: {x}'
+    )
+
+
+def scrollbar_color(x: str) -> int:
+    return color_with_special_values(
+        x,
+        {'foreground': 0, 'selection_background': 1},
+        'Ignoring invalid scroll bar color: {x}'
+    )
 
 
 def macos_titlebar_color(x: str) -> int:
@@ -1751,3 +1765,14 @@ def deprecated_adjust_line_height(key: str, x: str, opts_dict: dict[str, Any]) -
         opts_dict['modify_font'][fm] = FontModification(mtype, ModificationValue(ans, ModificationUnit.percent))
     else:
         opts_dict['modify_font'][fm] = FontModification(mtype, ModificationValue(int(x), ModificationUnit.pixel))
+
+
+def deprecated_scrollback_indicator_opacity(key: str, val: str, ans: dict[str, Any]) -> None:
+    if not hasattr(deprecated_scrollback_indicator_opacity, key):
+        setattr(deprecated_scrollback_indicator_opacity, key, True)
+        log_error(f'The option {key} is deprecated. Use scrollbar instead.')
+    op = unit_float(val)
+    if op <= 0.001:
+        ans['scrollbar'] = 'never'
+    else:
+        ans['scrollbar_handle_opacity'] = op

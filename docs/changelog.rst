@@ -122,6 +122,8 @@ Detailed list of changes
 - New support for creating and switching to :doc:`sessions` easily, allowing
   users to define and use sessions/projects efficiently
 
+- Add a configurable :opt:`scrollbar` for the kitty scrollback (:pull:`8945`)
+
 - macOS: Allow the window title bar to be semi-transparent when
   :opt:`background_opacity` is less than one and :opt:`macos_titlebar_color` is
   set to ``background`` (:pull:`8906`)
@@ -156,14 +158,26 @@ Detailed list of changes
 - macOS: Fix closing an OS Window when another OS Window is minimized causing
   the minimized window to be un-minimized (:iss:`8913`)
 
-- Allow using backspace to move the cursor onto the previous line in cooked mode. This is indicated by the `bw` property in kitty's terminfo (:iss:`8841`)
+- Allow using backspace to move the cursor onto the previous line in cooked
+  mode. This is indicated by the `bw` property in kitty's terminfo
+  (:iss:`8841`)
 
 - Watchers: A new event for global watchers corresponding to the tab bar being changed (:disc:`8842`)
 
-- Fix a regression in 0.40.0 that broke handling of the VS16 variation selector when it caused a character to flow to the next line (:iss:`8848`)
+- Fix a regression in 0.40.0 that broke handling of the VS16 variation selector
+  when it caused a character to flow to the next line (:iss:`8848`)
+
+- Fix rendering of underlines when using larger text sizes with the space and
+  en-space characters (:iss:`8950`)
 
 - Wayland: Update bundled copy of libwayland to 1.24 from 1.23.1 because the
   just released mesa 25.2.0 breaks with libwayland < 1.24 (:iss:`8884`)
+
+- macOS: Pass the :kbd:`Cmd+C` shortcut to the application running in the
+  terminal when no text is selected (:pull:`8946`)
+
+- macOS: Workaround for bug in macOS Tahoe that caused closed OS Windows to
+  remain as invisible rectangles that intercept mouse events (:iss:`8952`)
 
 0.42.2 [2025-07-16]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -659,7 +673,7 @@ Detailed list of changes
 
 - Wayland labwc: Fix kitty timing out waiting for compositor to quit fucking around with scales on labwc (:iss:`7540`)
 
-- Fix :opt:`scrollback_indicator_opacity` not actually controlling the opacity (:iss:`7557`)
+- Fix ``scrollback_indicator_opacity`` not actually controlling the opacity (:iss:`7557`)
 
 - URL detection: Fix IPv6 hostnames breaking URL detection (:iss:`7565`)
 
@@ -743,7 +757,7 @@ Detailed list of changes
   using the panel kitten for all compositors that support the `requisite Wayland
   protocol <https://wayland.app/protocols/wlr-layer-shell-unstable-v1>`__ which is practically speaking all of them but GNOME (:pull:`2590`)
 
-- Show a small :opt:`scrollback indicator <scrollback_indicator_opacity>` along the right window edge when viewing
+- Show a small scrollback indicator along the right window edge when viewing
   the scrollback to keep track of scroll position (:iss:`2502`)
 
 - Wayland: Support fractional scales so that there is no wasted drawing at larger scale followed by resizing in the compositor
