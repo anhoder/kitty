@@ -668,8 +668,10 @@ static const NSRange kEmptyRange = {NSNotFound, 0};
 
 // Delegate for window related notifications {{{
 
-@interface GLFWWindowDelegate : NSObject {
-  _GLFWwindow *window;
+@interface GLFWWindowDelegate : NSObject
+{
+    _GLFWwindow* window;
+    NSArray<NSDictionary *> *_lastScreenStates;
 }
 
 - (instancetype)initWithGlfwWindow:(_GLFWwindow *)initWindow;
@@ -679,24 +681,51 @@ static const NSRange kEmptyRange = {NSNotFound, 0};
 
 @implementation GLFWWindowDelegate
 
-- (instancetype)initWithGlfwWindow:(_GLFWwindow *)initWindow {
-  self = [super init];
-  if (self != nil)
-    window = initWindow;
-
-  return self;
+- (instancetype)initWithGlfwWindow:(_GLFWwindow *)initWindow
+{
+    self = [super init];
+    if (self != nil) {
+        window = initWindow;
+        _lastScreenStates = [self captureScreenStates];
+    }
+    return self;
 }
 
-- (BOOL)windowShouldClose:(id)sender {
-  (void)sender;
-  _glfwInputWindowCloseRequest(window);
-  return NO;
+- (NSArray<NSDictionary *> *)captureScreenStates {
+    NSMutableArray *states = [NSMutableArray array];
+    for (NSScreen *screen in [NSScreen screens]) {
+        // Use the screen's deviceDescription, which contains a stable ID.
+        [states addObject:screen.deviceDescription];
+    }
+    return [states copy];
 }
 
-- (void)windowDidResize:(NSNotification *)notification {
-  (void)notification;
-  if (window->context.client != GLFW_NO_API)
-    [window->context.nsgl.object update];
+- (void)cleanup {
+    [_lastScreenStates release]; _lastScreenStates = nil;
+}
+
+- (BOOL)windowShouldClose:(id)sender
+{
+    (void)sender;
+    _glfwInputWindowCloseRequest(window);
+    return NO;
+}
+
+- (void)windowDidResize:(NSNotification *)notification
+{
+    (void)notification;
+    NSArray<NSDictionary *> *currentScreenStates = [self captureScreenStates];
+    const bool is_screen_change = ![_lastScreenStates isEqualToArray:currentScreenStates];
+    debug_rendering("windowDidResize() called, is_screen_change: %d\n", is_screen_change);
+    if (is_screen_change) {
+        // This resize likely happened because a screen was added, removed, or changed resolution.
+        [_lastScreenStates release];
+        _lastScreenStates = [currentScreenStates retain];
+    }
+    [currentScreenStates release];
+
+    if (window->context.client != GLFW_NO_API)
+        [window->context.nsgl.object update];
 
   if (_glfw.ns.disabledCursorWindow == window)
     _glfwCenterCursorInContentArea(window);
@@ -719,15 +748,17 @@ static const NSRange kEmptyRange = {NSNotFound, 0};
                               (int)fbRect.size.height);
   }
 
-  if (contentRect.size.width != window->ns.width ||
-      contentRect.size.height != window->ns.height) {
-    window->ns.width = (int)contentRect.size.width;
-    window->ns.height = (int)contentRect.size.height;
-    _glfwInputWindowSize(window, (int)contentRect.size.width,
-                         (int)contentRect.size.height);
-  }
-  if (window->ns.resizeCallback)
-    window->ns.resizeCallback((GLFWwindow *)window);
+    if (contentRect.size.width != window->ns.width ||
+        contentRect.size.height != window->ns.height)
+    {
+        window->ns.width  = (int)contentRect.size.width;
+        window->ns.height = (int)contentRect.size.height;
+        _glfwInputWindowSize(window, (int)contentRect.size.width, (int)contentRect.size.height);
+    }
+    // Because of a bug in macOS Tahoe we cannot redraw the window in response
+    // to a resize event that was caused by a screen change as the OpenGL
+    // context is not ready yet. See: https://github.com/kovidgoyal/kitty/issues/8983
+    if (window->ns.resizeCallback && !is_screen_change) window->ns.resizeCallback((GLFWwindow*)window);
 }
 
 - (void)windowDidMove:(NSNotification *)notification {
@@ -1837,39 +1868,30 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
 
 @implementation GLFWWindow
 
-static void handle_screen_size_change(_GLFWwindow *window,
-                                      NSNotification *notification UNUSED) {
-  if (!window || !window->ns.layer_shell.is_active)
-    return;
-  _glfwPlatformSetLayerShellConfig(window, NULL);
-}
-
 - (instancetype)initWithGlfwWindow:(NSRect)contentRect
                          styleMask:(NSWindowStyleMask)style
                            backing:(NSBackingStoreType)backingStoreType
-                        initWindow:(_GLFWwindow *)initWindow {
-  self = [super initWithContentRect:contentRect
-                          styleMask:style
-                            backing:backingStoreType
-                              defer:NO];
-  if (self != nil) {
-    glfw_window = initWindow;
-    self.tabbingMode = NSWindowTabbingModePreferred;
-    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
-    [center
-        addObserverForName:NSApplicationDidChangeScreenParametersNotification
-                    object:nil
-                     queue:[NSOperationQueue mainQueue]
-                usingBlock:^(NSNotification *_Nonnull notification) {
-                  handle_screen_size_change(glfw_window, notification);
-                }];
-  }
-  return self;
+                        initWindow:(_GLFWwindow *)initWindow
+{
+    self = [super initWithContentRect:contentRect styleMask:style backing:backingStoreType defer:NO];
+    if (self != nil) {
+        glfw_window = initWindow;
+        self.tabbingMode = NSWindowTabbingModePreferred;
+        NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+        [center addObserver:self selector:@selector(screenParametersDidChange:) name:NSApplicationDidChangeScreenParametersNotification object:nil];
+    }
+    return self;
 }
 
-- (void)removeGLFWWindow {
-  glfw_window = NULL;
-  [[NSNotificationCenter defaultCenter] removeObserver:self];
+- (void)screenParametersDidChange:(NSNotification *)notification {
+    if (!glfw_window || !glfw_window->ns.layer_shell.is_active) return;
+    _glfwPlatformSetLayerShellConfig(glfw_window, NULL);
+}
+
+- (void) removeGLFWWindow
+{
+    glfw_window = NULL;
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
@@ -2138,9 +2160,10 @@ void _glfwPlatformDestroyWindow(_GLFWwindow *window) {
   if (window->context.destroy)
     window->context.destroy(window);
 
-  [window->ns.object setDelegate:nil];
-  [window->ns.delegate release];
-  window->ns.delegate = nil;
+    [window->ns.object setDelegate:nil];
+    [window->ns.delegate cleanup];
+    [window->ns.delegate release];
+    window->ns.delegate = nil;
 
   [window->ns.view removeGLFWWindow];
   [window->ns.view release];

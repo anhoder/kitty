@@ -170,6 +170,9 @@ Detailed list of changes
 - Fix rendering of underlines when using larger text sizes with the space and
   en-space characters (:iss:`8950`)
 
+- Fix updating panel configuration on visibility toggle and via remote control
+  not working (:iss:`8984`)
+
 - Wayland: Update bundled copy of libwayland to 1.24 from 1.23.1 because the
   just released mesa 25.2.0 breaks with libwayland < 1.24 (:iss:`8884`)
 
@@ -178,6 +181,10 @@ Detailed list of changes
 
 - macOS: Workaround for bug in macOS Tahoe that caused closed OS Windows to
   remain as invisible rectangles that intercept mouse events (:iss:`8952`)
+
+- macOS: Workaround for bug in macOS Tahoe that caused OS Windows that are
+  fullscreen on a monitor that is disconnected while macOS is asleep to crash kitty (:iss:`8983`)
+
 
 0.42.2 [2025-07-16]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
