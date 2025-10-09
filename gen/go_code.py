@@ -247,7 +247,7 @@ def clone_safe_launch_opts() -> Sequence[GoOption]:
     ans = []
     allowed = clone_safe_opts()
     for o in go_options_for_seq(parse_option_spec(options_spec())[0]):
-        if o.obj_dict['name'] in allowed:
+        if o.obj_defn.name in allowed:
             ans.append(o)
     return tuple(ans)
 
@@ -661,7 +661,7 @@ var QueryNames = []string{{ {query_names} }}
 var CommentedOutDefaultConfig = "{serialize_as_go_string(commented_out_default_config())}"
 var KittyConfigDefaults = struct {{
 Term, Shell_integration, Select_by_word_characters, Url_excluded_characters, Shell string
-Wheel_scroll_multiplier int
+Wheel_scroll_multiplier float64
 Url_prefixes []string
 }}{{
 Term: "{Options.term}", Shell_integration: "{' '.join(Options.shell_integration)}", Url_prefixes: []string{{ {url_prefixes} }},

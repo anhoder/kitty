@@ -202,32 +202,9 @@ jobs:
           - name: Upload artifact
             uses: actions/upload-artifact@v4
             with:
-              name: dist_files
-              path: |
-                /Users/runner/work/kitty/kitty/*
-
-    dependecy-scanner:
-        name: Scan dependencies for vulnerabilities
-        runs-on: ubuntu-latest
-        env:
-            KITTY_BUNDLE: 1
-        steps:
-          - name: Checkout source code
-            uses: actions/checkout@v5
-            with:
-              fetch-depth: 10
-              persist-credentials: false
-
-          - name: Checkout bypy
-            uses: actions/checkout@v5
-            with:
-              fetch-depth: 1
-              persist-credentials: false
-              repository: kovidgoyal/bypy
-              path: bypy-src
-
-          - name: Check dependencies
-            run: python3 .github/workflows/ci.py check-dependencies
+                name: dist_files
+                path: |
+                    /Users/runner/work/kitty/kitty/*
 
     linux-dev:
         name: Test ./dev.sh and benchmark

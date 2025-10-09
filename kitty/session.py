@@ -3,6 +3,7 @@
 
 import json
 import os
+import re
 import shlex
 import sys
 from collections.abc import Callable, Generator, Iterator, Mapping
@@ -11,7 +12,7 @@ from functools import partial
 from gettext import gettext as _
 from typing import TYPE_CHECKING, Any, Optional, Sequence, Union
 
-from .cli_stub import CLIOptions, SaveAsSessionOptions
+from .cli_stub import CLIOptions, GotoSessionOptions, SaveAsSessionOptions
 from .constants import config_dir, unserialize_launch_flag
 from .fast_data_types import get_options
 from .layout.interface import all_layouts
@@ -64,7 +65,7 @@ class Tab:
         self.pending_resize_spec: ResizeSpec | None = None
         self.pending_focus_matching_window: str = ''
         self.name = name.strip()
-        self.active_window_idx = 0
+        self.active_window_idx = -1
         self.enabled_layouts = opts.enabled_layouts
         self.layout = (self.enabled_layouts or ['tall'])[0]
         self.layout_state: dict[str, Any] | None = None
@@ -195,7 +196,7 @@ def session_arg_to_name(session_arg: str) -> str:
     if session_arg in ('-', '/dev/stdin', 'none'):
         session_arg = ''
     session_name = os.path.basename(session_arg)
-    if session_name.rpartition('.')[2] in ('session', 'kitty-session'):
+    if session_name.rpartition('.')[2] in ('session', 'kitty-session', 'kitty_session'):
         session_name = session_name.rpartition('.')[0]
     return session_name
 
@@ -493,11 +494,15 @@ def close_session_with_confirm(boss: BossType, cmdline: Sequence[str]) -> None:
         do_close(True)
 
 
-def choose_session(boss: BossType) -> None:
+def choose_session(boss: BossType, opts: GotoSessionOptions) -> None:
     all_known_sessions = get_all_known_sessions()
     hmap = {n: len(goto_session_history)-i for i, n in enumerate(goto_session_history)}
-    def skey(name: str) -> tuple[int, str]:
-        return hmap.get(name, len(goto_session_history)), name.lower()
+    if opts.sort_by == 'alphabetical':
+        def skey(name: str) -> tuple[int, str]:
+            return 0, name.lower()
+    else:
+        def skey(name: str) -> tuple[int, str]:
+            return hmap.get(name, len(goto_session_history)), name.lower()
     names = sorted(all_known_sessions, key=skey)
 
     def chosen(name: str | None) -> None:
@@ -507,33 +512,56 @@ def choose_session(boss: BossType) -> None:
         _('Select a session to activate'), ((name, name) for name in names), chosen)
 
 
+def parse_goto_session_cmdline(args: list[str]) -> tuple[GotoSessionOptions, list[str]]:
+    from kitty.cli import cached_parse_cmdline
+    ans = GotoSessionOptions()
+    leftover_args = cached_parse_cmdline(goto_session_options(), args, ans)
+    return ans, leftover_args
+
+
+def goto_session_options() -> str:
+    return '''
+--sort-by
+choices=recent,alphabetical
+default=recent
+When interactively choosing sessions from a list, how to sort the list.
+'''
+
+
+def goto_previous_session(boss: BossType, idx: int) -> None:
+    if boss.active_session:
+        nidx = max(0, len(goto_session_history) - 1 + idx)
+        if nidx < len(goto_session_history):
+            switch_to_session(boss, goto_session_history[nidx])
+            return
+    else:
+        if goto_session_history:
+            switch_to_session(boss, goto_session_history[-1])
+            return
+    boss.ring_bell_if_allowed()
+
+
 def goto_session(boss: BossType, cmdline: Sequence[str]) -> None:
+    if len(cmdline) == 1 and re.match(r'-\d+', cmdline[0]) is not None:
+        # special case for backwards compat goto_session -1
+        return goto_previous_session(boss, int(cmdline[0]))
+    try:
+        opts, cmdline = parse_goto_session_cmdline(list(cmdline))
+    except Exception as e:
+        boss.show_error(_('Invalid goto_session command'), _(
+            'The command goto_session {0} is invalid with error: {1}').format(shlex.join(cmdline), e))
+        return
     if not cmdline:
-        choose_session(boss)
+        choose_session(boss, opts)
         return
     path = cmdline[0]
-    if len(cmdline) == 1:
+    if len(cmdline) == 1:  # goto_session -- -1
         try:
             idx = int(path)
         except Exception:
             idx = 0
         if idx < 0:
-            if boss.active_session:
-                nidx = max(0, len(goto_session_history) - 1 + idx)
-                if nidx < len(goto_session_history):
-                    switch_to_session(boss, goto_session_history[nidx])
-                    return
-            else:
-                if goto_session_history:
-                    switch_to_session(boss, goto_session_history[-1])
-                    return
-            boss.ring_bell_if_allowed()
-            return
-    else:
-        for x in cmdline:
-            if not x.startswith('-'):
-                path = x
-                break
+            return goto_previous_session(boss, idx)
     path, session_name = resolve_session_path_and_name(path)
     if not session_name:
         boss.show_error(_('Invalid session'), _('{} is not a valid path for a session').format(path))

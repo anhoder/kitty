@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tarfile
 import time
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 BUNDLE_URL = 'https://download.calibre-ebook.com/ci/kitty/{}-64.tar.xz'
 FONTS_URL = 'https://download.calibre-ebook.com/ci/fonts.tar.xz'
@@ -63,9 +63,24 @@ def run(*a: str, print_crash_reports: bool = False) -> None:
         raise SystemExit(f'The following process failed with exit code: {ret}:\n{cmd}')
 
 
+def download_with_retry(url: str | Request, count: int = 5) -> bytes:
+    from urllib.request import urlopen
+    for i in range(count):
+        try:
+            print('Downloading', url, flush=True)
+            with urlopen(url) as f:
+                ans: bytes = f.read()
+            return ans
+        except Exception as err:
+            if i >= count - 1:
+                raise
+            print(f'Download failed with error {err} retrying...', file=sys.stderr)
+            time.sleep(1)
+    return b''
+
+
 def install_fonts() -> None:
-    with urlopen(FONTS_URL) as f:
-        data = f.read()
+    data = download_with_retry(FONTS_URL)
     fonts_dir = os.path.expanduser('~/Library/Fonts' if is_macos else '~/.local/share/fonts')
     os.makedirs(fonts_dir, exist_ok=True)
     with tarfile.open(fileobj=io.BytesIO(data), mode='r:xz') as tf:
@@ -73,8 +88,7 @@ def install_fonts() -> None:
             tf.extractall(fonts_dir, filter='fully_trusted')
         except TypeError:
             tf.extractall(fonts_dir)
-    with urlopen(NERD_URL) as f:
-        data = f.read()
+    data = download_with_retry(NERD_URL)
     with tarfile.open(fileobj=io.BytesIO(data), mode='r:xz') as tf:
         try:
             tf.extractall(fonts_dir, filter='fully_trusted')
@@ -163,8 +177,7 @@ def install_bundle(dest: str = '', which: str = '') -> None:
     os.makedirs(dest, exist_ok=True)
     os.chdir(dest)
     which = which or ('macos' if is_macos else 'linux')
-    with urlopen(BUNDLE_URL.format(which)) as f:
-        data = f.read()
+    data = download_with_retry(BUNDLE_URL.format(which))
     with tarfile.open(fileobj=io.BytesIO(data), mode='r:xz') as tf:
         try:
             tf.extractall(filter='fully_trusted')
@@ -187,8 +200,7 @@ def install_grype() -> str:
     rq = Request('https://api.github.com/repos/anchore/grype/releases/latest', headers={
         'Accept': 'application/vnd.github.v3+json',
     })
-    with urlopen(rq) as f:
-        m = json.loads(f.read())
+    m = json.loads(download_with_retry(rq))
     for asset in m['assets']:
         if asset['name'].endswith('_linux_amd64.tar.gz'):
             url = asset['browser_download_url']
@@ -196,8 +208,7 @@ def install_grype() -> str:
     else:
         raise ValueError('Could not find linux binary for grype')
     os.makedirs(dest, exist_ok=True)
-    with urlopen(url) as f:
-        data = f.read()
+    data = download_with_retry(url)
     with tarfile.open(fileobj=io.BytesIO(data), mode='r') as tf:
         tf.extract('grype', path=dest, filter='fully_trusted')
     return os.path.join(dest, 'grype')
@@ -207,6 +218,7 @@ IGNORED_DEPENDENCY_CVES = [
     # Python stdlib
     'CVE-2025-8194', # DoS in tarfile
     'CVE-2025-6069', # DoS in HTMLParser
+    # glib
     'CVE-2025-4056', # Only affects Windows, on which we dont run
 ]
 
@@ -254,6 +266,12 @@ def main() -> None:
         package_kitty()
     elif action == 'test':
         test_kitty()
+    elif action == 'test':
+        test_kitty()
+    elif action == 'govulncheck':
+        subprocess.check_call(['go', 'install', 'golang.org/x/vuln/cmd/govulncheck@latest'])
+        subprocess.check_call(['govulncheck', '-mode=binary', 'kitty/launcher/kitten'])
+        subprocess.check_call(['govulncheck', './...'])
     elif action == 'gofmt':
         q = subprocess.check_output('gofmt -s -l tools kittens'.split()).decode()
         if q.strip():

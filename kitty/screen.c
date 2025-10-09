@@ -1671,11 +1671,14 @@ screen_reset_mode(Screen *self, unsigned int mode) {
 }
 
 void
-screen_modify_other_keys(Screen *self, unsigned int val) {
+screen_modify_other_keys(Screen *self, unsigned val, unsigned val2) {
     // Only report an error about modifyOtherKeys if the kitty keyboard
-    // protocol is not in effect and the application is trying to turn it on. There are some applications that try to enable both.
-    debug_input("modifyOtherKeys: %u\n", val);
-    if (!screen_current_key_encoding_flags(self) && val) {
+    // protocol is not in effect and the application is trying to turn it on.
+    // There are some applications that try to enable both.
+    if (
+        self->test_child == Py_None && !screen_current_key_encoding_flags(self) &&
+        val == 4 && val2 != INT_MAX && val2 != 0
+    ) {
         log_error("The application is trying to use xterm's modifyOtherKeys. This is superseded by the kitty keyboard protocol https://sw.kovidgoyal.net/kitty/keyboard-protocol. The application should be updated to use that.");
     }
 }
@@ -2582,7 +2585,7 @@ screen_delete_lines(Screen *self, unsigned int count) {
     unsigned int top = self->margin_top, bottom = self->margin_bottom;
     if (count == 0) count = 1;
     if (top <= self->cursor->y && self->cursor->y <= bottom) {
-        screen_delete_lines_impl(self, self->cursor->y, count, self->margin_bottom, self->margin_bottom);
+        screen_delete_lines_impl(self, self->cursor->y, count, top, bottom);
         screen_carriage_return(self);
     }
 }

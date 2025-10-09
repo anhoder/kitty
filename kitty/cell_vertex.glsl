@@ -76,14 +76,18 @@ vec3 color_to_vec(uint c) {
     return vec3(gamma_lut[r], gamma_lut[g], gamma_lut[b]);
 }
 
-#define one_if_equal_zero_otherwise(a, b) (1.0f - zero_or_one(abs(float(a) - float(b))))
+float one_if_equal_zero_otherwise(float a, float b) { return (1.0f - zero_or_one(abs(float(a) - float(b)))); }
+// Wee need an integer variant to accommodate GPU driver bugs, see
+// https://github.com/kovidgoyal/kitty/issues/9072
+uint one_if_equal_zero_otherwise(int a, int b) { return (1u - uint(zero_or_one(abs(float(a) - float(b))))); }
+uint one_if_equal_zero_otherwise(uint a, uint b) { return (1u - uint(zero_or_one(abs(float(a) - float(b))))); }
 
 
 uint resolve_color(uint c, uint defval) {
     // Convert a cell color to an actual color based on the color table
     int t = int(c & BYTE_MASK);
-    uint is_one = uint(one_if_equal_zero_otherwise(t, 1));
-    uint is_two = uint(one_if_equal_zero_otherwise(t, 2));
+    uint is_one = one_if_equal_zero_otherwise(t, 1);
+    uint is_two = one_if_equal_zero_otherwise(t, 2);
     uint is_neither_one_nor_two = 1u - is_one - is_two;
     return is_one * color_table[(c >> 8) & BYTE_MASK] + is_two * (c >> 8) + is_neither_one_nor_two * defval;
 }
@@ -94,7 +98,7 @@ vec3 to_color(uint c, uint defval) {
 
 vec3 resolve_dynamic_color(uint c, vec3 special_val, vec3 defval) {
     float type = float((c >> 24) & BYTE_MASK);
-#define q(which, val) one_if_equal_zero_otherwise(type, which) * val
+#define q(which, val) one_if_equal_zero_otherwise(type, float(which)) * val
     return (
         q(COLOR_IS_RGB, color_to_vec(c)) + q(COLOR_IS_INDEX, color_to_vec(color_table[c & BYTE_MASK])) +
         q(COLOR_IS_SPECIAL, special_val) + q(COLOR_NOT_SET, defval)
@@ -185,7 +189,7 @@ uvec2 get_decorations_indices(uint in_url /* [0, 1] */, uint text_attrs) {
     return uvec2(strike_idx, has_underline * (decorations_idx + underline_style));
 }
 
-float is_cursor(uint x, uint y) {
+uint is_cursor(uint x, uint y) {
     uint clamped_x = clamp(x, cursor_x1, cursor_x2);
     uint clamped_y = clamp(y, cursor_y1, cursor_y2);
     return one_if_equal_zero_otherwise(x, clamped_x) * one_if_equal_zero_otherwise(y, clamped_y);
@@ -217,7 +221,7 @@ CellData set_vertex_position(vec3 cell_fg, vec3 cell_bg) {
     colored_sprite = float((sprite_idx[0] & SPRITE_COLORED_MASK) >> SPRITE_COLORED_SHIFT);
 #endif
     // Cursor shape and colors
-    float has_main_cursor = is_cursor(column, row);
+    float has_main_cursor = float(is_cursor(column, row));
     float multicursor_shape = float((is_selected >> 2) & 3u);
     float multicursor_uses_main_cursor_shape = float((is_selected >> 4) & BIT_MASK);
     multicursor_shape = if_one_then(multicursor_uses_main_cursor_shape, cursor_shape, multicursor_shape);

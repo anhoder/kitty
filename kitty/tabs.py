@@ -251,10 +251,14 @@ class Tab:  # {{{
     def _startup(self, session_tab: SessionTab) -> None:
         target_tab = self
         boss = get_boss()
-        for window in session_tab.windows:
+        active_window_id = 0
+        did_focus_matching_spec = False
+        first_window_id = 0
+        for i, window in enumerate(session_tab.windows):
             spec = window.launch_spec
+            launched_window: Window | None = None
             if isinstance(spec, SpecialWindowInstance):
-                self.new_special_window(spec)
+                launched_window = self.new_special_window(spec)
             else:
                 from .launch import launch
                 spec.opts.add_to_session = self.created_in_session_name
@@ -263,12 +267,26 @@ class Tab:  # {{{
                     startup_command_via_shell_integration=window.run_command_at_shell_startup)
                 if launched_window is not None:
                     launched_window.serialized_id = window.serialized_id
+            if launched_window is not None:
+                if not first_window_id:
+                    first_window_id = launched_window.id
+                if session_tab.active_window_idx == i:
+                    active_window_id = launched_window.id
+                    did_focus_matching_spec = False
             if window.resize_spec is not None:
                 self.resize_window(*window.resize_spec)
             if window.focus_matching_window_spec:
-                for w in boss.match_windows(window.focus_matching_window_spec, launched_window or boss.active_window):
+                # include windows from this tab when matching windows
+                all_windows = list(boss.all_windows)
+                awq = {w.id for w in all_windows}
+                all_windows.extend(w for w in self if w.id not in awq)
+                for w in boss.match_windows(
+                    window.focus_matching_window_spec, launched_window or boss.active_window, all_windows
+                ):
                     tab = w.tabref()
                     if tab:
+                        did_focus_matching_spec = True
+                        active_window_id = 0
                         target_tab = tab or self
                         tm = tab.tab_manager_ref()
                         if tm and boss.active_tab is not target_tab:
@@ -277,8 +295,10 @@ class Tab:  # {{{
                             target_tab.set_active_window(w)
                         boss.focus_os_window(w.os_window_id)
 
-        with suppress(IndexError):
-            self.windows.set_active_window_group_for(self.windows.all_windows[session_tab.active_window_idx])
+        if not did_focus_matching_spec and not active_window_id:
+            active_window_id = first_window_id
+        if active_window_id and not did_focus_matching_spec:
+            self.windows.set_active_window_group_for(active_window_id)
         if session_tab.layout_state:
             self.current_layout.unserialize(session_tab.layout_state, self.windows)
 
@@ -1031,12 +1051,15 @@ class TabManager:  # {{{
             self.add_tabs_from_session(startup_session)
 
     def add_tabs_from_session(self, session: SessionType, session_name: str = '') -> None:
-        before = len(self.tabs)
-        for t in session.tabs:
+        active_tab = self.active_tab
+        for i, t in enumerate(session.tabs):
             tab = Tab(self, session_tab=t, session_name=session_name or self.created_in_session_name)
             self._add_tab(tab)
-        num_added = len(self.tabs) - before
-        self._set_active_tab(max(0, min(num_added + session.active_tab_idx, len(self.tabs) - 1)))
+            if i == session.active_tab_idx:
+                active_tab = tab
+        if active_tab is not None:
+            idx = self.tabs.index(active_tab)
+            self._set_active_tab(idx)
 
     @property
     def active_tab_idx(self) -> int:
@@ -1365,12 +1388,21 @@ class TabManager:  # {{{
             while self.active_tab_history and self.active_tab_history[-1] == tab.id:
                 self.active_tab_history.pop()
 
+        def previous_active_tab() -> Tab | None:
+            while self.active_tab_history:
+                tab_id = self.active_tab_history.pop()
+                if tab_id != removed_tab.id:
+                    if (ans := self.tab_for_id(tab_id)) is not None:
+                        return ans
+            return self.tabs[0] if self.tabs else None
+
         if active_tab_before_removal is removed_tab:
-            if len(self.tabs) == 0:
-                self._active_tab_idx = 0
-            elif len(self.tabs) == 1:
-                remove_from_end_of_active_history(self.tabs[0])
-                self._set_active_tab(0, store_in_history=False)
+            if len(tabs) == 0 or (len(tabs) == 1 and removed_tab is tabs[0]):
+                tab = previous_active_tab()
+                if tab is None:
+                    self._active_tab_idx = 0
+                else:
+                    self._set_active_tab(self.tabs.index(tab), store_in_history=False)
             else:
                 next_active_tab: Tab | None = None
                 match get_options().tab_switch_strategy:
@@ -1378,8 +1410,9 @@ class TabManager:  # {{{
                         while self.active_tab_history and next_active_tab is None:
                             tab_id = self.active_tab_history.pop()
                             next_active_tab = self.tab_for_id(tab_id)
+                            if next_active_tab not in tabs:
+                                next_active_tab = None
                     case 'left':
-                        print(2222222222, tabs.index(active_tab_before_removal))
                         next_active_tab = tabs[(tabs.index(active_tab_before_removal) - 1 + len(tabs)) % len(tabs)]
                         remove_from_end_of_active_history(next_active_tab)
                     case 'right':

@@ -656,9 +656,29 @@ setup_texture_as_render_target(unsigned width, unsigned height, GLuint *texture_
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     // We use GL_RGBA16 to avoid incorrect colors due to quantization loss when
     // blending, see https://github.com/kovidgoyal/kitty/issues/8953
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    static struct { bool ok; int fmt; } status = { false, GL_RGBA16};
+    glTexImage2D(GL_TEXTURE_2D, 0, status.fmt, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     bind_framebuffer_for_output(*framebuffer_id);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, *texture_id, 0);
+    if (!status.ok) {
+        if (check_framebuffer_status() == NULL) {
+            status.ok = true;
+        } else {
+            if (status.fmt == GL_RGBA16) {
+                // Driver does not support 16 bit FBO so let it choose the
+                // format. It will probably end up choosing 8 bit but
+                // inaccurate colors are better than completely broken rendering.
+                // See https://github.com/kovidgoyal/kitty/issues/9068
+                status.fmt = GL_RGBA;
+                free_framebuffer(framebuffer_id);
+                free_texture(texture_id);
+                setup_texture_as_render_target(width, height, texture_id, framebuffer_id);
+                log_error("WARNING: Your GPU driver does not support 16bit textures as framebuffer targets, some colors may be slightly inaccurate.");
+            } else {
+                fatal("Your GPU driver does not support indirect rendering to a GL_RGBA texture via a framebuffer");
+            }
+        }
+    }
 }
 
 static void
@@ -1231,7 +1251,7 @@ draw_cursor_trail(CursorTrail *trail, Window *active_window) {
     }
     color_vec3(trail_program_layout.uniforms.trail_color, trail_color);
 
-    glUniform1fv(trail_program_layout.uniforms.trail_opacity, 1, &trail->opacity);
+    glUniform1f(trail_program_layout.uniforms.trail_opacity, trail->opacity);
 
     draw_quad(true, 0);
     unbind_program();
@@ -1241,14 +1261,13 @@ draw_cursor_trail(CursorTrail *trail, Window *active_window) {
 
 // OSWindow {{{
 static void
-draw_bg_image(OSWindow *os_window) {
+draw_bg_image(OSWindow *os_window, Tab *tab) {
     if (!has_bgimage(os_window)) return;
     BackgroundImageRenderSettings s = {
         .os_window.width = os_window->viewport_width, .os_window.height = os_window->viewport_height,
         .instance_id = os_window->bgimage->id, .layout=OPT(background_image_layout),
         .linear=OPT(background_image_linear), .bgcolor=OPT(background), .opacity=effective_os_window_alpha(os_window),
     };
-    bind_program(BGIMAGE_PROGRAM);
     GLfloat iwidth = os_window->bgimage->width, iheight = os_window->bgimage->height;
     GLfloat vwidth = s.os_window.width, vheight = s.os_window.height;
     if (CENTER_SCALED == OPT(background_image_layout)) {
@@ -1278,6 +1297,9 @@ draw_bg_image(OSWindow *os_window) {
             bottom += hfrac;
         } break;
     }
+    bind_program(BGIMAGE_PROGRAM);
+    // altough we dont use this VO we need to ensure *some* VAO is bound at this point.
+    bind_vertex_array(tab->border_rects.vao_idx);
     glUniform4f(bgimage_program_layout.uniforms.sizes, vwidth, vheight, iwidth, iheight);
     glUniform1f(bgimage_program_layout.uniforms.tiled, tiled);
     glUniform4f(bgimage_program_layout.uniforms.positions, left, top, right, bottom);
@@ -1339,7 +1361,7 @@ blank_os_window(OSWindow *osw) {
 }
 
 static void
-start_os_window_rendering(OSWindow *os_window) {
+start_os_window_rendering(OSWindow *os_window, Tab *tab) {
     if (os_window->live_resize.in_progress) {
         blank_os_window(os_window);
         save_viewport_using_bottom_left_origin(0, 0, os_window->viewport_width, os_window->viewport_height);
@@ -1357,7 +1379,7 @@ start_os_window_rendering(OSWindow *os_window) {
         set_framebuffer_to_use_for_output(os_window->indirect_output.framebuffer_id);
         bind_framebuffer_for_output(0);
         clear_current_framebuffer();
-        draw_bg_image(os_window);
+        draw_bg_image(os_window, tab);
     }
 }
 
@@ -1382,7 +1404,7 @@ stop_os_window_rendering(OSWindow *os_window, Tab *tab, Window *active_window) {
 
 void
 setup_os_window_for_rendering(OSWindow *os_window, Tab *tab, Window *active_window, bool start) {
-    if (start) start_os_window_rendering(os_window);
+    if (start) start_os_window_rendering(os_window, tab);
     else stop_os_window_rendering(os_window, tab, active_window);
 }
 // }}}

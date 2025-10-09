@@ -24,6 +24,39 @@ import (
 
 var _ = fmt.Print
 
+func resolve_secret(key, val string) (string, error) {
+	v := strings.TrimSpace(val)
+	if v == "" {
+		return "", nil
+	}
+	if b, s, ok := strings.Cut(v, ":"); ok {
+		b = strings.ToLower(strings.TrimSpace(b))
+		s = strings.TrimSpace(s)
+		switch b {
+		case "text":
+			return s, nil
+		default:
+			return "", fmt.Errorf("Unsupported secret backend %s for %s. Supported backends: text", b, key)
+		}
+	}
+	return "", fmt.Errorf("No secret backend specified for: %s", key)
+}
+
+func resolve_secrets(c *Config, only_syntax bool) error {
+	_ = only_syntax // this will be useful when using backends that require user interaction
+	if r, err := resolve_secret("password", c.Password); err != nil {
+		return err
+	} else {
+		c.Password = r
+	}
+	if r, err := resolve_secret("totp_secret", c.Totp_secret); err != nil {
+		return err
+	} else {
+		c.Password = r
+	}
+	return nil
+}
+
 type EnvInstruction struct {
 	key, val                                         string
 	delete_on_remote, copy_from_local, literal_quote bool
@@ -347,7 +380,7 @@ type ConfigSet struct {
 
 func config_for_hostname(hostname_to_match, username_to_match string, cs *ConfigSet) *Config {
 	matcher := func(q *Config) bool {
-		for _, pat := range strings.Split(q.Hostname, " ") {
+		for pat := range strings.SplitSeq(q.Hostname, " ") {
 			upat := "*"
 			if strings.Contains(pat, "@") {
 				upat, pat, _ = strings.Cut(pat, "@")

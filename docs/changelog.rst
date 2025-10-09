@@ -19,6 +19,24 @@ sessions <goto_session>` with a single keypress and also to manually setup some
 tabs/windows in kitty and :ref:`save it as a session file <complex_sessions>`,
 for seamless and intuitive session file creation.
 
+A scrollbar for the kitty scrollback [0.43]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A long requested feature, kitty has finally :pull:`gotten a scrollbar <8945>`
+that can be used with the mouse for browsing its scrollback. The bar appear
+automatically when you start scrolling backwards and is :opt:`extensively
+configurable <scrollbar>` in kitty.conf. Note that the old ``scrollback_indicator_opacity``
+option is deprecated.
+
+Multiple cursors [0.43]
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+kitty has pioneered a new :doc:`escape code protocol
+<multiple-cursors-protocol>` that allows terminal applications to use multiple
+cursors, rendered natively. These are typically used in editors to make the
+same edit at multiple locations. Now terminal based editors can use properly
+rendered native cursors, just like their GUI cousins, at last.
+
 Access kitty with a single keypress [0.42]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -116,13 +134,73 @@ consumption to do the same tasks.
 Detailed list of changes
 -------------------------------------
 
-0.43.0 [future]
+0.43.2 [future]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Allow kitty to read a specified set of environment variables from your
+  login shell at startup using the :opt:`env` directive in kitty.conf
+  (:iss:`9042`)
+
+- Fix a regression in 0.43.0 that caused a black flicker when closing a tab in
+  the presence of a background image (:iss:`9060`)
+
+- Splits layout: Fix a bug that could cause a corrupted layout in some
+  circumstances (:iss:`9059`)
+
+- Fix a regression in the previous release that broke ``goto_session -1``
+
+- Fix rendering broken on ancient GPU drivers that do not support rendering to 16 bit textures (:iss:`9068`)
+
+- Fix tab bar sometimes showing incorrect tabs when it is filtered to show only
+  tabs from the current session (:iss:`9079`)
+
+- macOS: Workaround for bug in macOS Tahoe that caused OS Windows that are
+  fullscreen to crash kitty when returning from sleep on some machines (:iss:`8983`)
+
+0.43.1 [2025-10-01]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- ssh kitten: Allow specifying a password and/or TOTP authentication secret to
+  automate interactive logins in scenarios where public key authentication is
+  not supported (:pull:`9020`)
+
+- macOS: Fix a bug where the color of a transparent titlebar was off when
+  running in the release build versus the build from source. Also fix using a
+  transparent titlebar causing the background opacity to be doubled.
+
+- Fix a regression in the previous release that caused the incorrect tab to be
+  active when loading a session (:iss:`9025`)
+
+- macOS: Workaround for bug in macOS Tahoe that caused closed OS Windows to
+  remain as invisible rectangles that intercept mouse events (:iss:`8952`)
+
+- macOS: Fix a regression in the previous release that broke automatic
+  switching of dark/light mode when setting :opt:`macos_titlebar_color` to an
+  arbitrary color (:iss:`9034`)
+
+- :ac:`goto_session`: Add ``--sort-by=alphabetical`` to have the interactive session
+  picker list the sessions in a fixed order rather than by most recent
+  (:disc:`9033`)
+
+- Fix a regression in the previous release that caused the cursor trail to not
+  be hidden properly (:iss:`9039`)
+
+- Session files: Fix a regression in the previous release that broke matching on
+  windows in the current tab (:iss:`9037`)
+
+- Fix a regression in the previous release that broke clearing screen lines
+  when in margin mode (:iss:`9049`)
+
+
+0.43.0 [2025-09-28]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - New support for creating and switching to :doc:`sessions` easily, allowing
-  users to define and use sessions/projects efficiently
+  users to define and use sessions/projects efficiently (:iss:`8911`)
 
 - Add a configurable :opt:`scrollbar` for the kitty scrollback (:pull:`8945`)
+
+- A new protocol for :doc:`multiple cursors <multiple-cursors-protocol>` in the terminal (:iss:`8927`)
 
 - macOS: Allow the window title bar to be semi-transparent when
   :opt:`background_opacity` is less than one and :opt:`macos_titlebar_color` is
@@ -134,8 +212,9 @@ Detailed list of changes
 - macOS: Add the default :kbd:`Cmd+L` mapping from Terminal.app to erase the
   last command and its output (:disc:`6040`)
 
-- Fix :opt:`background_opacity` being non-linear with light color themes
-  (:iss:`8869`)
+- Fix :opt:`background_opacity` being non-linear especially with light color themes.
+  Note that this might require you to adjust the value of this setting to get
+  back your current look. (:iss:`8869`)
 
 - Add support for blinking text. Text marked as blinking now blinks in exact
   rhythm with the cursor. The blinking animation and max duration are
@@ -155,6 +234,9 @@ Detailed list of changes
   it was last active on, after full screening some application causes the quick
   access terminal to appear on the old space (:iss:`8740`)
 
+- macOS: When toggling open the quick access terminal move it to the currently
+  active monitor (the monitor with the mouse pointer on it) (:iss:`9003`)
+
 - macOS: Fix closing an OS Window when another OS Window is minimized causing
   the minimized window to be un-minimized (:iss:`8913`)
 
@@ -173,14 +255,13 @@ Detailed list of changes
 - Fix updating panel configuration on visibility toggle and via remote control
   not working (:iss:`8984`)
 
+- Improve rendering of rounded rectangles (:pull:`9000`)
+
 - Wayland: Update bundled copy of libwayland to 1.24 from 1.23.1 because the
   just released mesa 25.2.0 breaks with libwayland < 1.24 (:iss:`8884`)
 
 - macOS: Pass the :kbd:`Cmd+C` shortcut to the application running in the
   terminal when no text is selected (:pull:`8946`)
-
-- macOS: Workaround for bug in macOS Tahoe that caused closed OS Windows to
-  remain as invisible rectangles that intercept mouse events (:iss:`8952`)
 
 - macOS: Workaround for bug in macOS Tahoe that caused OS Windows that are
   fullscreen on a monitor that is disconnected while macOS is asleep to crash kitty (:iss:`8983`)
@@ -2629,7 +2710,7 @@ Detailed list of changes
   do not display a box around active windows
 
 - Add a new extensible escape code to allow terminal programs to trigger
-  desktop notifications. See :ref:`desktop_notifications` (:iss:`1474`)
+  desktop notifications. See :ref:`notifications_on_the_desktop` (:iss:`1474`)
 
 - Implement special rendering for various characters from the set of "Symbols
   for Legacy Computing" from the Unicode 13 standard

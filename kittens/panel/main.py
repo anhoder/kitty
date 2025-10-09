@@ -5,7 +5,8 @@ import os
 import sys
 from contextlib import suppress
 from functools import partial
-from typing import Iterable, Mapping, Sequence
+from types import MappingProxyType
+from typing import Any, Iterable, Mapping, Sequence
 
 from kitty.cli import parse_args
 from kitty.cli_stub import PanelCLIOptions
@@ -30,7 +31,7 @@ from kitty.fast_data_types import (
     toggle_os_window_visibility,
 )
 from kitty.simple_cli_definitions import panel_options_spec
-from kitty.types import LayerShellConfig
+from kitty.types import LayerShellConfig, run_once
 from kitty.typing_compat import BossType
 from kitty.utils import log_error
 
@@ -46,7 +47,7 @@ def panel_kitten_options_spec() -> str:
     return ans
 
 
-def parse_panel_args(args: list[str], track_seen_options: set[str] | None = None) -> tuple[PanelCLIOptions, list[str]]:
+def parse_panel_args(args: list[str], track_seen_options: dict[str, Any] | None = None) -> tuple[PanelCLIOptions, list[str]]:
     return parse_args(
         args, panel_kitten_options_spec, usage, help_text, 'kitty +kitten panel',
         result_class=PanelCLIOptions, track_seen_options=track_seen_options)
@@ -95,6 +96,47 @@ def layer_shell_config(opts: PanelCLIOptions) -> LayerShellConfig:
                             output_name=opts.output_name or '')
 
 
+@run_once
+def cli_option_to_lsc_configs_map() -> MappingProxyType[str, tuple[str, ...]]:
+    return MappingProxyType({
+        'lines': ('y_size_in_cells', 'y_size_in_pixels'),
+        'columns': ('x_size_in_cells', 'x_size_in_pixels'),
+        'margin_top': ('requested_top_margin',),
+        'margin_left': ('requested_left_margin',),
+        'margin_bottom': ('requested_bottom_margin',),
+        'margin_right': ('requested_right_margin',),
+        'edge': ('edge',),
+        'layer': ('type',),
+        'output_name': ('output_name',),
+        'focus_policy': ('focus_policy',),
+        'exclusive_zone': ('requested_exclusive_zone',),
+        'override_exclusive_zone': ('override_exclusive_zone',),
+        'hide_on_focus_loss': ('hide_on_focus_loss',)
+    })
+
+
+def incrementally_update_layer_shell_config(existing: dict[str, Any], cli_options: Iterable[str]) -> LayerShellConfig:
+    seen_options: dict[str, Any] = {}
+    cli_options = [('' if x.startswith('--') else '--') + x for x in cli_options]
+    try:
+        try:
+            opts, _ = parse_panel_args(cli_options, track_seen_options=seen_options)
+        except SystemExit as e:
+            raise ValueError(str(e))
+        lsc = layer_shell_config(opts)
+    except Exception as e:
+        raise ValueError(f'Invalid panel options specified: {e}')
+    lsc_cli_map = cli_option_to_lsc_configs_map()
+    for option in seen_options:
+        for config in lsc_cli_map.get(option, ()):
+            existing[config] = getattr(lsc, config)
+    if seen_options.get('edge') == 'background':
+        existing['type'] = GLFW_LAYER_SHELL_BACKGROUND
+    if existing['hide_on_focus_loss']:
+        existing['focus_policy'] = GLFW_FOCUS_ON_DEMAND
+    return LayerShellConfig(**existing)
+
+
 mtime_map: dict[str, float] = {}
 
 
@@ -129,7 +171,7 @@ def handle_single_instance_command(boss: BossType, sys_args: Sequence[str], envi
         for os_window_id in boss.os_window_map:
             existing = layer_shell_config_for_os_window(os_window_id)
             layer_shell_config_changed = not existing or any(f for f in lsc._fields if getattr(lsc, f) != existing.get(f))
-            toggle_os_window_visibility(os_window_id)
+            toggle_os_window_visibility(os_window_id, move_to_active_screen=args.move_to_active_monitor)
             if layer_shell_config_changed:
                 set_layer_shell_config(os_window_id, lsc)
         return
@@ -142,7 +184,7 @@ def handle_single_instance_command(boss: BossType, sys_args: Sequence[str], envi
 
 
 def main(sys_args: list[str]) -> None:
-    # run_kitten run using runpy.run_module which does not import into
+    # run_kitten runs using runpy.run_module which does not import into
     # sys.modules, which means the module will be re-imported later, causing
     # global variables to be duplicated, so do it now.
     from kittens.panel.main import actual_main
