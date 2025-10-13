@@ -7,6 +7,8 @@ import (
 	"image"
 	"io"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/kovidgoyal/kitty/tools/cli"
@@ -17,9 +19,9 @@ var _ = fmt.Print
 
 func encode_rgba(output io.Writer, img image.Image) (err error) {
 	var final_img *image.NRGBA
-	switch img.(type) {
+	switch ti := img.(type) {
 	case *image.NRGBA:
-		final_img = img.(*image.NRGBA)
+		final_img = ti
 	default:
 		b := img.Bounds()
 		final_img = image.NewNRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
@@ -68,6 +70,66 @@ func convert_image(input io.ReadSeeker, output io.Writer, format string) (err er
 	return Encode(output, img, mt)
 }
 
+func images_equal(img, rimg *ImageData) (err error) {
+	for i := range img.Frames {
+		a, b := img.Frames[i], rimg.Frames[i]
+		if a.Img.Bounds() != b.Img.Bounds() {
+			return fmt.Errorf("bounds of frame %d not equal: %v != %v", i, a.Img.Bounds(), b.Img.Bounds())
+		}
+		for y := a.Img.Bounds().Min.Y; y < a.Img.Bounds().Max.Y; y++ {
+			for x := a.Img.Bounds().Min.X; x < a.Img.Bounds().Max.X; x++ {
+				or, og, ob, oa := a.Img.At(x, y).RGBA()
+				nr, ng, nb, na := b.Img.At(x, y).RGBA()
+				a, b := []uint32{or, og, ob, oa}, []uint32{nr, ng, nb, na}
+				if !slices.Equal(a, b) {
+					return fmt.Errorf("pixel at %dx%d differs: %v != %v", x, y, a, b)
+				}
+			}
+		}
+
+	}
+	return
+}
+
+func develop_serialize(input_data io.ReadSeeker) (err error) {
+	img, err := OpenNativeImageFromReader(input_data)
+	if err != nil {
+		return err
+	}
+	m, b := img.Serialize()
+	rimg, err := ImageFromSerialized(m, b)
+	if err != nil {
+		return err
+	}
+	return images_equal(img, rimg)
+}
+
+func develop_resize(spec string, input_data io.ReadSeeker) (err error) {
+	ws, hs, _ := strings.Cut(spec, "x")
+	var w, h int
+	if w, err = strconv.Atoi(ws); err != nil {
+		return
+	}
+	if h, err = strconv.Atoi(hs); err != nil {
+		return
+	}
+	img, err := OpenNativeImageFromReader(input_data)
+	if err != nil {
+		return err
+	}
+	aimg := img.Resize(float64(w)/float64(img.Width), float64(h)/float64(img.Height))
+	m, b := img.Serialize()
+	rimg, err := ImageFromSerialized(m, b)
+	if err != nil {
+		return err
+	}
+	if err = images_equal(img, rimg); err != nil {
+		return fmt.Errorf("roundtripped images not equal: %w", err)
+	}
+	bimg := rimg.Resize(float64(w)/float64(rimg.Width), float64(h)/float64(rimg.Height))
+	return images_equal(aimg, bimg)
+}
+
 func ConvertEntryPoint(root *cli.Command) {
 	root.AddSubCommand(&cli.Command{
 		Name:            "__convert_image__",
@@ -82,9 +144,16 @@ func ConvertEntryPoint(root *cli.Command) {
 			if _, err = io.Copy(buf, os.Stdin); err != nil {
 				return 1, err
 			}
-			if err = convert_image(bytes.NewReader(buf.Bytes()), os.Stdout, format); err != nil {
-				rc = 1
+			input_data := bytes.NewReader(buf.Bytes())
+			switch {
+			case format == "develop-serialize":
+				err = develop_serialize(input_data)
+			case strings.HasPrefix(format, "develop-resize-"):
+				err = develop_resize(format[len("develop-resize-"):], input_data)
+			default:
+				err = convert_image(input_data, os.Stdout, format)
 			}
+			rc = utils.IfElse(err == nil, 0, 1)
 			return
 		},
 	})

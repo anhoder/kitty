@@ -33,9 +33,9 @@
 #include <Availability.h>
 #import <CoreServices/CoreServices.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#include <assert.h>
 #include <float.h>
 #include <string.h>
-#include <assert.h>
 
 #define debug debug_rendering
 
@@ -668,10 +668,9 @@ static const NSRange kEmptyRange = {NSNotFound, 0};
 
 // Delegate for window related notifications {{{
 
-@interface GLFWWindowDelegate : NSObject
-{
-    _GLFWwindow* window;
-    NSArray<NSDictionary *> *_lastScreenStates;
+@interface GLFWWindowDelegate : NSObject {
+  _GLFWwindow *window;
+  NSArray<NSDictionary *> *_lastScreenStates;
 }
 
 - (instancetype)initWithGlfwWindow:(_GLFWwindow *)initWindow;
@@ -681,57 +680,59 @@ static const NSRange kEmptyRange = {NSNotFound, 0};
 
 @implementation GLFWWindowDelegate
 
-- (instancetype)initWithGlfwWindow:(_GLFWwindow *)initWindow
-{
-    self = [super init];
-    if (self != nil) {
-        window = initWindow;
-        _lastScreenStates = [self captureScreenStates];
-        window->ns.live_resize_in_progress = false;
-    }
-    return self;
+- (instancetype)initWithGlfwWindow:(_GLFWwindow *)initWindow {
+  self = [super init];
+  if (self != nil) {
+    window = initWindow;
+    _lastScreenStates = [self captureScreenStates];
+    window->ns.live_resize_in_progress = false;
+  }
+  return self;
 }
 
 - (NSArray<NSDictionary *> *)captureScreenStates {
-    NSMutableArray *states = [NSMutableArray array];
-    for (NSScreen *screen in [NSScreen screens]) {
-        // Use the screen's deviceDescription, which contains a stable ID.
-        [states addObject:screen.deviceDescription];
-    }
-    return [states copy];
+  NSMutableArray *states = [NSMutableArray array];
+  for (NSScreen *screen in [NSScreen screens]) {
+    // Use the screen's deviceDescription, which contains a stable ID.
+    [states addObject:screen.deviceDescription];
+  }
+  return [states copy];
 }
 
 - (void)cleanup {
-    [_lastScreenStates release]; _lastScreenStates = nil;
+  [_lastScreenStates release];
+  _lastScreenStates = nil;
 }
 
-- (BOOL)windowShouldClose:(id)sender
-{
-    (void)sender;
-    _glfwInputWindowCloseRequest(window);
-    return NO;
+- (BOOL)windowShouldClose:(id)sender {
+  (void)sender;
+  _glfwInputWindowCloseRequest(window);
+  return NO;
 }
 
-- (void)windowDidResize:(NSNotification *)notification
-{
-    (void)notification;
-    NSArray<NSDictionary *> *currentScreenStates = [self captureScreenStates];
-    const bool is_screen_change = ![_lastScreenStates isEqualToArray:currentScreenStates];
-    NSWindowStyleMask sm = [window->ns.object styleMask];
-    const bool is_fullscreen = (sm & NSWindowStyleMaskFullScreen) != 0;
-    NSRect frame = [window->ns.object frame];
-    debug_rendering(
-            "windowDidResize() called, is_screen_change: %d is_fullscreen: %d live_resize_in_progress: %d frame: %.1fx%.1f@(%.1f, %.1f)\n",
-            is_screen_change, is_fullscreen, window->ns.live_resize_in_progress, frame.size.width, frame.size.height, frame.origin.x, frame.origin.y);
-    if (is_screen_change) {
-        // This resize likely happened because a screen was added, removed, or changed resolution.
-        [_lastScreenStates release];
-        _lastScreenStates = [currentScreenStates retain];
-    }
-    [currentScreenStates release];
+- (void)windowDidResize:(NSNotification *)notification {
+  (void)notification;
+  NSArray<NSDictionary *> *currentScreenStates = [self captureScreenStates];
+  const bool is_screen_change =
+      ![_lastScreenStates isEqualToArray:currentScreenStates];
+  NSWindowStyleMask sm = [window->ns.object styleMask];
+  const bool is_fullscreen = (sm & NSWindowStyleMaskFullScreen) != 0;
+  NSRect frame = [window->ns.object frame];
+  debug_rendering(
+      "windowDidResize() called, is_screen_change: %d is_fullscreen: %d "
+      "live_resize_in_progress: %d frame: %.1fx%.1f@(%.1f, %.1f)\n",
+      is_screen_change, is_fullscreen, window->ns.live_resize_in_progress,
+      frame.size.width, frame.size.height, frame.origin.x, frame.origin.y);
+  if (is_screen_change) {
+    // This resize likely happened because a screen was added, removed, or
+    // changed resolution.
+    [_lastScreenStates release];
+    _lastScreenStates = [currentScreenStates retain];
+  }
+  [currentScreenStates release];
 
-    if (window->context.client != GLFW_NO_API)
-        [window->context.nsgl.object update];
+  if (window->context.client != GLFW_NO_API)
+    [window->context.nsgl.object update];
 
   if (_glfw.ns.disabledCursorWindow == window)
     _glfwCenterCursorInContentArea(window);
@@ -754,18 +755,20 @@ static const NSRange kEmptyRange = {NSNotFound, 0};
                               (int)fbRect.size.height);
   }
 
-    if (contentRect.size.width != window->ns.width ||
-        contentRect.size.height != window->ns.height)
-    {
-        window->ns.width  = (int)contentRect.size.width;
-        window->ns.height = (int)contentRect.size.height;
-        _glfwInputWindowSize(window, (int)contentRect.size.width, (int)contentRect.size.height);
-    }
-    // Because of a bug in macOS Tahoe we cannot redraw the window in response
-    // to a resize event that was caused by a screen change as the OpenGL
-    // context is not ready yet. See: https://github.com/kovidgoyal/kitty/issues/8983
-    if (window->ns.resizeCallback && !is_screen_change && !is_fullscreen && window->ns.live_resize_in_progress)
-        window->ns.resizeCallback((GLFWwindow*)window);
+  if (contentRect.size.width != window->ns.width ||
+      contentRect.size.height != window->ns.height) {
+    window->ns.width = (int)contentRect.size.width;
+    window->ns.height = (int)contentRect.size.height;
+    _glfwInputWindowSize(window, (int)contentRect.size.width,
+                         (int)contentRect.size.height);
+  }
+  // Because of a bug in macOS Tahoe we cannot redraw the window in response
+  // to a resize event that was caused by a screen change as the OpenGL
+  // context is not ready yet. See:
+  // https://github.com/kovidgoyal/kitty/issues/8983
+  if (window->ns.resizeCallback && !is_screen_change && !is_fullscreen &&
+      window->ns.live_resize_in_progress)
+    window->ns.resizeCallback((GLFWwindow *)window);
 }
 
 - (void)windowDidMove:(NSNotification *)notification {
@@ -925,24 +928,32 @@ static const NSRange kEmptyRange = {NSNotFound, 0};
 
 @implementation GLFWContentView
 
-- (instancetype)initWithGlfwWindow:(_GLFWwindow *)initWindow
-{
-    self = [super init];
-    if (self != nil)
-    {
-        window = initWindow;
-        trackingArea = nil;
-        input_context = [[GLFWTextInputContext alloc] initWithClient:self];
-        markedText = [[NSMutableAttributedString alloc] init];
-        markedRect = NSMakeRect(0.0, 0.0, 0.0, 0.0);
-        input_source_at_last_key_event = nil;
-        in_key_handler = 0;
-        self.identifier = @"kitty-content-view";
+- (instancetype)initWithGlfwWindow:(_GLFWwindow *)initWindow {
+  self = [super init];
+  if (self != nil) {
+    window = initWindow;
+    trackingArea = nil;
+    input_context = [[GLFWTextInputContext alloc] initWithClient:self];
+    markedText = [[NSMutableAttributedString alloc] init];
+    markedRect = NSMakeRect(0.0, 0.0, 0.0, 0.0);
+    input_source_at_last_key_event = nil;
+    in_key_handler = 0;
+    self.identifier = @"kitty-content-view";
 
     [self updateTrackingAreas];
-    [self registerForDraggedTypes:@[
-      NSPasteboardTypeFileURL, NSPasteboardTypeString
-    ]];
+    // Register for file promises in addition to regular files (macOS 10.12+)
+    if (@available(macOS 10.12, *)) {
+      NSMutableArray *types =
+          [NSMutableArray arrayWithObjects:NSPasteboardTypeFileURL,
+                                           NSPasteboardTypeString, nil];
+      // Add file promise types
+      [types addObjectsFromArray:[NSFilePromiseReceiver readableDraggedTypes]];
+      [self registerForDraggedTypes:types];
+    } else {
+      [self registerForDraggedTypes:@[
+        NSPasteboardTypeFileURL, NSPasteboardTypeString
+      ]];
+    }
   }
 
   return self;
@@ -977,18 +988,18 @@ static const NSRange kEmptyRange = {NSNotFound, 0};
   return YES;
 }
 
-- (void) viewWillStartLiveResize
-{
-    if (!window) return;
-    window->ns.live_resize_in_progress = true;
-    _glfwInputLiveResize(window, true);
+- (void)viewWillStartLiveResize {
+  if (!window)
+    return;
+  window->ns.live_resize_in_progress = true;
+  _glfwInputLiveResize(window, true);
 }
 
-- (void)viewDidEndLiveResize
-{
-    if (!window) return;
-    window->ns.live_resize_in_progress = false;
-    _glfwInputLiveResize(window, false);
+- (void)viewDidEndLiveResize {
+  if (!window)
+    return;
+  window->ns.live_resize_in_progress = false;
+  _glfwInputLiveResize(window, false);
 }
 
 - (BOOL)wantsUpdateLayer {
@@ -1120,11 +1131,12 @@ static const NSRange kEmptyRange = {NSNotFound, 0};
   updateCursorImage(window);
 }
 
-- (void)viewDidChangeBackingProperties
-{
-    if (!window) return;
-    const NSRect contentRect = get_window_size_without_border_in_logical_pixels(window);
-    const NSRect fbRect = [window->ns.view convertRectToBacking:contentRect];
+- (void)viewDidChangeBackingProperties {
+  if (!window)
+    return;
+  const NSRect contentRect =
+      get_window_size_without_border_in_logical_pixels(window);
+  const NSRect fbRect = [window->ns.view convertRectToBacking:contentRect];
 
   if (fbRect.size.width != window->ns.fbWidth ||
       fbRect.size.height != window->ns.fbHeight) {
@@ -1873,27 +1885,32 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
 - (instancetype)initWithGlfwWindow:(NSRect)contentRect
                          styleMask:(NSWindowStyleMask)style
                            backing:(NSBackingStoreType)backingStoreType
-                        initWindow:(_GLFWwindow *)initWindow
-{
-    self = [super initWithContentRect:contentRect styleMask:style backing:backingStoreType defer:NO];
-    if (self != nil) {
-        glfw_window = initWindow;
-        self.tabbingMode = NSWindowTabbingModePreferred;
-        NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
-        [center addObserver:self selector:@selector(screenParametersDidChange:) name:NSApplicationDidChangeScreenParametersNotification object:nil];
-    }
-    return self;
+                        initWindow:(_GLFWwindow *)initWindow {
+  self = [super initWithContentRect:contentRect
+                          styleMask:style
+                            backing:backingStoreType
+                              defer:NO];
+  if (self != nil) {
+    glfw_window = initWindow;
+    self.tabbingMode = NSWindowTabbingModePreferred;
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    [center addObserver:self
+               selector:@selector(screenParametersDidChange:)
+                   name:NSApplicationDidChangeScreenParametersNotification
+                 object:nil];
+  }
+  return self;
 }
 
 - (void)screenParametersDidChange:(NSNotification *)notification {
-    if (!glfw_window || !glfw_window->ns.layer_shell.is_active) return;
-    _glfwPlatformSetLayerShellConfig(glfw_window, NULL);
+  if (!glfw_window || !glfw_window->ns.layer_shell.is_active)
+    return;
+  _glfwPlatformSetLayerShellConfig(glfw_window, NULL);
 }
 
-- (void) removeGLFWWindow
-{
-    glfw_window = NULL;
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
+- (void)removeGLFWWindow {
+  glfw_window = NULL;
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
@@ -1910,20 +1927,24 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
     [super performMiniaturize:sender];
 }
 
-- (BOOL)canBecomeKeyWindow
-{
-    if (!glfw_window) return NO;
-    if (glfw_window->ns.layer_shell.is_active) {
-        if (glfw_window->ns.layer_shell.config.type == GLFW_LAYER_SHELL_BACKGROUND) return NO;
-        switch(glfw_window->ns.layer_shell.config.focus_policy) {
-            case GLFW_FOCUS_NOT_ALLOWED: return NO;
-            case GLFW_FOCUS_EXCLUSIVE: return YES;
-            case GLFW_FOCUS_ON_DEMAND: return YES;
-        }
+- (BOOL)canBecomeKeyWindow {
+  if (!glfw_window)
+    return NO;
+  if (glfw_window->ns.layer_shell.is_active) {
+    if (glfw_window->ns.layer_shell.config.type == GLFW_LAYER_SHELL_BACKGROUND)
+      return NO;
+    switch (glfw_window->ns.layer_shell.config.focus_policy) {
+    case GLFW_FOCUS_NOT_ALLOWED:
+      return NO;
+    case GLFW_FOCUS_EXCLUSIVE:
+      return YES;
+    case GLFW_FOCUS_ON_DEMAND:
+      return YES;
     }
-    // Required for NSWindowStyleMaskBorderless windows
-    // Also miniaturized windows should not become key
-    return !_glfwPlatformWindowIconified(glfw_window);
+  }
+  // Required for NSWindowStyleMaskBorderless windows
+  // Also miniaturized windows should not become key
+  return !_glfwPlatformWindowIconified(glfw_window);
 }
 
 - (BOOL)canBecomeMainWindow {
@@ -2150,13 +2171,12 @@ int _glfwPlatformCreateWindow(_GLFWwindow *window,
   return true;
 }
 
-void _glfwPlatformDestroyWindow(_GLFWwindow* window)
-{
-    GLFWWindow *w = window->ns.object;
-    if (_glfw.ns.disabledCursorWindow == window)
-        _glfw.ns.disabledCursorWindow = NULL;
+void _glfwPlatformDestroyWindow(_GLFWwindow *window) {
+  GLFWWindow *w = window->ns.object;
+  if (_glfw.ns.disabledCursorWindow == window)
+    _glfw.ns.disabledCursorWindow = NULL;
 
-    [w orderOut:nil];
+  [w orderOut:nil];
 
   if (window->monitor)
     releaseMonitor(window);
@@ -2164,24 +2184,26 @@ void _glfwPlatformDestroyWindow(_GLFWwindow* window)
   if (window->context.destroy)
     window->context.destroy(window);
 
-    [w setDelegate:nil];
-    [window->ns.delegate cleanup];
-    [window->ns.delegate release];
-    window->ns.delegate = nil;
+  [w setDelegate:nil];
+  [window->ns.delegate cleanup];
+  [window->ns.delegate release];
+  window->ns.delegate = nil;
 
   [window->ns.view removeGLFWWindow];
   [window->ns.view release];
   window->ns.view = nil;
 
-    [w removeGLFWWindow];
-    // Workaround for macOS Tahoe where if the frame is not set to zero size
-    // even after NSWindow::close the window remains on screen as an invisible
-    // rectangle that intercepts mouse events and takes up space in mission
-    // control. Sigh.
-    NSRect frame = w.frame; frame.size.width = 0; frame.size.height = 0;
-    [w setFrame:frame display:NO];
-    [w close];  // sends a release to NSWindow so we dont release it
-    window->ns.object = nil;
+  [w removeGLFWWindow];
+  // Workaround for macOS Tahoe where if the frame is not set to zero size
+  // even after NSWindow::close the window remains on screen as an invisible
+  // rectangle that intercepts mouse events and takes up space in mission
+  // control. Sigh.
+  NSRect frame = w.frame;
+  frame.size.width = 0;
+  frame.size.height = 0;
+  [w setFrame:frame display:NO];
+  [w close]; // sends a release to NSWindow so we dont release it
+  window->ns.object = nil;
 }
 
 static NSScreen *screen_for_window_center(_GLFWwindow *window) {
@@ -2195,41 +2217,43 @@ static NSScreen *screen_for_window_center(_GLFWwindow *window) {
   return NSScreen.mainScreen;
 }
 
-static NSScreen*
-active_screen(void) {
-    NSPoint mouseLocation = [NSEvent mouseLocation];
-    NSArray<NSScreen *> *screens = [NSScreen screens];
-    for (NSScreen *screen in screens) {
-        if (NSPointInRect(mouseLocation, [screen frame])) {
-            return screen;
-        }
+static NSScreen *active_screen(void) {
+  NSPoint mouseLocation = [NSEvent mouseLocation];
+  NSArray<NSScreen *> *screens = [NSScreen screens];
+  for (NSScreen *screen in screens) {
+    if (NSPointInRect(mouseLocation, [screen frame])) {
+      return screen;
     }
-    // As a fallback, return the main screen
-    return [NSScreen mainScreen];
+  }
+  // As a fallback, return the main screen
+  return [NSScreen mainScreen];
 }
 
-static bool
-is_same_screen(NSScreen *screenA, NSScreen * screenB) {
-    if (screenA == screenB) return true;
-    NSDictionary<NSDeviceDescriptionKey, id> *deviceDescriptionA = [screenA deviceDescription];
-    NSDictionary<NSDeviceDescriptionKey, id> *deviceDescriptionB = [screenB deviceDescription];
-    NSNumber *screenNumberA = deviceDescriptionA[@"NSScreenNumber"];
-    NSNumber *screenNumberB = deviceDescriptionB[@"NSScreenNumber"];
-    return [screenNumberA isEqualToNumber:screenNumberB];
+static bool is_same_screen(NSScreen *screenA, NSScreen *screenB) {
+  if (screenA == screenB)
+    return true;
+  NSDictionary<NSDeviceDescriptionKey, id> *deviceDescriptionA =
+      [screenA deviceDescription];
+  NSDictionary<NSDeviceDescriptionKey, id> *deviceDescriptionB =
+      [screenB deviceDescription];
+  NSNumber *screenNumberA = deviceDescriptionA[@"NSScreenNumber"];
+  NSNumber *screenNumberB = deviceDescriptionB[@"NSScreenNumber"];
+  return [screenNumberA isEqualToNumber:screenNumberB];
 }
 
-static void
-move_window_to_screen(_GLFWwindow *window, NSScreen *target) {
-    NSRect screenFrame = [target visibleFrame];
-    NSRect windowFrame = [window->ns.object frame];
-    CGFloat newX = NSMidX(screenFrame) - (windowFrame.size.width / 2.0);
-    CGFloat newY = NSMidY(screenFrame) - (windowFrame.size.height / 2.0);
-    NSRect newWindowFrame = NSMakeRect(newX, newY, windowFrame.size.width, windowFrame.size.height);
-    [window->ns.object setFrame:newWindowFrame display:NO animate:NO];
-    if (window->ns.layer_shell.is_active) _glfwPlatformSetLayerShellConfig(window, NULL);
+static void move_window_to_screen(_GLFWwindow *window, NSScreen *target) {
+  NSRect screenFrame = [target visibleFrame];
+  NSRect windowFrame = [window->ns.object frame];
+  CGFloat newX = NSMidX(screenFrame) - (windowFrame.size.width / 2.0);
+  CGFloat newY = NSMidY(screenFrame) - (windowFrame.size.height / 2.0);
+  NSRect newWindowFrame =
+      NSMakeRect(newX, newY, windowFrame.size.width, windowFrame.size.height);
+  [window->ns.object setFrame:newWindowFrame display:NO animate:NO];
+  if (window->ns.layer_shell.is_active)
+    _glfwPlatformSetLayerShellConfig(window, NULL);
 }
 
-const GLFWLayerShellConfig*
+const GLFWLayerShellConfig *
 _glfwPlatformGetLayerShellConfig(_GLFWwindow *window) {
   return &window->ns.layer_shell.config;
 }
@@ -2567,61 +2591,67 @@ void _glfwPlatformMaximizeWindow(_GLFWwindow *window) {
   }
 }
 
-void _glfwPlatformShowWindow(_GLFWwindow* window, bool move_to_active_screen)
-{
-    const bool is_background = window->ns.layer_shell.is_active && window->ns.layer_shell.config.type == GLFW_LAYER_SHELL_BACKGROUND;
-    NSWindow *nw = window->ns.object;
-    if (move_to_active_screen) {
-        NSScreen *current_screen = screen_for_window_center(window);
-        NSScreen *target_screen = active_screen();
-        if (!is_same_screen(current_screen, target_screen)) {
-            debug_rendering("Moving OS window %llu to active screen\n", window->id);
-            move_window_to_screen(window, target_screen);
-        }
+void _glfwPlatformShowWindow(_GLFWwindow *window, bool move_to_active_screen) {
+  const bool is_background =
+      window->ns.layer_shell.is_active &&
+      window->ns.layer_shell.config.type == GLFW_LAYER_SHELL_BACKGROUND;
+  NSWindow *nw = window->ns.object;
+  if (move_to_active_screen) {
+    NSScreen *current_screen = screen_for_window_center(window);
+    NSScreen *target_screen = active_screen();
+    if (!is_same_screen(current_screen, target_screen)) {
+      debug_rendering("Moving OS window %llu to active screen\n", window->id);
+      move_window_to_screen(window, target_screen);
     }
-    if (is_background) {
-        [nw orderBack:nil];
-    } else {
-        // Cocoa has a bug where when showing a hidden window after
-        // fullscreening an application, the window does not get added
-        // to the current space even though it has NSWindowCollectionBehaviorCanJoinAllSpaces
-        // probably because it wasnt added to the temp space used for
-        // fullscreen. So to work around that, we change the collection
-        // behavior temporarily to NSWindowCollectionBehaviorMoveToActiveSpace
-        // and then change it back asynchronously.
-        // See https://github.com/kovidgoyal/kitty/issues/8740
-        NSWindowCollectionBehavior old = nw.collectionBehavior;
-        nw.collectionBehavior = (old & !NSWindowCollectionBehaviorCanJoinAllSpaces) | NSWindowCollectionBehaviorMoveToActiveSpace;
-        [nw orderFront:nil];
-        dispatch_async(dispatch_get_main_queue(), ^{
-			nw.collectionBehavior = old;
-		});
-    }
+  }
+  if (is_background) {
+    [nw orderBack:nil];
+  } else {
+    // Cocoa has a bug where when showing a hidden window after
+    // fullscreening an application, the window does not get added
+    // to the current space even though it has
+    // NSWindowCollectionBehaviorCanJoinAllSpaces probably because it wasnt
+    // added to the temp space used for fullscreen. So to work around that, we
+    // change the collection behavior temporarily to
+    // NSWindowCollectionBehaviorMoveToActiveSpace and then change it back
+    // asynchronously. See https://github.com/kovidgoyal/kitty/issues/8740
+    NSWindowCollectionBehavior old = nw.collectionBehavior;
+    nw.collectionBehavior =
+        (old & !NSWindowCollectionBehaviorCanJoinAllSpaces) |
+        NSWindowCollectionBehaviorMoveToActiveSpace;
+    [nw orderFront:nil];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      nw.collectionBehavior = old;
+    });
+  }
 }
 
-void _glfwPlatformHideWindow(_GLFWwindow* window)
-{
-    [window->ns.object orderOut:nil];
-    pid_t prev_app_pid = _glfw.ns.previous_front_most_application; _glfw.ns.previous_front_most_application = 0;
-    NSRunningApplication *app;
-    if (window->ns.layer_shell.is_active && prev_app_pid > 0 && (app = [NSRunningApplication runningApplicationWithProcessIdentifier:prev_app_pid])) {
-        unsigned num_visible = 0;
-        for (_GLFWwindow *w = _glfw.windowListHead;  w;  w = w->next) {
-            if (_glfwPlatformWindowVisible(w)) num_visible++;
-        }
-        if (!num_visible) {
-            // yieldActivationToApplication was introduced in macOS 14 (Sonoma)
-            SEL selector = NSSelectorFromString(@"yieldActivationToApplication:");
-            if ([NSApp respondsToSelector:selector]) {
-                [NSApp performSelector:selector withObject:app];
-                [app activateWithOptions:0];
-            } else {
-                #define NSApplicationActivateIgnoringOtherApps 2
-                [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
-                #undef NSApplicationActivateIgnoringOtherApps
-            }
-        }
+void _glfwPlatformHideWindow(_GLFWwindow *window) {
+  [window->ns.object orderOut:nil];
+  pid_t prev_app_pid = _glfw.ns.previous_front_most_application;
+  _glfw.ns.previous_front_most_application = 0;
+  NSRunningApplication *app;
+  if (window->ns.layer_shell.is_active && prev_app_pid > 0 &&
+      (app = [NSRunningApplication
+           runningApplicationWithProcessIdentifier:prev_app_pid])) {
+    unsigned num_visible = 0;
+    for (_GLFWwindow *w = _glfw.windowListHead; w; w = w->next) {
+      if (_glfwPlatformWindowVisible(w))
+        num_visible++;
     }
+    if (!num_visible) {
+      // yieldActivationToApplication was introduced in macOS 14 (Sonoma)
+      SEL selector = NSSelectorFromString(@"yieldActivationToApplication:");
+      if ([NSApp respondsToSelector:selector]) {
+        [NSApp performSelector:selector withObject:app];
+        [app activateWithOptions:0];
+      } else {
+#define NSApplicationActivateIgnoringOtherApps 2
+        [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+#undef NSApplicationActivateIgnoringOtherApps
+      }
+    }
+  }
 }
 
 void _glfwPlatformRequestWindowAttention(_GLFWwindow *window UNUSED) {
@@ -2633,18 +2663,17 @@ int _glfwPlatformWindowBell(_GLFWwindow *window UNUSED) {
   return true;
 }
 
-void _glfwPlatformFocusWindow(_GLFWwindow* window)
-{
-    if (_glfwPlatformWindowIconified(window)) {
-        // miniaturized windows return false in canBecomeKeyWindow therefore
-        // unminiaturize first
-        [window->ns.object deminiaturize:nil];
-    }
-    if ([window->ns.object canBecomeKeyWindow]) {
-        // Make us the active application
-        [NSApp activateIgnoringOtherApps:YES];
-        [window->ns.object makeKeyAndOrderFront:nil];
-    }
+void _glfwPlatformFocusWindow(_GLFWwindow *window) {
+  if (_glfwPlatformWindowIconified(window)) {
+    // miniaturized windows return false in canBecomeKeyWindow therefore
+    // unminiaturize first
+    [window->ns.object deminiaturize:nil];
+  }
+  if ([window->ns.object canBecomeKeyWindow]) {
+    // Make us the active application
+    [NSApp activateIgnoringOtherApps:YES];
+    [window->ns.object makeKeyAndOrderFront:nil];
+  }
 }
 
 void _glfwPlatformSetWindowMonitor(_GLFWwindow *window, _GLFWmonitor *monitor,
@@ -3570,13 +3599,12 @@ int _glfwPlatformSetWindowBlur(_GLFWwindow *window, int radius) {
 //////                        GLFW native API                       //////
 //////////////////////////////////////////////////////////////////////////
 
-GLFWAPI id glfwGetCocoaWindow(GLFWwindow* handle)
-{
-    _GLFWwindow* window = (_GLFWwindow*) handle;
-    assert(window != NULL);
+GLFWAPI id glfwGetCocoaWindow(GLFWwindow *handle) {
+  _GLFWwindow *window = (_GLFWwindow *)handle;
+  assert(window != NULL);
 
-    _GLFW_REQUIRE_INIT_OR_RETURN(nil);
-    return window->ns.object;
+  _GLFW_REQUIRE_INIT_OR_RETURN(nil);
+  return window->ns.object;
 }
 
 GLFWAPI GLFWcocoatextinputfilterfun glfwSetCocoaTextInputFilter(
@@ -3620,114 +3648,158 @@ glfwCocoaSetWindowResizeCallback(GLFWwindow *w, GLFWcocoarenderframefun cb) {
 
 @implementation NSView (FindByIdentifier)
 
-- (NSArray<NSView *> *)viewsWithIdentifier:(NSUserInterfaceItemIdentifier)identifier {
-    NSMutableArray<NSView *> *result = [NSMutableArray array];
-    if ([self.identifier isEqual:identifier]) {
-        [result addObject:self];
-    }
-    for (NSView *sub in self.subviews) {
-        [result addObjectsFromArray:[sub viewsWithIdentifier:identifier]];
-    }
-    return result;
+- (NSArray<NSView *> *)viewsWithIdentifier:
+    (NSUserInterfaceItemIdentifier)identifier {
+  NSMutableArray<NSView *> *result = [NSMutableArray array];
+  if ([self.identifier isEqual:identifier]) {
+    [result addObject:self];
+  }
+  for (NSView *sub in self.subviews) {
+    [result addObjectsFromArray:[sub viewsWithIdentifier:identifier]];
+  }
+  return result;
 }
 
 @end
 
-static
-void clear_title_bar_background_views(NSWindow *window) {
+static void clear_title_bar_background_views(NSWindow *window) {
 #define tag @"kitty-for-transparent-titlebar"
-    NSView *contentView = window.contentView, *titlebarContainer = contentView ? contentView.superview : nil;
-    if (titlebarContainer) {
-        for (NSView *subview in [titlebarContainer viewsWithIdentifier:tag]) [subview removeFromSuperview];
-    }
+  NSView *contentView = window.contentView,
+         *titlebarContainer = contentView ? contentView.superview : nil;
+  if (titlebarContainer) {
+    for (NSView *subview in [titlebarContainer viewsWithIdentifier:tag])
+      [subview removeFromSuperview];
+  }
 }
 
-static void
-set_title_bar_background(NSWindow *window, NSColor *backgroundColor) {
-    // add an extra view that just renders the background color under the transparent titlebar
-    NSView *contentView = window.contentView, *titlebarContainer = contentView ? contentView.superview : nil;
-    if (!titlebarContainer) return;
-    for (NSView *subview in [titlebarContainer viewsWithIdentifier:tag]) [subview removeFromSuperview];
-    if (!backgroundColor) return;
+static void set_title_bar_background(NSWindow *window,
+                                     NSColor *backgroundColor) {
+  // add an extra view that just renders the background color under the
+  // transparent titlebar
+  NSView *contentView = window.contentView,
+         *titlebarContainer = contentView ? contentView.superview : nil;
+  if (!titlebarContainer)
+    return;
+  for (NSView *subview in [titlebarContainer viewsWithIdentifier:tag])
+    [subview removeFromSuperview];
+  if (!backgroundColor)
+    return;
 
-    NSButton *b = [window standardWindowButton:NSWindowCloseButton];
-    if (b) {
-        NSView *titlebarView = b.superview;
-        NSView *bgView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, titlebarView.bounds.size.width, titlebarView.bounds.size.height)];
-        bgView.translatesAutoresizingMaskIntoConstraints = NO;
-        bgView.wantsLayer = YES;
-        bgView.layer.backgroundColor = backgroundColor.CGColor;
-        bgView.identifier = tag;
-        [titlebarView addSubview:bgView positioned:NSWindowBelow relativeTo:titlebarView.subviews[0]];
-        [NSLayoutConstraint activateConstraints:@[
-            // Pin to the top of the content view.
-            [bgView.topAnchor constraintEqualToAnchor:titlebarView.topAnchor],
-            // Pin to the leading edge of the content view.
-            [bgView.leadingAnchor constraintEqualToAnchor:titlebarView.leadingAnchor],
-            // Pin to the trailing edge of the content view.
-            [bgView.trailingAnchor constraintEqualToAnchor:titlebarView.trailingAnchor],
-            // Give it a fixed height
-            [bgView.bottomAnchor constraintEqualToAnchor:titlebarView.bottomAnchor]
-        ]];
-        [bgView release];
-        return;
-    }
-    NSView *bgView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, titlebarContainer.bounds.size.width, 32)];
+  NSButton *b = [window standardWindowButton:NSWindowCloseButton];
+  if (b) {
+    NSView *titlebarView = b.superview;
+    NSView *bgView = [[NSView alloc]
+        initWithFrame:NSMakeRect(0, 0, titlebarView.bounds.size.width,
+                                 titlebarView.bounds.size.height)];
     bgView.translatesAutoresizingMaskIntoConstraints = NO;
     bgView.wantsLayer = YES;
     bgView.layer.backgroundColor = backgroundColor.CGColor;
     bgView.identifier = tag;
-    // position the background view above the content view but below the titlebar view
-    [titlebarContainer addSubview:bgView positioned:NSWindowAbove relativeTo:contentView];
-    // for (NSView *subview in titlebarContainer.subviews) NSLog(@"sv: %@", subview.identifier);
+    [titlebarView addSubview:bgView
+                  positioned:NSWindowBelow
+                  relativeTo:titlebarView.subviews[0]];
     [NSLayoutConstraint activateConstraints:@[
-        // Pin to the top of the content view.
-        [bgView.topAnchor constraintEqualToAnchor:titlebarContainer.topAnchor],
-        // Pin to the leading edge of the content view.
-        [bgView.leadingAnchor constraintEqualToAnchor:titlebarContainer.leadingAnchor],
-        // Pin to the trailing edge of the content view.
-        [bgView.trailingAnchor constraintEqualToAnchor:titlebarContainer.trailingAnchor],
-        // Give it a fixed height
-        [bgView.bottomAnchor constraintEqualToAnchor:contentView.topAnchor]
+      // Pin to the top of the content view.
+      [bgView.topAnchor constraintEqualToAnchor:titlebarView.topAnchor],
+      // Pin to the leading edge of the content view.
+      [bgView.leadingAnchor constraintEqualToAnchor:titlebarView.leadingAnchor],
+      // Pin to the trailing edge of the content view.
+      [bgView.trailingAnchor
+          constraintEqualToAnchor:titlebarView.trailingAnchor],
+      // Give it a fixed height
+      [bgView.bottomAnchor constraintEqualToAnchor:titlebarView.bottomAnchor]
     ]];
     [bgView release];
+    return;
+  }
+  NSView *bgView = [[NSView alloc]
+      initWithFrame:NSMakeRect(0, 0, titlebarContainer.bounds.size.width, 32)];
+  bgView.translatesAutoresizingMaskIntoConstraints = NO;
+  bgView.wantsLayer = YES;
+  bgView.layer.backgroundColor = backgroundColor.CGColor;
+  bgView.identifier = tag;
+  // position the background view above the content view but below the titlebar
+  // view
+  [titlebarContainer addSubview:bgView
+                     positioned:NSWindowAbove
+                     relativeTo:contentView];
+  // for (NSView *subview in titlebarContainer.subviews) NSLog(@"sv: %@",
+  // subview.identifier);
+  [NSLayoutConstraint activateConstraints:@[
+    // Pin to the top of the content view.
+    [bgView.topAnchor constraintEqualToAnchor:titlebarContainer.topAnchor],
+    // Pin to the leading edge of the content view.
+    [bgView.leadingAnchor
+        constraintEqualToAnchor:titlebarContainer.leadingAnchor],
+    // Pin to the trailing edge of the content view.
+    [bgView.trailingAnchor
+        constraintEqualToAnchor:titlebarContainer.trailingAnchor],
+    // Give it a fixed height
+    [bgView.bottomAnchor constraintEqualToAnchor:contentView.topAnchor]
+  ]];
+  [bgView release];
 #undef tag
 }
 
-GLFWAPI void glfwCocoaSetWindowChrome(GLFWwindow *w, unsigned int color, bool use_system_color, unsigned int system_color, int background_blur, unsigned int hide_window_decorations, bool show_text_in_titlebar, int color_space, float background_opacity, bool resizable) { @autoreleasepool {
-    _GLFWwindow* window = (_GLFWwindow*)w;
-    if (window->ns.layer_shell.is_active) return;
+GLFWAPI void glfwCocoaSetWindowChrome(
+    GLFWwindow *w, unsigned int color, bool use_system_color,
+    unsigned int system_color, int background_blur,
+    unsigned int hide_window_decorations, bool show_text_in_titlebar,
+    int color_space, float background_opacity, bool resizable) {
+  @autoreleasepool {
+    _GLFWwindow *window = (_GLFWwindow *)w;
+    if (window->ns.layer_shell.is_active)
+      return;
     GLFWWindow *nsw = window->ns.object;
     const bool is_transparent = _glfwPlatformFramebufferTransparent(window);
-    if (!is_transparent) { background_opacity = 1.0; background_blur = 0; }
+    if (!is_transparent) {
+      background_opacity = 1.0;
+      background_blur = 0;
+    }
     NSColor *window_background = [NSColor windowBackgroundColor];
     if (background_opacity < 1.0) {
-        // use a clear color (fully transparent) so that the final color is just the color from the surface.
-        // prevent blurring of shadows at window corners with desktop background by setting a low alpha background
-        window_background = background_blur > 0 ? [NSColor colorWithWhite: 0 alpha: 0.001f] : [NSColor clearColor];
+      // use a clear color (fully transparent) so that the final color is just
+      // the color from the surface. prevent blurring of shadows at window
+      // corners with desktop background by setting a low alpha background
+      window_background = background_blur > 0
+                              ? [NSColor colorWithWhite:0 alpha:0.001f]
+                              : [NSColor clearColor];
     }
     NSAppearance *appearance = nil;
     bool titlebar_transparent = false;
     NSColor *titlebar_color = nil;
     const NSWindowStyleMask current_style_mask = [nsw styleMask];
-    const bool in_fullscreen = ((current_style_mask & NSWindowStyleMaskFullScreen) != 0) || window->ns.in_traditional_fullscreen;
-    NSAppearance *light_appearance = is_transparent ? [NSAppearance appearanceNamed:NSAppearanceNameVibrantLight] : [NSAppearance appearanceNamed:NSAppearanceNameAqua];
-    NSAppearance *dark_appearance = is_transparent ? [NSAppearance appearanceNamed:NSAppearanceNameVibrantDark] : [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+    const bool in_fullscreen =
+        ((current_style_mask & NSWindowStyleMaskFullScreen) != 0) ||
+        window->ns.in_traditional_fullscreen;
+    NSAppearance *light_appearance =
+        is_transparent
+            ? [NSAppearance appearanceNamed:NSAppearanceNameVibrantLight]
+            : [NSAppearance appearanceNamed:NSAppearanceNameAqua];
+    NSAppearance *dark_appearance =
+        is_transparent
+            ? [NSAppearance appearanceNamed:NSAppearanceNameVibrantDark]
+            : [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     if (use_system_color) {
-        switch (system_color) {
-            case 1:
-                appearance = light_appearance; break;
-            case 2:
-                appearance = dark_appearance; break;
-        }
+      switch (system_color) {
+      case 1:
+        appearance = light_appearance;
+        break;
+      case 2:
+        appearance = dark_appearance;
+        break;
+      }
     } else {
-        double red = ((color >> 16) & 0xFF) / 255.0;
-        double green = ((color >> 8) & 0xFF) / 255.0;
-        double blue = (color & 0xFF) / 255.0;
-        double luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
-        appearance = luma < 0.5 ? dark_appearance : light_appearance;
-        titlebar_color = [NSColor colorWithSRGBRed:red green:green blue:blue alpha:background_opacity];
-        titlebar_transparent = true;
+      double red = ((color >> 16) & 0xFF) / 255.0;
+      double green = ((color >> 8) & 0xFF) / 255.0;
+      double blue = (color & 0xFF) / 255.0;
+      double luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+      appearance = luma < 0.5 ? dark_appearance : light_appearance;
+      titlebar_color = [NSColor colorWithSRGBRed:red
+                                           green:green
+                                            blue:blue
+                                           alpha:background_opacity];
+      titlebar_transparent = true;
     }
     [nsw setBackgroundColor:window_background];
     [nsw setAppearance:appearance];
@@ -3766,7 +3838,8 @@ GLFWAPI void glfwCocoaSetWindowChrome(GLFWwindow *w, unsigned int color, bool us
     bool hide_titlebar_buttons = !in_fullscreen && window->ns.titlebar_hidden;
     [nsw setTitlebarAppearsTransparent:titlebar_transparent];
     [nsw setHasShadow:has_shadow];
-    [nsw setTitleVisibility:(show_text_in_titlebar) ? NSWindowTitleVisible : NSWindowTitleHidden];
+    [nsw setTitleVisibility:(show_text_in_titlebar) ? NSWindowTitleVisible
+                                                    : NSWindowTitleHidden];
     NSColorSpace *cs = nil;
     switch (color_space) {
     case SRGB_COLORSPACE:
@@ -3781,52 +3854,64 @@ GLFWAPI void glfwCocoaSetWindowChrome(GLFWwindow *w, unsigned int color, bool us
              // fullscreen
     }
     window->resizable = resizable;
-    debug(
-        "Window Chrome state:\n\tbackground: %s\n\tappearance: %s color_space: %s\n\t"
-        "blur: %d has_shadow: %d resizable: %d decorations: %s (%d)\n\t"
-        "titlebar_transparent: %d titlebar_color: %s title_visibility: %d hidden: %d buttons_hidden: %d"
-        "\n",
-        window_background ? [window_background.description UTF8String] : "<nil>",
-        appearance ? [appearance.name UTF8String] : "<nil>",
-        cs ? (cs.localizedName ? [cs.localizedName UTF8String] : [cs.description UTF8String]) : "<nil>",
-        background_blur, has_shadow, resizable, decorations_desc, window->decorated, titlebar_transparent,
-        titlebar_color ? [titlebar_color.description UTF8String] : "<nil>",
-        show_text_in_titlebar, window->ns.titlebar_hidden, hide_titlebar_buttons
-    );
+    debug("Window Chrome state:\n\tbackground: %s\n\tappearance: %s "
+          "color_space: %s\n\t"
+          "blur: %d has_shadow: %d resizable: %d decorations: %s (%d)\n\t"
+          "titlebar_transparent: %d titlebar_color: %s title_visibility: %d "
+          "hidden: %d buttons_hidden: %d"
+          "\n",
+          window_background ? [window_background.description UTF8String]
+                            : "<nil>",
+          appearance ? [appearance.name UTF8String] : "<nil>",
+          cs ? (cs.localizedName ? [cs.localizedName UTF8String]
+                                 : [cs.description UTF8String])
+             : "<nil>",
+          background_blur, has_shadow, resizable, decorations_desc,
+          window->decorated, titlebar_transparent,
+          titlebar_color ? [titlebar_color.description UTF8String] : "<nil>",
+          show_text_in_titlebar, window->ns.titlebar_hidden,
+          hide_titlebar_buttons);
     [nsw setColorSpace:cs];
-    [[nsw standardWindowButton: NSWindowCloseButton] setHidden:hide_titlebar_buttons];
-    [[nsw standardWindowButton: NSWindowMiniaturizeButton] setHidden:hide_titlebar_buttons];
-    [[nsw standardWindowButton: NSWindowZoomButton] setHidden:hide_titlebar_buttons];
-    // Apple throws a hissy fit if one attempts to clear the value of NSWindowStyleMaskFullScreen outside of a full screen transition
-    // event. See https://github.com/kovidgoyal/kitty/issues/7106
+    [[nsw standardWindowButton:NSWindowCloseButton]
+        setHidden:hide_titlebar_buttons];
+    [[nsw standardWindowButton:NSWindowMiniaturizeButton]
+        setHidden:hide_titlebar_buttons];
+    [[nsw standardWindowButton:NSWindowZoomButton]
+        setHidden:hide_titlebar_buttons];
+    // Apple throws a hissy fit if one attempts to clear the value of
+    // NSWindowStyleMaskFullScreen outside of a full screen transition event.
+    // See https://github.com/kovidgoyal/kitty/issues/7106
     NSWindowStyleMask fsmask = current_style_mask & NSWindowStyleMaskFullScreen;
     window->ns.pre_full_screen_style_mask = getStyleMask(window);
     if (in_fullscreen && window->ns.in_traditional_fullscreen) {
-        [nsw setStyleMask:NSWindowStyleMaskBorderless];
+      [nsw setStyleMask:NSWindowStyleMaskBorderless];
     } else {
-        [nsw setStyleMask:window->ns.pre_full_screen_style_mask | fsmask];
+      [nsw setStyleMask:window->ns.pre_full_screen_style_mask | fsmask];
     }
-    if (!window->ns.titlebar_hidden && window->decorated && titlebar_color != nil && titlebar_transparent) {
-        set_title_bar_background(nsw, titlebar_color);
-    } else clear_title_bar_background_views(nsw);
+    if (!window->ns.titlebar_hidden && window->decorated &&
+        titlebar_color != nil && titlebar_transparent) {
+      set_title_bar_background(nsw, titlebar_color);
+    } else
+      clear_title_bar_background_views(nsw);
     // HACK: Changing the style mask can cause the first responder to be cleared
     [nsw makeFirstResponder:window->ns.view];
-}}
+  }
+}
 
-GLFWAPI uint32_t
-glfwGetCocoaKeyEquivalent(uint32_t glfw_key, int glfw_mods, int *cocoa_mods) {
-    *cocoa_mods = 0;
-    if (glfw_mods & GLFW_MOD_SHIFT)
-        *cocoa_mods |= NSEventModifierFlagShift;
-    if (glfw_mods & GLFW_MOD_CONTROL)
-        *cocoa_mods |= NSEventModifierFlagControl;
-    if (glfw_mods & GLFW_MOD_ALT)
-        *cocoa_mods |= NSEventModifierFlagOption;
-    if (glfw_mods & GLFW_MOD_SUPER)
-        *cocoa_mods |= NSEventModifierFlagCommand;
-    if (glfw_mods & GLFW_MOD_CAPS_LOCK)
-        *cocoa_mods |= NSEventModifierFlagCapsLock;
-    return _glfwPlatformGetNativeKeyForKey(glfw_key);
+GLFWAPI uint32_t glfwGetCocoaKeyEquivalent(uint32_t glfw_key, int glfw_mods,
+                                           int *cocoa_mods) {
+  *cocoa_mods = 0;
+  if (glfw_mods & GLFW_MOD_SHIFT)
+    *cocoa_mods |= NSEventModifierFlagShift;
+  if (glfw_mods & GLFW_MOD_CONTROL)
+    *cocoa_mods |= NSEventModifierFlagControl;
+  if (glfw_mods & GLFW_MOD_ALT)
+    *cocoa_mods |= NSEventModifierFlagOption;
+  if (glfw_mods & GLFW_MOD_SUPER)
+    *cocoa_mods |= NSEventModifierFlagCommand;
+  if (glfw_mods & GLFW_MOD_CAPS_LOCK)
+    *cocoa_mods |= NSEventModifierFlagCapsLock;
+  return _glfwPlatformGetNativeKeyForKey(glfw_key);
 }
 
 GLFWAPI bool glfwIsLayerShellSupported(void) { return true; }

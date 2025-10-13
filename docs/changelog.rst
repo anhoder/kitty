@@ -144,6 +144,9 @@ Detailed list of changes
 - Fix a regression in 0.43.0 that caused a black flicker when closing a tab in
   the presence of a background image (:iss:`9060`)
 
+- Further improvements to rounded corner rendering, especially at low DPI
+  (:pull:`9091`)
+
 - Splits layout: Fix a bug that could cause a corrupted layout in some
   circumstances (:iss:`9059`)
 
@@ -156,6 +159,12 @@ Detailed list of changes
 
 - macOS: Workaround for bug in macOS Tahoe that caused OS Windows that are
   fullscreen to crash kitty when returning from sleep on some machines (:iss:`8983`)
+
+- Graphics: Fix animated images sometimes not auto playing or auto playing at the wrong start frame if the same image id is used for a subsequent image
+
+- Fix a regression in 0.43.0 that caused high CPU usage when :opt:`disable_ligatures` was set to ``cursor`` and the tab bar was visible (:iss:`9071`)
+
+- macOS: Handle dropping of file promises into kitty in addition to file paths (:pull:`9084`)
 
 0.43.1 [2025-10-01]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -245,7 +245,7 @@ parse_font_mod_size(PyObject *val, float *sz, AdjustmentUnit *unit) {
 
 static inline void
 modify_font(PyObject *mf, Options *opts) {
-#define S(which) { PyObject *v = PyDict_GetItemString(mf, #which); if (v) parse_font_mod_size(v, &opts->which.val, &opts->which.unit); }
+#define S(which) { PyObject *v = PyDict_GetItemString(mf, #which); if (v) parse_font_mod_size(v, &opts->which.val, &opts->which.unit); else zero_at_ptr(&opts->which); }
     S(underline_position); S(underline_thickness); S(strikethrough_thickness); S(strikethrough_position);
     S(cell_height); S(cell_width); S(baseline);
 #undef S
@@ -435,7 +435,7 @@ box_drawing_scale(PyObject *val, Options *opts) {
 
 static inline void
 text_composition_strategy(PyObject *val, Options *opts) {
-    if (!PyUnicode_Check(val)) { PyErr_SetString(PyExc_TypeError, "text_rendering_strategy must be a string"); return; }
+    if (!PyUnicode_Check(val)) { PyErr_SetString(PyExc_TypeError, "text_composition_strategy must be a string"); return; }
     opts->text_old_gamma = false;
     opts->text_gamma_adjustment = 1.0f; opts->text_contrast = 0.f;
     if (PyUnicode_CompareWithASCIIString(val, "platform") == 0) {
@@ -448,7 +448,7 @@ text_composition_strategy(PyObject *val, Options *opts) {
     } else {
         RAII_PyObject(parts, PyUnicode_Split(val, NULL, 2));
         int size = PyList_GET_SIZE(parts);
-        if (size < 1 || 2 < size) { PyErr_SetString(PyExc_ValueError, "text_rendering_strategy must be of the form number:[number]"); return; }
+        if (size < 1 || 2 < size) { PyErr_SetString(PyExc_ValueError, "text_composition_strategy must be of the form 'number [number]'"); return; }
 
         if (size > 0) {
             RAII_PyObject(ga, PyFloat_FromString(PyList_GET_ITEM(parts, 0)));

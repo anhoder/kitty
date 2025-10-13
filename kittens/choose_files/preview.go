@@ -11,6 +11,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/kovidgoyal/go-parallel"
 	"github.com/kovidgoyal/kitty/tools/highlight"
 	"github.com/kovidgoyal/kitty/tools/icons"
 	"github.com/kovidgoyal/kitty/tools/tui/loop"
@@ -25,6 +26,7 @@ var _ = fmt.Print
 type Preview interface {
 	Render(h *Handler, x, y, width, height int)
 	IsValidForColorScheme(light bool) bool
+	Unload()
 }
 
 type PreviewManager struct {
@@ -80,6 +82,7 @@ type MessagePreview struct {
 
 func (p MessagePreview) IsValidForColorScheme(bool) bool { return true }
 
+func (p MessagePreview) Unload() {}
 func (p MessagePreview) Render(h *Handler, x, y, width, height int) {
 	offset := 0
 	if p.title != "" {
@@ -189,6 +192,8 @@ type TextFilePreview struct {
 
 func (p TextFilePreview) IsValidForColorScheme(light bool) bool { return p.light == light }
 
+func (p *TextFilePreview) Unload() {}
+
 func (p *TextFilePreview) Render(h *Handler, x, y, width, height int) {
 	if p.highlighted_chan != nil {
 		select {
@@ -255,13 +260,19 @@ func (pm *PreviewManager) highlight_file_async(path string, output chan highligh
 	s := style_resolver{light: use_light_colors, syntax_aliases: pm.settings.SyntaxAliases()}
 	s.light_style, s.dark_style = pm.settings.HighlightStyles()
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				err := parallel.Format_stacktrace_on_panic(r, 1)
+				debugprintln(fmt.Sprintf("Failed to highlight: %s with panic: %s", path, err))
+			}
+			close(output)
+			pm.WakeupMainThread()
+		}()
 		highlighted, err := pm.highlighter.HighlightFile(path, &s)
 		if err != nil {
 			debugprintln(fmt.Sprintf("Failed to highlight: %s with error: %s", path, err))
 		}
 		output <- highlighed_data{text: highlighted, err: err, light: s.light}
-		close(output)
-		pm.WakeupMainThread()
 	}()
 }
 
@@ -316,9 +327,14 @@ func (h *Handler) draw_preview_content(x, y, width, height int) {
 		return
 	}
 	abspath := filepath.Join(h.state.CurrentDir(), r.text)
+	if h.last_rendered_preview != nil {
+		h.last_rendered_preview.Unload()
+		h.last_rendered_preview = nil
+	}
 	if p := h.preview_manager.preview_for(abspath, r.ftype); p == nil {
 		h.render_wrapped_text_in_region("No preview available", x, y, width, height, false)
 	} else {
+		h.last_rendered_preview = p
 		p.Render(h, x, y, width, height)
 	}
 }
