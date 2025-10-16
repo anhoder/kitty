@@ -141,6 +141,10 @@ Detailed list of changes
   login shell at startup using the :opt:`env` directive in kitty.conf
   (:iss:`9042`)
 
+- A new option :opt:`draw_window_borders_for_single_window` to force kitty to
+  always draw a window border even when only a single window is present
+  (:pull:`9112`)
+
 - Fix a regression in 0.43.0 that caused a black flicker when closing a tab in
   the presence of a background image (:iss:`9060`)
 
@@ -165,6 +169,8 @@ Detailed list of changes
 - Fix a regression in 0.43.0 that caused high CPU usage when :opt:`disable_ligatures` was set to ``cursor`` and the tab bar was visible (:iss:`9071`)
 
 - macOS: Handle dropping of file promises into kitty in addition to file paths (:pull:`9084`)
+
+- macOS: Fix indeterminate progress bar displayed on dock icon increasing speed when indeterminate progress is set without being cleared first (:iss:`9114`)
 
 0.43.1 [2025-10-01]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

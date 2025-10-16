@@ -1856,6 +1856,11 @@ class Boss:
                 if is_macos and focused:
                     cocoa_set_menubar_title(w.title or '')
             tm.mark_tab_bar_dirty()
+            # Redraw borders when focus changes if draw_window_borders_for_single_window is enabled
+            # and there's only a single window (to show inactive border when OS window loses focus)
+            opts = get_options()
+            if opts.draw_window_borders_for_single_window and (tab := tm.active_tab) is not None and not tab.windows.has_more_than_one_visible_group:
+                tab.relayout_borders()
 
     def on_activity_since_last_focus(self, window: Window) -> None:
         os_window_id = window.os_window_id

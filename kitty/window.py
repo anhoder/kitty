@@ -691,10 +691,10 @@ class Window:
         self.last_focused_at = 0.
         self.is_focused: bool = False
         self.progress = Progress()
+        self.clear_progress_timer: int = 0
         self.last_resized_at = 0.
         self.started_at = monotonic()
         self.created_at = time_ns()
-        self.clear_progress_timer: int = 0
         self.current_remote_data: list[str] = []
         self.current_mouse_event_button = 0
         self.current_clipboard_read_ask: bool | None = None
@@ -1332,6 +1332,9 @@ class Window:
         g |= g << 8
         b |= b << 8
         self.screen.send_escape_code_to_child(ESC_OSC, f'{code};rgb:{r:04x}/{g:04x}/{b:04x}')
+
+    def on_reset(self) -> None:
+        self.child.reset_termios_state()
 
     def notify_child_of_resize(self) -> None:
         pty_size = self.last_reported_pty_size
