@@ -72,7 +72,7 @@ class Launch(RemoteCommand):
 --wait-for-child-to-exit
 type=bool-set
 Wait until the launched program exits and print out its exit code. The exit code is
-printed out instead of the window id. If the program exited nromally its exit code is printed, which
+printed out instead of the window id. If the program exited normally its exit code is printed, which
 is always greater than or equal to zero. If the program was killed by a signal, the symbolic name
 of the SIGNAL is printed, if available, otherwise the signal number with a leading minus sign is printed.
 
@@ -132,6 +132,11 @@ instead of the active tab
         if tabs and tabs[0]:
             target_tab = tabs[0]
 
+        # Create responder before defining callback to avoid closure issue
+        responder = None
+        if payload_get('wait_for_child_to_exit') and not payload_get('no_response'):
+            responder = self.create_async_responder(payload_get, window)
+
         def on_child_death(exit_status: int, exc: Exception | None) -> None:
             code = os.waitstatus_to_exitcode(exit_status)
             ans = str(code)
@@ -141,7 +146,8 @@ instead of the active tab
                     ans = Signals(-code).name
                 except ValueError:
                     pass
-            responder.send_data(ans)
+            if responder is not None:
+                responder.send_data(ans)
 
         w = do_launch(
             boss, opts, payload_get('args') or [], target_tab=target_tab, rc_from_window=window, base_env=base_env,
@@ -152,7 +158,6 @@ instead of the active tab
         if not payload_get('wait_for_child_to_exit'):
             return str(0 if w is None else w.id)
 
-        responder = self.create_async_responder(payload_get, window)
         return AsyncResponse()
 
     def cancel_async_request(self, boss: 'Boss', window: Window | None, payload_get: PayloadGetType) -> None:

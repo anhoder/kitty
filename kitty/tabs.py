@@ -990,6 +990,8 @@ class Tab:  # {{{
                 return active_tab_manager is not None and self.tab_manager_ref() is active_tab_manager
             if query == 'parent_focused':
                 return active_tab_manager is not None and self.tab_manager_ref() is active_tab_manager and self.os_window_id == last_focused_os_window_id()
+            if query == 'focused_os_window':
+                return self.os_window_id == last_focused_os_window_id()
             return False
         if field == 'session':
             match query:
@@ -1064,6 +1066,24 @@ class TabManager:  # {{{
             self._add_tab(tab)
             if i == session.active_tab_idx:
                 active_tab = tab
+
+        # Handle focus_tab_spec if specified
+        if session.focus_tab_spec is not None:
+            spec = session.focus_tab_spec.strip()
+            # Try to parse as a plain number (index)
+            try:
+                idx = int(spec)
+                # Clamp to valid range
+                idx = max(0, min(idx, len(self.tabs) - 1))
+                active_tab = self.tabs[idx]
+            except ValueError:
+                # Not a plain number, treat as match expression
+                from .fast_data_types import get_boss
+                boss = get_boss()
+                matched_tabs = list(boss.match_tabs(spec, self.tabs))
+                if matched_tabs:
+                    active_tab = matched_tabs[0]
+
         if active_tab is not None:
             idx = self.tabs.index(active_tab)
             self._set_active_tab(idx)
@@ -1294,12 +1314,10 @@ class TabManager:  # {{{
         is_first: bool = False
     ) -> list[str]:
         ans = []
-        hmap = {tab_id: i for i, tab_id in enumerate(self.active_tab_history)}
-        if (at := self.active_tab) is not None:
-            hmap[at.id] = len(self.active_tab_history) + 1
-        def skey(tab: Tab) -> int:
-            return hmap.get(tab.id, -1)
-        for tab in sorted(self, key=skey):
+        active_tab_index = -1
+        for i, tab in enumerate(self.tabs):
+            if tab is self.active_tab:
+                active_tab_index = i
             ans.extend(tab.serialize_state_as_session(session_path, matched_windows, ser_opts))
         if ans:
             prefix = [] if is_first else ['', '', 'new_os_window']
@@ -1308,6 +1326,10 @@ class TabManager:  # {{{
             if self.wm_name and self.wm_name != appname:
                 prefix.append(f'os_window_name {self.wm_name}')
             ans = prefix + ans
+            # Add focus_tab command to preserve the active tab
+            if active_tab_index >= 0:
+                ans.append('')
+                ans.append(f'focus_tab {active_tab_index}')
         return ans
 
     @property
