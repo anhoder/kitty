@@ -10,11 +10,11 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/kovidgoyal/go-shm"
 	"github.com/kovidgoyal/kitty/tools/tui"
 	"github.com/kovidgoyal/kitty/tools/tui/loop"
 	"github.com/kovidgoyal/kitty/tools/utils"
 	"github.com/kovidgoyal/kitty/tools/utils/images"
-	"github.com/kovidgoyal/kitty/tools/utils/shm"
 )
 
 var _ = fmt.Print
@@ -402,6 +402,9 @@ func (self *ImageCollection) transmit_rendering(lp *loop.Loop, r *rendering) {
 			gc.SetGap(frame.Delay_ms)
 			if frame.Compose_onto > 0 {
 				gc.SetOverlaidFrame(uint64(frame.Compose_onto))
+			}
+			if frame.Replace {
+				gc.SetCompositionMode(Overwrite)
 			}
 			gc.SetLeftEdge(uint64(frame.Left)).SetTopEdge(uint64(frame.Top))
 		}

@@ -1286,6 +1286,9 @@ class Window:
         if self.override_title is None:
             self.title_updated()
 
+    def osc_context(self, ctx_data: memoryview) -> None:
+        pass  # this is systemd's useless OSC 3008 context protocol
+
     def icon_changed(self, new_icon: memoryview) -> None:
         pass  # TODO: Implement this
 
@@ -1834,6 +1837,12 @@ class Window:
         path = resolve_custom_file(path) if path else ''
         set_window_logo(self.os_window_id, self.tab_id, self.id, path, position or '', alpha, png_data)
 
+    def send_paste_event(self, is_primary_selection: bool = False) -> bool:
+        if not self.screen.paste_events:
+            return False
+        self.clipboard_request_manager.send_paste_event(is_primary_selection)
+        return True
+
     def paste_with_actions(self, text: str) -> None:
         if self.destroyed or not text:
             return
@@ -2124,6 +2133,16 @@ class Window:
         ''')
     def show_last_non_empty_command_output(self) -> None:
         self.show_cmd_output(CommandOutput.last_non_empty, 'Last non-empty command output')
+
+    @ac('cp', '''
+        Copy the last non-empty output from a shell command to the clipboard
+
+        Requires :ref:`shell_integration` to work
+        ''')
+    def copy_last_command_output(self) -> None:
+        text = self.cmd_output(CommandOutput.last_non_empty, as_ansi=False, add_wrap_markers=False)
+        if text:
+            set_clipboard_string(text)
 
     @ac('cp', 'Paste the specified text into the current window. ANSI C escapes are decoded.')
     def paste(self, text: str) -> None:

@@ -86,6 +86,13 @@ graphics protocol.
 Show markdown based slides with images in your terminal, powered by the
 kitty graphics protocol.
 
+.. _tool_mdfried:
+
+`mdfried <https://github.com/benjajaja/mdfried>`_
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Markdown viewer that can render big headers with the text-sizing-protocol, and
+also render images with the kitty graphics protocol.
+
 .. _tool_term_image:
 
 `term-image <https://github.com/AnonymouX47/term-image>`__
@@ -190,28 +197,8 @@ by kitty's graphics protocol for displaying plots
 `gnuplot <http://www.gnuplot.info/>`_
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-A graphing and data visualization tool that can be made to display its output in
-kitty with the following bash snippet:
-
-.. code-block:: sh
-
-    function iplot {
-        cat <<EOF | gnuplot
-        set terminal pngcairo enhanced font 'Fira Sans,10'
-        set autoscale
-        set samples 1000
-        set output '|kitten icat --stdin yes'
-        set object 1 rectangle from screen 0,0 to screen 1,1 fillcolor rgb"#fdf6e3" behind
-        plot $@
-        set output '/dev/null'
-    EOF
-    }
-
-Add this to bashrc and then to plot a function, simply do:
-
-.. code-block:: sh
-
-    iplot 'sin(x*3)*exp(x*.2)'
+A graphing and data visualization tool that has support for the kitty graphics
+protocol, with its ``kittygd`` and ``kittycairo`` backends.
 
 .. _tool_k-nine:
 

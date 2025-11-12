@@ -704,10 +704,12 @@ static const NSRange kEmptyRange = {NSNotFound, 0};
   _lastScreenStates = nil;
 }
 
-- (BOOL)windowShouldClose:(id)sender {
-  (void)sender;
-  _glfwInputWindowCloseRequest(window);
-  return NO;
+- (BOOL)windowShouldClose:(id)sender
+{
+    (void)sender;
+    if (window == nil) return YES;
+    _glfwInputWindowCloseRequest(window);
+    return NO;
 }
 
 - (void)windowDidResize:(NSNotification *)notification {
@@ -2193,17 +2195,16 @@ void _glfwPlatformDestroyWindow(_GLFWwindow *window) {
   [window->ns.view release];
   window->ns.view = nil;
 
-  [w removeGLFWWindow];
-  // Workaround for macOS Tahoe where if the frame is not set to zero size
-  // even after NSWindow::close the window remains on screen as an invisible
-  // rectangle that intercepts mouse events and takes up space in mission
-  // control. Sigh.
-  NSRect frame = w.frame;
-  frame.size.width = 0;
-  frame.size.height = 0;
-  [w setFrame:frame display:NO];
-  [w close]; // sends a release to NSWindow so we dont release it
-  window->ns.object = nil;
+    [w removeGLFWWindow];
+    // Workaround for macOS Tahoe where if the frame is not set to zero size
+    // even after NSWindow::close the window remains on screen as an invisible
+    // rectangle that intercepts mouse events and takes up space in mission
+    // control. Sigh.
+    NSRect frame = w.frame; frame.size.width = 0; frame.size.height = 0;
+    [w setFrame:frame display:NO];
+    [w setHasShadow:NO];
+    [w close];  // sends a release to NSWindow so we dont release it
+    window->ns.object = nil;
 }
 
 static NSScreen *screen_for_window_center(_GLFWwindow *window) {
@@ -2591,39 +2592,37 @@ void _glfwPlatformMaximizeWindow(_GLFWwindow *window) {
   }
 }
 
-void _glfwPlatformShowWindow(_GLFWwindow *window, bool move_to_active_screen) {
-  const bool is_background =
-      window->ns.layer_shell.is_active &&
-      window->ns.layer_shell.config.type == GLFW_LAYER_SHELL_BACKGROUND;
-  NSWindow *nw = window->ns.object;
-  if (move_to_active_screen) {
-    NSScreen *current_screen = screen_for_window_center(window);
-    NSScreen *target_screen = active_screen();
-    if (!is_same_screen(current_screen, target_screen)) {
-      debug_rendering("Moving OS window %llu to active screen\n", window->id);
-      move_window_to_screen(window, target_screen);
+void _glfwPlatformShowWindow(_GLFWwindow* window, bool move_to_active_screen)
+{
+    const bool is_background = window->ns.layer_shell.is_active && window->ns.layer_shell.config.type == GLFW_LAYER_SHELL_BACKGROUND;
+    NSWindow *nw = window->ns.object;
+    if (move_to_active_screen) {
+        NSScreen *current_screen = screen_for_window_center(window);
+        NSScreen *target_screen = active_screen();
+        if (!is_same_screen(current_screen, target_screen)) {
+            debug_rendering("Moving OS window %llu to active screen\n", window->id);
+            move_window_to_screen(window, target_screen);
+        }
     }
-  }
-  if (is_background) {
-    [nw orderBack:nil];
-  } else {
-    // Cocoa has a bug where when showing a hidden window after
-    // fullscreening an application, the window does not get added
-    // to the current space even though it has
-    // NSWindowCollectionBehaviorCanJoinAllSpaces probably because it wasnt
-    // added to the temp space used for fullscreen. So to work around that, we
-    // change the collection behavior temporarily to
-    // NSWindowCollectionBehaviorMoveToActiveSpace and then change it back
-    // asynchronously. See https://github.com/kovidgoyal/kitty/issues/8740
-    NSWindowCollectionBehavior old = nw.collectionBehavior;
-    nw.collectionBehavior =
-        (old & !NSWindowCollectionBehaviorCanJoinAllSpaces) |
-        NSWindowCollectionBehaviorMoveToActiveSpace;
-    [nw orderFront:nil];
-    dispatch_async(dispatch_get_main_queue(), ^{
-      nw.collectionBehavior = old;
-    });
-  }
+    if (is_background) {
+        [nw orderBack:nil];
+    } else {
+        // Cocoa has a bug where when showing a hidden window after
+        // fullscreening an application, the window does not get added
+        // to the current space even though it has NSWindowCollectionBehaviorCanJoinAllSpaces
+        // probably because it wasnt added to the temp space used for
+        // fullscreen. So to work around that, we change the collection
+        // behavior temporarily to NSWindowCollectionBehaviorMoveToActiveSpace
+        // and then change it back asynchronously.
+        // See https://github.com/kovidgoyal/kitty/issues/8740
+        NSWindowCollectionBehavior old = nw.collectionBehavior;
+        nw.collectionBehavior = (old & !NSWindowCollectionBehaviorCanJoinAllSpaces) | NSWindowCollectionBehaviorMoveToActiveSpace;
+        [nw orderFront:nil];
+        __block __typeof__(nw) weakSelf = nw;
+        dispatch_async(dispatch_get_main_queue(), ^{
+			weakSelf.collectionBehavior = old;
+		});
+    }
 }
 
 void _glfwPlatformHideWindow(_GLFWwindow *window) {
@@ -3915,6 +3914,36 @@ GLFWAPI uint32_t glfwGetCocoaKeyEquivalent(uint32_t glfw_key, int glfw_mods,
 }
 
 GLFWAPI bool glfwIsLayerShellSupported(void) { return true; }
+
+GLFWAPI void
+glfwCocoaCycleThroughOSWindows(bool backwards) {
+    NSArray *allWindows = [NSApp windows];
+    if (allWindows.count < 2) return;
+    NSMutableArray<NSWindow *> *filteredWindows = [NSMutableArray array];
+    for (NSWindow *window in allWindows) {
+        NSRect windowFrame = [window frame];
+        // Exclude zero size windows which are likely zombie windows from the Tahoe bug
+        // if ([obj isMemberOfClass:[MyClass class]]) {
+        if (
+            windowFrame.size.width > 0 && windowFrame.size.height > 0 && \
+            !window.isMiniaturized && window.isVisible && \
+            [window isMemberOfClass:[GLFWWindow class]]
+        ) [filteredWindows addObject:window];
+    }
+    if (filteredWindows.count < 2) return;
+    NSWindow *keyWindow = [NSApp keyWindow];
+    NSUInteger index = [filteredWindows indexOfObject:keyWindow];
+    NSUInteger nextIndex = 0;
+    if (index != NSNotFound) {
+        if (backwards) {
+            nextIndex = (index == 0) ? [filteredWindows count] - 1 : index - 1;
+        } else nextIndex = (index + 1) % filteredWindows.count;
+    }
+    NSWindow *nextWindow = filteredWindows[nextIndex];
+    [nextWindow makeKeyAndOrderFront:nil];
+}
+
+
 
 //////////////////////////////////////////////////////////////////////////
 //////                       GLFW internal API                      //////
