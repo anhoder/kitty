@@ -10,9 +10,9 @@ import (
 	"os"
 	"strings"
 
+	"github.com/kovidgoyal/go-parallel"
 	"github.com/kovidgoyal/go-shm"
 	"github.com/kovidgoyal/imaging/nrgb"
-	"github.com/kovidgoyal/kitty/tools/utils"
 
 	"github.com/kovidgoyal/imaging"
 )
@@ -52,11 +52,11 @@ type SerializableImageFrame struct {
 	Delay_ms                 int  // negative for gapless frame, zero ignored, positive is number of ms
 	Replace                  bool // do a replace rather than an alpha blend
 	Is_opaque                bool
-	Size                     int
-}
 
-func (s SerializableImageFrame) NeededSize() int {
-	return utils.IfElse(s.Is_opaque, 3, 4) * s.Width * s.Height
+	Size               int // size in bytes of the serialized data
+	Number_of_channels int
+	Bits_per_channel   int
+	Has_alpha_channel  bool
 }
 
 func (s *ImageFrame) Serialize() SerializableImageFrame {
@@ -68,7 +68,7 @@ func (s *ImageFrame) Serialize() SerializableImageFrame {
 }
 
 func (self *ImageFrame) DataAsSHM(pattern string) (ans shm.MMap, err error) {
-	d := self.Data()
+	_, _, _, d := self.Data()
 	if ans, err = shm.CreateTemp(pattern, uint64(len(d))); err != nil {
 		return nil, err
 	}
@@ -76,25 +76,37 @@ func (self *ImageFrame) DataAsSHM(pattern string) (ans shm.MMap, err error) {
 	return
 }
 
-func (self *ImageFrame) Data() (ans []byte) {
-	_, ans = imaging.AsRGBData8(self.Img)
-	return
+func (self *ImageFrame) Data() (num_channels, bits_per_channel int, has_alpha_channel bool, ans []byte) {
+	if self.Is_opaque {
+		return 3, 8, false, imaging.AsRGBData8(self.Img)
+	}
+	return 4, 8, true, imaging.AsRGBAData8(self.Img)
 }
 
 func ImageFrameFromSerialized(s SerializableImageFrame, data []byte) (aa *ImageFrame, err error) {
 	ans := ImageFrame{
 		Width: s.Width, Height: s.Height, Left: s.Left, Top: s.Top,
 		Number: s.Number, Compose_onto: s.Compose_onto, Delay_ms: int32(s.Delay_ms),
-		Is_opaque: s.Is_opaque, Replace: s.Replace,
+		Is_opaque: s.Is_opaque || !s.Has_alpha_channel, Replace: s.Replace,
 	}
-	bytes_per_pixel := utils.IfElse(s.Is_opaque, 3, 4)
+	bpc := s.Bits_per_channel
+	if bpc == 0 {
+		bpc = 8
+	}
+	if bpc != 8 {
+		return nil, fmt.Errorf("serialized image data has unsupported number of bits per channel: %d", bpc)
+	}
+	bytes_per_pixel := bpc * s.Number_of_channels / 8
 	if expected := bytes_per_pixel * s.Width * s.Height; len(data) != expected {
 		return nil, fmt.Errorf("serialized image data has size: %d != %d", len(data), expected)
 	}
-	if s.Is_opaque {
+	switch s.Number_of_channels {
+	case 3, 0:
 		ans.Img, err = nrgb.NewNRGBWithContiguousRGBPixels(data, s.Left, s.Top, s.Width, s.Height)
-	} else {
+	case 4:
 		ans.Img, err = NewNRGBAWithContiguousRGBAPixels(data, s.Left, s.Top, s.Width, s.Height)
+	default:
+		return nil, fmt.Errorf("serialized image data has unsupported number of channels: %d", s.Number_of_channels)
 	}
 	return &ans, err
 }
@@ -131,8 +143,12 @@ func (self *ImageData) Serialize() (SerializableImageMetadata, [][]byte) {
 	m := self.SerializeOnlyMetadata()
 	data := make([][]byte, len(self.Frames))
 	for i, f := range self.Frames {
-		data[i] = f.Data()
-		m.Frames[i].Size = len(data[i])
+		df := &m.Frames[i]
+		df.Number_of_channels, df.Bits_per_channel, df.Has_alpha_channel, data[i] = f.Data()
+		df.Size = len(data[i])
+		if !df.Has_alpha_channel {
+			df.Is_opaque = true
+		}
 	}
 	return m, data
 }
@@ -157,22 +173,25 @@ func ImageFromSerialized(m SerializableImageMetadata, data [][]byte) (*ImageData
 	return &ans, nil
 }
 
-func (self *ImageFrame) Resize(x_frac, y_frac float64) *ImageFrame {
-	b := self.Img.Bounds()
-	left, top, width, height := b.Min.X, b.Min.Y, b.Dx(), b.Dy()
-	ans := *self
-	ans.Width = int(x_frac * float64(width))
-	ans.Height = int(y_frac * float64(height))
-	ans.Img = imaging.Resize(self.Img, ans.Width, ans.Height, imaging.Lanczos)
-	ans.Left = int(x_frac * float64(left))
-	ans.Top = int(y_frac * float64(top))
+func (ans ImageFrame) Resize(x_frac, y_frac float64) *ImageFrame {
+	ans.Width = int(x_frac * float64(ans.Width))
+	ans.Height = int(y_frac * float64(ans.Height))
+	ans.Img = imaging.ResizeWithOpacity(ans.Img, ans.Width, ans.Height, imaging.Lanczos, ans.Is_opaque)
+	ans.Left = int(x_frac * float64(ans.Left))
+	ans.Top = int(y_frac * float64(ans.Top))
 	return &ans
-
 }
 
 func (self *ImageData) Resize(x_frac, y_frac float64) *ImageData {
 	ans := *self
-	ans.Frames = utils.Map(func(f *ImageFrame) *ImageFrame { return f.Resize(x_frac, y_frac) }, self.Frames)
+	ans.Frames = make([]*ImageFrame, len(self.Frames))
+	if err := parallel.Run_in_parallel_over_range(1, func(start, limit int) {
+		for i := start; i < limit; i++ {
+			ans.Frames[i] = self.Frames[i].Resize(x_frac, y_frac)
+		}
+	}, 0, len(ans.Frames)); err != nil {
+		panic(err)
+	}
 	if len(ans.Frames) > 0 {
 		ans.Width, ans.Height = ans.Frames[0].Width, ans.Frames[0].Height
 	}

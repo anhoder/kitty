@@ -47,7 +47,7 @@ read_png_warn_handler(png_structp UNUSED png_ptr, png_const_charp msg) {
 #define ABRT(code, msg) { if(d->err_handler) d->err_handler(d, #code, msg); goto err; }
 
 void
-inflate_png_inner(png_read_data *d, const uint8_t *buf, size_t bufsz) {
+inflate_png_inner(png_read_data *d, const uint8_t *buf, size_t bufsz, int max_image_dimension) {
     struct fake_file f = {.buf = buf, .sz = bufsz};
     png_structp png = NULL;
     png_infop info = NULL;
@@ -64,6 +64,10 @@ inflate_png_inner(png_read_data *d, const uint8_t *buf, size_t bufsz) {
     png_byte color_type, bit_depth;
     d->width      = png_get_image_width(png, info);
     d->height     = png_get_image_height(png, info);
+    // libpng uses too much memory for overly large images
+    if (d->width > max_image_dimension || d->height > max_image_dimension) {
+        ABRT(ENOMEM, "PNG image is too large");
+    }
     color_type = png_get_color_type(png, info);
     bit_depth  = png_get_bit_depth(png, info);
     double image_gamma;
@@ -159,8 +163,8 @@ png_write_to_memory(png_structp png_ptr, png_bytep data, png_size_t length) {
 }
 static void png_flush_memory(png_structp png_ptr) { (void)png_ptr; }
 
-const char*
-png_from_32bit_rgba(uint32_t *data, size_t width, size_t height, size_t *out_size, bool flip_vertically) {
+static const char*
+create_png_from_data(char *data, size_t width, size_t height, size_t stride, size_t *out_size, bool flip_vertically, int color_type) {
     *out_size = 0;
     png_memory_write_state state = {.capacity=width*height * sizeof(uint32_t)};
     state.buffer = malloc(state.capacity);
@@ -177,7 +181,7 @@ png_from_32bit_rgba(uint32_t *data, size_t width, size_t height, size_t *out_siz
         return("Error during PNG creation\n");
     }
     png_set_write_fn(png_ptr, &state, png_write_to_memory, png_flush_memory);
-    png_set_IHDR(png_ptr, info_ptr, width, height, 8, PNG_COLOR_TYPE_RGBA,
+    png_set_IHDR(png_ptr, info_ptr, width, height, 8, color_type,
                  PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
     // Allocate memory for row pointers
     png_bytep *row_pointers = (png_bytep*)malloc(sizeof(png_bytep) * height);
@@ -186,8 +190,8 @@ png_from_32bit_rgba(uint32_t *data, size_t width, size_t height, size_t *out_siz
         free(state.buffer);
         return ("Failed to allocate memory for row pointers");
     }
-    if (flip_vertically) for (size_t y = 0; y < height; y++) row_pointers[height - 1 - y] = (png_byte*)&data[y * width];
-    else for (size_t y = 0; y < height; y++) row_pointers[y] = (png_byte*)&data[y * width];
+    if (flip_vertically) for (size_t y = 0; y < height; y++) row_pointers[height - 1 - y] = (png_byte*)&data[y * stride];
+    else for (size_t y = 0; y < height; y++) row_pointers[y] = (png_byte*)&data[y * stride];
     png_write_info(png_ptr, info_ptr);
     png_write_image(png_ptr, row_pointers);
     png_write_end(png_ptr, NULL);
@@ -196,6 +200,17 @@ png_from_32bit_rgba(uint32_t *data, size_t width, size_t height, size_t *out_siz
     *out_size = state.size;
     return (char*)state.buffer;
 }
+
+const char*
+png_from_32bit_rgba(char *data, size_t width, size_t height, size_t *out_size, bool flip_vertically) {
+    return create_png_from_data(data, width, height, 4 * width, out_size, flip_vertically, PNG_COLOR_TYPE_RGBA);
+}
+
+const char*
+png_from_24bit_rgb(char *data, size_t width, size_t height, size_t *out_size, bool flip_vertically) {
+    return create_png_from_data(data, width, height, 3 * width, out_size, flip_vertically, PNG_COLOR_TYPE_RGB);
+}
+
 
 static void
 png_error_handler(png_read_data *d UNUSED, const char *code, const char *msg) {
@@ -208,7 +223,7 @@ load_png_data(PyObject *self UNUSED, PyObject *args) {
     const char *data;
     if (!PyArg_ParseTuple(args, "s#", &data, &sz)) return NULL;
     png_read_data d = {.err_handler=png_error_handler};
-    inflate_png_inner(&d, (const uint8_t*)data, sz);
+    inflate_png_inner(&d, (const uint8_t*)data, sz, 10000);
     PyObject *ans = NULL;
     if (d.ok && !PyErr_Occurred()) {
         ans = Py_BuildValue("y#ii", d.decompressed, (int)d.sz, d.width, d.height);

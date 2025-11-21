@@ -158,6 +158,16 @@ Detailed list of changes
   OS Windows. Also add a cycle through OS Windows backwards action.
   (:iss:`9215`)
 
+- :ac:`goto_session`: allow specifying a directory to select a session file
+  from the directory (:pull:`9219`)
+
+- Have reloading config also reload the custom tab bar python modules (:disc:`9221`)
+
+- kitten @ ls: Also output the neighbors for every window (:disc:`9225`)
+
+- Have the :option:`kitty --start-as` flag be respected when used with
+  :option:`kitty --single-instance` (:iss:`9228`)
+
 
 0.44.0 [2025-11-03]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
