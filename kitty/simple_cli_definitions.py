@@ -10,19 +10,17 @@ from enum import Enum, auto
 from functools import lru_cache
 from typing import Any, Iterator, NamedTuple, Sequence
 
-try:
-    from kitty.constants import appname, is_macos
-except ImportError:
+if getattr(sys, 'running_from_setup', False):
     is_macos = 'darwin' in sys.platform.lower()
-try:
-    from kitty.utils import shlex_split as ksplit
-    def shlex_split(text: str) -> Iterator[str]:
-        yield from ksplit(text)
-except ImportError:
     from shlex import split as psplit
 
     def shlex_split(text: str) -> Iterator[str]:
         yield from psplit(text)
+else:
+    from kitty.constants import appname, is_macos
+    from kitty.utils import shlex_split as ksplit
+    def shlex_split(text: str) -> Iterator[str]:
+        yield from ksplit(text)
 
 
 def serialize_as_go_string(x: str) -> str:
@@ -486,7 +484,7 @@ default=normal
 choices=normal,fullscreen,maximized,minimized,hidden
 Control how the initial kitty OS window is created. Note that
 this is applies to all OS Windows if you use the :option:`{appname} --session`
-option to create multiple OS Windows. Any OS Windows state in
+option to create multiple OS Windows. Any OS Windows state
 specified in the session file gets overriden.
 
 

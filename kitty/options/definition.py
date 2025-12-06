@@ -3984,6 +3984,22 @@ To get the output of the last jumped to command, use :code:`@last_visited_cmd_ou
 Requires :ref:`shell integration <shell_integration>` to work.
 '''
     )
+
+map('Search the scrollback within a pager',
+    'search_scrollback kitty_mod+/ search_scrollback',
+    long_text='''
+Search for currently selected text in the scrollback using the configured :opt:`scrollback_pager`.
+Assumes that pressing the :kbd:`/` key triggers search mode in the pager. If you want to create
+a manual mapping with a special pager for this, you can use something like:
+
+    map f1 combine : launch --stdin-source=@screen_scrollback --stdin-add-formatting --type=overlay mypager : send_key /
+
+For more sophisticated control, such as using the current selection, use :ac:`remote_control_script`.
+''')
+
+map('Search the scrollback within a pager', 'search_scrollback cmd+f search_scrollback', only='macos')
+
+
 egr()  # }}}
 
 
@@ -4362,6 +4378,23 @@ map('Open selected path',
     'open_selected_path kitty_mod+p>shift+f kitten hints --type path',
     long_text='Select a path/filename and open it with the default open program.'
     )
+
+map('Insert chosen file',
+    'insert_chosen_file kitty_mod+p>c kitten choose-files',
+    long_text='''
+Select a file using the :doc:`choose-files </kittens/choose-files>` kitten and insert
+it into the terminal.
+'''
+    )
+
+map('Insert chosen directory',
+    'insert_chosen_directory kitty_mod+p>d kitten choose-files --mode=dir',
+    long_text='''
+Select a directory using the :doc:`choose-files </kittens/choose-files>` kitten and insert
+it into the terminal.
+'''
+    )
+
 
 map('Insert selected line',
     'insert_selected_line kitty_mod+p>l kitten hints --type line --program -',

@@ -9,7 +9,9 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/hako/durafmt"
 	"github.com/kovidgoyal/go-parallel"
 	"github.com/kovidgoyal/kitty/tools/disk_cache"
 	"github.com/kovidgoyal/kitty/tools/icons"
@@ -35,19 +37,26 @@ type ShowData struct {
 	metadata            fs.FileInfo
 	x, y, width, height int
 	cached_data         map[string]string
-	img_metadata        *images.SerializableImageMetadata
+	custom_metadata     metadata
 }
 
 type PreviewRenderer interface {
-	Render(string) (map[string][]byte, *images.ImageData, error)
+	Unmarshall(map[string]string) (any, error)
+	Render(string) (map[string][]byte, metadata, *images.ImageData, error)
 	ShowMetadata(h *Handler, s ShowData) int
+	String() string
 }
 
 type render_data struct {
-	cached_data  map[string]string
-	img          *images.ImageData
-	img_metadata *images.SerializableImageMetadata
-	err          error
+	cached_data map[string]string
+	img         *images.ImageData
+	metadata    metadata
+	err         error
+}
+
+type metadata struct {
+	image  *images.SerializableImageMetadata
+	custom any
 }
 
 type ImagePreview struct {
@@ -57,14 +66,19 @@ type ImagePreview struct {
 	cached_data           map[string]string
 	render_err            Preview
 	render_channel        chan render_data
+	ready                 atomic.Bool
 	source_img            *images.ImageData
-	img_metadata          *images.SerializableImageMetadata
+	custom_metadata       metadata
 	renderer              PreviewRenderer
 	file_metadata_preview Preview
 	WakeupMainThread      func() bool
 }
 
+func (p *ImagePreview) String() string {
+	return fmt.Sprintf("ImagePreview{%#v, ready: %v, renderer: %s}", p.abspath, p.ready.Load(), p.renderer.String())
+}
 func (p *ImagePreview) IsValidForColorScheme(bool) bool { return true }
+func (p *ImagePreview) IsReady() bool                   { return p.ready.Load() || p.render_channel == nil }
 
 func (p *ImagePreview) Unload() {
 	p.source_img = nil
@@ -122,9 +136,11 @@ func (p *ImagePreview) render_image(h *Handler, x, y, width, height int) {
 
 	offset := p.renderer.ShowMetadata(h, ShowData{
 		abspath: p.abspath, metadata: p.metadata, x: x, y: y, width: width, height: height, cached_data: p.cached_data,
-		img_metadata: p.img_metadata,
+		custom_metadata: p.custom_metadata,
 	})
-	h.graphics_handler.RenderImagePreview(h, p, x, y+offset, width, height-offset)
+	if p.custom_metadata.image != nil {
+		h.graphics_handler.RenderImagePreview(h, p, x, y+offset, width, height-offset)
+	}
 }
 
 func (p *ImagePreview) Render(h *Handler, x, y, width, height int) {
@@ -141,9 +157,9 @@ func (p *ImagePreview) Render(h *Handler, x, y, width, height int) {
 		p.render_channel = nil
 		p.cached_data = hd.cached_data
 		p.source_img = hd.img
-		p.img_metadata = hd.img_metadata
+		p.custom_metadata = hd.metadata
 		if hd.err != nil {
-			p.render_err = NewErrorPreview(fmt.Errorf("Failed to render the preview with error: %w", hd.err))
+			p.render_err = NewFileMetadataPreviewWithError(p.abspath, p.metadata, fmt.Errorf("Failed to render the preview with error: %w", hd.err))
 		}
 		p.Render(h, x, y, width, height)
 		return
@@ -163,6 +179,7 @@ func (p *ImagePreview) start_rendering() {
 			p.render_channel <- render_data{err: parallel.Format_stacktrace_on_panic(r, 1)}
 		}
 		close(p.render_channel)
+		p.ready.Store(true)
 		p.WakeupMainThread()
 	}()
 	key, ans, err := p.disk_cache.GetPath(p.abspath)
@@ -171,24 +188,29 @@ func (p *ImagePreview) start_rendering() {
 		return
 	}
 	if len(ans) > 0 {
-		if d := ans[IMAGE_METADATA_KEY]; d != "" {
-			if b, err := os.ReadFile(d); err == nil {
-				var m images.SerializableImageMetadata
-				if err = json.Unmarshal(b, &m); err == nil {
-					p.render_channel <- render_data{cached_data: ans, img_metadata: &m}
-					return
+		mi := metadata{}
+		if mi.custom, err = p.renderer.Unmarshall(ans); err == nil {
+			if d := ans[IMAGE_METADATA_KEY]; d != "" {
+				if b, err := os.ReadFile(d); err == nil {
+					var m images.SerializableImageMetadata
+					if err = json.Unmarshal(b, &m); err == nil {
+						mi.image = &m
+					}
 				}
 			}
 		}
+		if mi.custom != nil || mi.image != nil {
+			p.render_channel <- render_data{cached_data: ans, metadata: mi}
+			return
+		}
 	}
-	rdata, img, err := p.renderer.Render(p.abspath)
+	rdata, metadata, img, err := p.renderer.Render(p.abspath)
 	if err != nil {
 		p.render_channel <- render_data{err: err}
 	} else {
 		ans, err = p.disk_cache.AddPath(p.abspath, key, rdata)
 		if err == nil {
-			m := img.SerializeOnlyMetadata()
-			p.render_channel <- render_data{cached_data: ans, img_metadata: &m, img: img}
+			p.render_channel <- render_data{cached_data: ans, metadata: metadata, img: img}
 		} else {
 			p.render_channel <- render_data{err: err}
 		}
@@ -197,17 +219,20 @@ func (p *ImagePreview) start_rendering() {
 
 type ImagePreviewRenderer uint
 
-func (p ImagePreviewRenderer) Render(abspath string) (ans map[string][]byte, img *images.ImageData, err error) {
+func (p ImagePreviewRenderer) String() string { return "ImagePreviewRenderer" }
+
+func (p ImagePreviewRenderer) Render(abspath string) (ans map[string][]byte, m metadata, img *images.ImageData, err error) {
 	if img, err = images.OpenImageFromPath(abspath); err != nil {
-		return nil, nil, err
+		return nil, metadata{}, nil, err
 	}
-	m, data := img.Serialize()
+	im, data := img.Serialize()
 	ans = make(map[string][]byte, len(data)+1)
-	metadata, err := json.Marshal(m)
+	sm, err := json.Marshal(im)
 	if err != nil {
-		return nil, nil, err
+		return nil, metadata{}, nil, err
 	}
-	ans[IMAGE_METADATA_KEY] = metadata
+	ans[IMAGE_METADATA_KEY] = sm
+	m = metadata{image: &im}
 	for i, d := range data {
 		key := IMAGE_DATA_PREFIX + strconv.Itoa(i)
 		ans[key] = d
@@ -215,16 +240,29 @@ func (p ImagePreviewRenderer) Render(abspath string) (ans map[string][]byte, img
 	return
 }
 
+func (p ImagePreviewRenderer) Unmarshall(map[string]string) (any, error) { return nil, nil }
+
 func (p ImagePreviewRenderer) ShowMetadata(h *Handler, s ShowData) int {
-	text := ""
 	offset := 0
-	if s.img_metadata != nil {
-		text = fmt.Sprintf("%s: %dx%d %s", s.img_metadata.Format_uppercase, s.img_metadata.Width, s.img_metadata.Height, humanize.Bytes(uint64(s.metadata.Size())))
+	if m := s.custom_metadata.image; m != nil {
+		text := fmt.Sprintf("%s: %dx%d %s", m.Format_uppercase, m.Width, m.Height, humanize.Bytes(uint64(s.metadata.Size())))
 		icon := icons.IconForPath("/a.gif")
 		text = icon + "  " + text
 		offset += h.render_wrapped_text_in_region(text, s.x, s.y, s.width, s.height, true)
 	}
-	offset += h.render_wrapped_text_in_region(humanize.Time(s.metadata.ModTime()), s.x, s.y+offset, s.width, s.height-offset, true)
+	st := humanize.Time(s.metadata.ModTime())
+	if s.custom_metadata.image != nil && len(s.custom_metadata.image.Frames) > 0 {
+		var d time.Duration
+		for _, f := range s.custom_metadata.image.Frames {
+			if f.Delay_ms > 0 {
+				d += time.Duration(time.Duration(f.Delay_ms) * time.Millisecond)
+			}
+		}
+		if d > 0 {
+			st += fmt.Sprintf(", %s", durafmt.Parse(d).LimitFirstN(1).String())
+		}
+	}
+	offset += h.render_wrapped_text_in_region(st, s.x, s.y+offset, s.width, s.height-offset, true)
 	return offset
 }
 

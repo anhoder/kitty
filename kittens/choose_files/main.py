@@ -2,10 +2,14 @@
 # License: GPLv3 Copyright: 2025, Kovid Goyal <kovid at kovidgoyal.net>
 
 import sys
+from typing import Any
 
 from kitty.conf.types import Definition
 from kitty.constants import appname
 from kitty.simple_cli_definitions import CONFIG_HELP, CompletionSpec
+from kitty.typing_compat import BossType
+
+from ..tui.handler import result_handler
 
 definition = Definition(
     '!kittens.choose_files',
@@ -73,6 +77,43 @@ File extension aliases for syntax highlight. For example, to syntax highlight
 Multiple aliases must be separated by spaces.
 ''')
 
+opt('video_preview', 'width=480 fps=10 duration=5', long_text='''
+Control how videos are sampled for previwing. The width controls
+the size of the generated thumbnail from the video. Duration controls
+how long the generated thumbnail plays for, in seconds. Note that when
+changing these you should also use the :code:`--clear-cache` flag
+otherwise it will not affect already cached previews.
+''')
+
+opt('+previewer', '', long_text='''
+Specify an arbitrary program based preview generator. The syntax is::
+
+    pattern program arguments...
+
+Here, pattern can be used to match file names or mimetypes. For example:
+:code:`name:*.doc` matches files with the extension :code:`.doc`. Similarly,
+:code:`mime:image/*` matches all image files. :code:`program` can be any
+executable program in PATH. It will be run with the supplied arguments. The last argument
+will be the path to the file for which a preview must be generated.
+
+Can be specified multiple times to setup different previewers for different types of files.
+Note that previewers specified using this option take precedence over the builtin
+previewers.
+
+The command must output preview data to STDOUT, as a JSON object:
+
+.. code-block:: json
+
+    {
+        "lines": ["line1", "line2", "..."],
+        "image": "absolute path to generated image preview",
+        "title_extra": "some text to show on the first line",
+    }
+
+The lines can contain SGR formatting escape codes and will be displayed as is at the
+top of the preview panel. The image is optional and must be in one of the JPEG, PNG, GIF, WEBP, APNG
+formats.
+''')
 egr()  # }}}
 
 agr('shortcuts', 'Keyboard shortcuts')  # {{{
@@ -122,6 +163,42 @@ egr()  # }}}
 
 def main(args: list[str]) -> None:
     raise SystemExit('This must be run as kitten choose-files')
+
+def relative_path_if_possible(path: str, base: str) -> str:
+    if not base or not path:
+        return path
+    from contextlib import suppress
+    from pathlib import Path
+    b = Path(base)
+    q = Path(path)
+    with suppress(ValueError):
+        return str(q.relative_to(b))
+    return path
+
+
+@result_handler(has_ready_notification=True)
+def handle_result(args: list[str], data: dict[str, Any], target_window_id: int, boss: BossType) -> None:
+    import shlex
+
+    from kitty.utils import shlex_split
+    paths: list[str] = data.get('paths', [])
+    if not paths:
+        boss.ring_bell_if_allowed()
+        return
+    w = boss.window_id_map.get(target_window_id)
+    if w is None:
+        boss.ring_bell_if_allowed()
+        return
+    cwd = w.cwd_of_child
+    items = []
+    for path in paths:
+        if cwd:
+            path = relative_path_if_possible(path, cwd)
+        if w.at_prompt and len(tuple(shlex_split(path))) > 1:
+            path = shlex.quote(path)
+        items.append(path)
+    text = (' ' if w.at_prompt else '\n').join(items)
+    w.paste_text(text)
 
 
 usage = '[directory to start choosing files in]'
@@ -180,13 +257,22 @@ Path to a file to which the output is written in addition to STDOUT.
 
 
 --output-format
-choices=text,json
+choices=text,json,shell,shell-relative
 default=text
-The format in which to write the output.
+The format in which to write the output. The :code:`text` format is absolute paths separated by newlines.
+The :code:`shell` format is quoted absolute paths separated by spaces, quoting is done only if needed. The
+:code:`shell-relative` format is the same as :code:`shell` except it returns paths relative to the starting
+directory. Note that when invoked from a mapping, this option is ignored,
+and either text or shell format is used automatically based on whether the cursor is at a shell prompt or not.
 
 
 --write-pid-to
 Path to a file to which to write the process ID (PID) of this process to.
+
+
+--clear-cache
+type=bool-set
+Clear the caches used by this kitten.
 '''.format(config_help=CONFIG_HELP.format(conf_name='choose-files', appname=appname)).format
 
 

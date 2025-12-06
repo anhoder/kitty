@@ -26,6 +26,7 @@ from glfw import glfw
 from glfw.glfw import ISA, BinaryArch, Command, CompileKey, CompilerType
 
 src_base = os.path.dirname(os.path.abspath(__file__))
+setattr(sys, 'running_from_setup', True)
 
 def check_version_info() -> None:
     with open(os.path.join(src_base, 'pyproject.toml')) as f:
@@ -1196,6 +1197,7 @@ def wrapped_kittens() -> str:
 def build(args: Options, native_optimizations: bool = True, call_init: bool = True) -> None:
     if call_init:
         init_env_from_args(args, native_optimizations)
+
     sources, headers = find_c_files()
     headers.append(build_ref_map(args.skip_code_generation))
     headers.append(build_cli_parser_specs(args.skip_code_generation))

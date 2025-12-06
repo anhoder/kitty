@@ -168,6 +168,24 @@ Detailed list of changes
 - Have the :option:`kitty --start-as` flag be respected when used with
   :option:`kitty --single-instance` (:iss:`9228`)
 
+- When expanding environment variables in :opt:`listen_on` allow the :opt:`env`
+  directive to take effect
+
+- macOS: Fix closing an OS Window when another OS Window is minimized causing
+  the minimized window to be un-minimized (:iss:`8913`)
+
+- Do not rewrap the text in the alternate screen buffer. Avoids flicker during
+  live resize with no :opt:`resize_debounce_time` (:disc:`9142`)
+
+- Add a default mapping :ac:`search_scrollback` to open the scrollback in a
+  pager in search mode. If any text is currently selected it is automatically
+  searched for.
+
+- Wayland: Fix spurious key repeat events when some user defined callback takes
+  a long time to execute (:iss:`9224`)
+
+- When moving windows to a new tab/OS Window fix overlay windows not being
+  grouped with their parent windows (:iss:`9266`)
 
 0.44.0 [2025-11-03]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

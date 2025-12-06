@@ -249,10 +249,9 @@ rewrap(Screen *screen, unsigned int lines, unsigned int columns, index_type *ncl
     cursors[0] = (TrackCursor){.x=alt_saved_cursor->before.x, .y=alt_saved_cursor->before.y};
     if (!main_is_active) cursors[1] = (TrackCursor){.x=cursor->before.x, .y=cursor->before.y};
     else cursors[1].is_sentinel = true;
-    ResizeResult ar = resize_screen_buffers(screen->alt_linebuf, NULL, lines, columns, &screen->as_ansi_buf, cursors);
+    ResizeResult ar = resize_screen_buffer_without_rewrap(screen->alt_linebuf, lines, columns, cursors);
     if (!ar.ok) {
-        Py_DecRef((PyObject*)mr.lb); Py_DecRef((PyObject*)mr.hb);
-        PyErr_NoMemory(); return false;
+        Py_DecRef((PyObject*)ar.lb); PyErr_NoMemory(); return false;
     }
     alt_saved_cursor->temp.x = cursors[0].dest_x; alt_saved_cursor->temp.y = cursors[0].dest_y;
     if (!main_is_active) { cursor->temp.x = cursors[1].dest_x; cursor->temp.y = cursors[1].dest_y; }
@@ -2714,15 +2713,21 @@ screen_xtversion(Screen *self, unsigned int mode) {
 }
 
 void
-screen_report_size(Screen *self, unsigned int which) {
+screen_report_size(Screen *self, unsigned which, unsigned modifier) {
     char buf[32] = {0};
-    unsigned int code = 0;
-    unsigned int width = 0, height = 0;
+    unsigned code = 0, width = 0, height = 0;
     switch(which) {
         case 14:
             code = 4;
             width = self->cell_size.width * self->columns;
             height = self->cell_size.height * self->lines;
+            if (modifier == 2 && self->window_id) {
+                OSWindow *osw = os_window_for_kitty_window(self->window_id);
+                if (osw) {
+                    int w, h, fw, fh; get_os_window_size(osw, &w, &h, &fw, &fh);
+                    width = fw; height = fh;
+                }
+            }
             break;
         case 16:
             code = 6;
@@ -4006,7 +4011,7 @@ extend_url(Screen *screen, Line *line, index_type *x, index_type *y, char_type s
     unsigned int count = 0;
     bool has_newline = false;
     index_type orig_y = *y;
-    while (count++ < 10) {
+    while (count++ < 20) {
         bool in_hostname = last_hostname_char_pos >= line->xnum;
         has_newline = !line->cpu_cells[line->xnum-1].next_char_was_wrapped;
         if (next_char_pos(line, *x, 1) < line->xnum || (!newlines_allowed && has_newline)) break;

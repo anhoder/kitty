@@ -20,6 +20,7 @@ import (
 	"github.com/kovidgoyal/kitty/tools/tui/loop"
 	"github.com/kovidgoyal/kitty/tools/tui/readline"
 	"github.com/kovidgoyal/kitty/tools/utils"
+	"github.com/kovidgoyal/kitty/tools/utils/shlex"
 	"golang.org/x/text/message"
 )
 
@@ -207,18 +208,20 @@ type ScreenSize struct {
 }
 
 type Handler struct {
-	state                 State
-	screen_size           ScreenSize
-	result_manager        *ResultManager
-	lp                    *loop.Loop
-	rl                    *readline.Readline
-	err_chan              chan error
-	shortcut_tracker      config.ShortcutTracker
-	msg_printer           *message.Printer
-	spinner               *tui.Spinner
-	preview_manager       *PreviewManager
-	last_rendered_preview Preview
-	graphics_handler      GraphicsHandler
+	state                              State
+	screen_size                        ScreenSize
+	result_manager                     *ResultManager
+	lp                                 *loop.Loop
+	rl                                 *readline.Readline
+	err_chan                           chan error
+	shortcut_tracker                   config.ShortcutTracker
+	msg_printer                        *message.Printer
+	spinner                            *tui.Spinner
+	preview_manager                    *PreviewManager
+	last_rendered_preview              Preview
+	last_rendered_preview_abspath      string
+	prev_preview_for_smooth_transition Preview
+	graphics_handler                   GraphicsHandler
 }
 
 func (self *Handler) on_escape_code(etype loop.EscapeCodeType, payload []byte) error {
@@ -269,6 +272,38 @@ func (h *Handler) draw_screen() (err error) {
 	return
 }
 
+type previewer struct {
+	cmdline      []string
+	pattern      string
+	use_mimetype bool
+}
+
+func (p previewer) matches(fname, mt string) bool {
+	q := utils.IfElse(p.use_mimetype, mt, fname)
+	matched, err := filepath.Match(p.pattern, q)
+	return matched && err == nil
+}
+
+var previewers []previewer
+
+func load_previewers(cfg *Config) (err error) {
+	for _, spec := range cfg.Previewer {
+		parts, err := shlex.Split(spec)
+		if err != nil {
+			return fmt.Errorf("invalid previewer specification: %#v with error: %w", spec, err)
+		}
+		if len(parts) < 2 {
+			return fmt.Errorf("invalid previewer specification: %#v with error: no command specified", spec)
+		}
+		prefix, pattern, found := strings.Cut(parts[0], ":")
+		if !found {
+			return fmt.Errorf("invalid previewer specification: %#v with error: no prefix in pattern specification", spec)
+		}
+		previewers = append(previewers, previewer{parts[1:], pattern, prefix == "mime"})
+	}
+	return
+}
+
 func load_config(opts *Options) (ans *Config, err error) {
 	ans = NewConfig()
 	p := config.ConfigParser{LineHandler: ans.Parse}
@@ -277,6 +312,35 @@ func load_config(opts *Options) (ans *Config, err error) {
 		return nil, err
 	}
 	ans.KeyboardShortcuts = config.ResolveShortcuts(ans.KeyboardShortcuts)
+	parts, err := shlex.Split(ans.Video_preview)
+	if err != nil {
+		return nil, err
+	}
+	for _, x := range parts {
+		k, v, found := strings.Cut(x, "=")
+		if !found {
+			return nil, fmt.Errorf("invalid value %s in video_preview", x)
+		}
+		var i uint64
+		switch k {
+		case "duration":
+			if video_duration, err = strconv.ParseFloat(v, 64); err != nil {
+				return nil, fmt.Errorf("invalid %s in video_preview: %s", k, v)
+			}
+		case "fps":
+			if i, err = strconv.ParseUint(v, 10, 0); err != nil {
+				return nil, fmt.Errorf("invalid %s in video_preview: %s", k, v)
+			}
+			video_fps = int(i)
+		case "width":
+			if i, err = strconv.ParseUint(v, 10, 0); err != nil {
+				return nil, fmt.Errorf("invalid %s in video_preview: %s", k, v)
+			}
+			video_width = int(i)
+		default:
+			return nil, fmt.Errorf("unrecognized key in video_preview: %s", k)
+		}
+	}
 	return ans, nil
 }
 
@@ -313,6 +377,7 @@ func (h *Handler) OnInitialize() (ans string, err error) {
 	err = h.graphics_handler.Initialize(h.lp)
 	h.result_manager.set_root_dir()
 	h.draw_screen()
+	h.lp.SendOverlayReady()
 	return
 }
 
@@ -744,7 +809,30 @@ func (h *Handler) set_state_from_config(conf *Config, opts *Options) (err error)
 var default_cwd string
 var use_light_colors bool
 
+func quote_if_needed(x string) string {
+	if s, err := shlex.Split(x); len(s) == 1 && err == nil && !strings.Contains(x, "$") {
+		return x
+	}
+	return utils.QuoteStringForSH(x)
+}
+
+func for_shell_relative(x string) string {
+	if rel, is_under, err := utils.RelativeIfUnder(default_cwd, x, false); err == nil && is_under {
+		x = rel
+	}
+	return quote_if_needed(x)
+}
+
 func main(_ *cli.Command, opts *Options, args []string) (rc int, err error) {
+	if opts.ClearCache {
+		c, err := preview_cache()
+		if err != nil {
+			return 1, err
+		}
+		if err = c.Clear(); err != nil {
+			return 1, err
+		}
+	}
 	write_output := func(selections []string, interrupted bool, current_filter string) {
 		payload := make(map[string]any)
 		if err != nil {
@@ -769,23 +857,37 @@ func main(_ *cli.Command, opts *Options, args []string) (rc int, err error) {
 			}
 			return
 		}
-		m := strings.Join(selections, "\n")
-		fmt.Print(m)
-		if opts.WriteOutputTo != "" {
-			if opts.OutputFormat == "json" {
-				payload["paths"] = selections
-				if current_filter != "" {
-					payload["current_filter"] = current_filter
-				}
+		payload["paths"] = selections
+		if current_filter != "" {
+			payload["current_filter"] = current_filter
+		}
+		if tui.RunningAsUI() {
+			fmt.Println(tui.KittenOutputSerializer()(payload))
+		} else {
+			var m string
+			switch opts.OutputFormat {
+			case "shell":
+				m = strings.Join(utils.Map(quote_if_needed, selections), " ")
+			case "shell-relative":
+				m = strings.Join(utils.Map(for_shell_relative, selections), " ")
+			case "text":
+				m = strings.Join(selections, "\n")
+			case "json":
 				b, _ := json.MarshalIndent(payload, "", "  ")
 				m = string(b)
 			}
-			os.WriteFile(opts.WriteOutputTo, []byte(m), 0600)
+			os.Stdout.Write(utils.UnsafeStringToBytes(m))
+			if opts.WriteOutputTo != "" {
+				os.WriteFile(opts.WriteOutputTo, utils.UnsafeStringToBytes(m), 0600)
+			}
 		}
 	}
 
 	conf, err := load_config(opts)
 	if err != nil {
+		return 1, err
+	}
+	if err = load_previewers(conf); err != nil {
 		return 1, err
 	}
 	lp, err := loop.New()
@@ -796,6 +898,7 @@ func main(_ *cli.Command, opts *Options, args []string) (rc int, err error) {
 	lp.ColorSchemeChangeNotifications()
 	handler := Handler{lp: lp, err_chan: make(chan error, 8), msg_printer: message.NewPrinter(utils.LanguageTag()), spinner: tui.NewSpinner("dots")}
 	defer handler.graphics_handler.Cleanup()
+	defer calibre_cleanup()
 	handler.rl = readline.New(lp, readline.RlInit{
 		Prompt: "> ", ContinuationPrompt: ". ", Completer: FilePromptCompleter(handler.state.CurrentDir),
 	})
@@ -837,6 +940,7 @@ func main(_ *cli.Command, opts *Options, args []string) (rc int, err error) {
 	}
 	lp.OnResize = func(old, new_size loop.ScreenSize) (err error) {
 		handler.init_sizes(new_size)
+		handler.clear_cached_previews()
 		return handler.draw_screen()
 	}
 	lp.OnColorSchemeChange = func(p loop.ColorPreference) (err error) {

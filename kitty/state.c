@@ -320,8 +320,7 @@ static void
 update_window_title(id_type os_window_id, id_type tab_id, id_type window_id, PyObject *title) {
     WITH_WINDOW(os_window_id, tab_id, window_id)
         Py_CLEAR(window->title);
-        window->title = title;
-        Py_XINCREF(window->title);
+        if (title) window->title = Py_NewRef(title);
     END_WITH_WINDOW;
 }
 
@@ -329,9 +328,8 @@ void
 set_os_window_title_from_window(Window *w, OSWindow *os_window) {
     if (os_window->disallow_title_changes || os_window->title_is_overriden) return;
     if (w->title && w->title != os_window->window_title) {
-        Py_XDECREF(os_window->window_title);
-        os_window->window_title = w->title;
-        Py_INCREF(os_window->window_title);
+        Py_CLEAR(os_window->window_title);
+        os_window->window_title = Py_NewRef(w->title);
         set_os_window_title(os_window, PyUnicode_AsUTF8(w->title));
     }
 }
@@ -371,10 +369,11 @@ remove_window_inner(Tab *tab, id_type id) {
     if (active_window_id) {
         for (unsigned int w = 0; w < tab->num_windows; w++) {
             if (tab->windows[w].id == active_window_id) {
-                tab->active_window = w; break;
+                tab->active_window = w; return;
             }
         }
     }
+    if (tab->active_window >= tab->num_windows) tab->active_window = 0;
 }
 
 static void
@@ -409,6 +408,7 @@ detach_window(id_type os_window_id, id_type tab_id, id_type id) {
                 add_detached_window(tab->windows + i);
                 zero_at_i(tab->windows, i);
                 remove_i_from_array(tab->windows, i, tab->num_windows);
+                if (tab->active_window >= tab->num_windows) tab->active_window = tab->num_windows ? tab->num_windows - 1 : 0;
                 break;
             }
         }
@@ -528,12 +528,16 @@ set_active_tab(id_type os_window_id, unsigned int idx) {
 
 static void
 set_active_window(id_type os_window_id, id_type tab_id, id_type window_id) {
-    WITH_WINDOW(os_window_id, tab_id, window_id)
-        (void)window;
-        tab->active_window = w;
+    WITH_TAB(os_window_id, tab_id)
+        tab->active_window = 0;
+        for (unsigned w = 0; w < tab->num_windows; w++) {
+            if (tab->windows[w].id == window_id) {
+                tab->active_window = w; break;
+            }
+        }
         osw->needs_render = true;
         set_os_window_chrome(osw);
-    END_WITH_WINDOW;
+    END_WITH_TAB;
 }
 
 static bool
