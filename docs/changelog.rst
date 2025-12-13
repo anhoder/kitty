@@ -187,6 +187,11 @@ Detailed list of changes
 - When moving windows to a new tab/OS Window fix overlay windows not being
   grouped with their parent windows (:iss:`9266`)
 
+- Linux: Fix a bug causing colors to occasionally all go black when using mesa
+  >= 25.3.0 with nouveau GPU driver (:iss:`9235`)
+
+- Fix :opt:`tab_bar_min_tabs` not respecting :opt:`tab_bar_filter` (:iss:`9278`)
+
 0.44.0 [2025-11-03]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
