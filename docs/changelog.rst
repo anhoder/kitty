@@ -134,7 +134,7 @@ consumption to do the same tasks.
 Detailed list of changes
 -------------------------------------
 
-0.44.1 [future]
+0.45.0 [future]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - Add support for the `paste events protocol <https://rockorager.dev/misc/bracketed-paste-mime/>`__ (:iss:`9183`)
@@ -191,6 +191,12 @@ Detailed list of changes
   >= 25.3.0 with nouveau GPU driver (:iss:`9235`)
 
 - Fix :opt:`tab_bar_min_tabs` not respecting :opt:`tab_bar_filter` (:iss:`9278`)
+
+- macOS: Workaround for regression in Tahoe 26.2 that breaks :option:`kitty --detach`
+  (:iss:`9288`)
+
+- macOS: Workaround for yet another Tahoe regression causing macOS to start an
+  AutoFill helper process and not shut it down on application exit (:iss:`9299`)
 
 0.44.0 [2025-11-03]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

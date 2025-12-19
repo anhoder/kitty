@@ -29,6 +29,7 @@
 #include "internal.h"
 #include "../kitty/monotonic.h"
 #include <sys/param.h> // For MAXPATHLEN
+#include <sys/sysctl.h>
 #include <pthread.h>
 
 // Needed for _NSGetProgname
@@ -417,6 +418,7 @@ static GLFWapplicationwillfinishlaunchingfun finish_launching_callback = NULL;
 }
 
 static void *AppearanceObservationContext = &AppearanceObservationContext;
+static NSDate *application_finished_launching_at = nil;
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification
 {
@@ -430,6 +432,7 @@ static void *AppearanceObservationContext = &AppearanceObservationContext;
 
     CGDisplayRegisterReconfigurationCallback(display_reconfigured, NULL);
     _glfwCocoaPostEmptyEvent();
+    application_finished_launching_at = [NSDate date];
 }
 
 GLFWAPI GLFWColorScheme glfwGetCurrentSystemColorTheme(bool query_if_unintialized) {
@@ -971,13 +974,16 @@ int _glfwPlatformInit(bool *supports_window_occlusion)
     if (_glfw.hints.init.ns.chdir)
         changeToResourcesDirectory();
 
-    NSDictionary* defaults = @{
+    [[NSUserDefaults standardUserDefaults] registerDefaults:@{
         // Press and Hold prevents some keys from emitting repeated characters
         @"ApplePressAndHoldEnabled": @NO,
         // Dont generate openFile events from command line arguments
         @"NSTreatUnknownArgumentsAsOpen": @"NO",
-    };
-    [[NSUserDefaults standardUserDefaults] registerDefaults:defaults];
+        // This Tahoe nonsense causes slowdowns in some situations, see for example:
+        // https://issues.chromium.org/issues/452372350 it doesnt affect
+        // autofill via Edit->Autofill
+        @"NSAutoFillHeuristicControllerEnabled" : @NO,
+    }];
 
     NSUserDefaults *apple_settings = [[NSUserDefaults alloc] initWithSuiteName:@"com.apple.symbolichotkeys"];
     [apple_settings addObserver:_glfw.ns.helper
@@ -1006,10 +1012,46 @@ int _glfwPlatformInit(bool *supports_window_occlusion)
 
     } // autoreleasepool
 }
+static NSDate*
+get_process_start_time(pid_t pid) {
+    struct kinfo_proc kp;
+    size_t len = sizeof(kp);
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, pid };
+
+    if (sysctl(mib, 4, &kp, &len, NULL, 0) == 0 && len == sizeof(kp)) {
+        struct timeval start_tv = kp.kp_proc.p_starttime;
+        time_t start_sec = start_tv.tv_sec;
+        suseconds_t start_usec = start_tv.tv_usec;
+        NSTimeInterval t = (NSTimeInterval)start_sec + ((NSTimeInterval)start_usec / 1000000.0);
+        return [NSDate dateWithTimeIntervalSince1970:t];
+    }
+    return nil;
+}
 
 void _glfwPlatformTerminate(void)
 {
     @autoreleasepool {
+
+    // Kill the AutoFill helper process that macOS Tahoe starts and fails to
+    // shutdown on application exit, see https://github.com/kovidgoyal/kitty/issues/9299
+    // Only kill helpers that were launched within a few seconds of this process to
+    // avoid killing helpers from other processes. This is obviously not robust
+    // but since Apple cant design its way out of a paper bag, it's the best we
+    // can do.
+    if (application_finished_launching_at != nil) {
+        for (NSRunningApplication *app in [[NSWorkspace sharedWorkspace] runningApplications]) {
+            if ([app.bundleIdentifier isEqualToString:@"com.apple.SafariPlatformSupport.Helper"] &&
+                [[app.localizedName lowercaseString] containsString:@"autofill (kitty)"]) {
+                NSDate *st = get_process_start_time(app.processIdentifier);
+                if (st != nil) {
+                    NSTimeInterval timeDifference = [application_finished_launching_at timeIntervalSinceDate:st];
+                    [st release];
+                    if (fabs(timeDifference) <= 5) [app forceTerminate];
+                }
+            }
+        }
+        [application_finished_launching_at release]; application_finished_launching_at = nil;
+    }
 
     _glfwClearDisplayLinks();
 
