@@ -34,6 +34,7 @@ from .fast_data_types import (
     get_boss,
     get_click_interval,
     get_options,
+    is_tab_bar_visible,
     last_focused_os_window_id,
     mark_tab_bar_dirty,
     monotonic,
@@ -1148,16 +1149,9 @@ class TabManager:  # {{{
         return count < 1
 
     def _add_tab(self, tab: Tab) -> None:
-        visible_before = self.tab_bar_should_be_visible
+        visible_before = is_tab_bar_visible(self.os_window_id)
         self.tabs.append(tab)
-        if not visible_before and self.tab_bar_should_be_visible:
-            self.tabbar_visibility_changed()
-
-    def _remove_tab(self, tab: Tab) -> None:
-        visible_before = self.tab_bar_should_be_visible
-        remove_tab(self.os_window_id, tab.id)
-        self.tabs.remove(tab)
-        if visible_before and not self.tab_bar_should_be_visible:
+        if visible_before != self.tab_bar_should_be_visible:
             self.tabbar_visibility_changed()
 
     def _set_active_tab(self, idx: int, store_in_history: bool = True) -> None:
@@ -1185,7 +1179,7 @@ class TabManager:  # {{{
         return None
 
     def mark_tab_bar_dirty(self) -> None:
-        should_be_shown = self.tab_bar_should_be_visible and not self.tab_bar_hidden
+        should_be_shown = not self.tab_bar_hidden and self.tab_bar_should_be_visible
         mark_tab_bar_dirty(self.os_window_id, should_be_shown)
         w = self.active_window or self.any_window
         if w is not None:
@@ -1221,11 +1215,14 @@ class TabManager:  # {{{
             idx = self.tabs.index(tab)
         except Exception:
             return False
+        visible_before = is_tab_bar_visible(self.os_window_id)
         self.set_active_tab_idx(idx)
         h = self.active_tab_history
         if for_keep_focus and len(h) > 2 and h[-2] == for_keep_focus.id and h[-1] != for_keep_focus.id:
             h.pop()
             h.pop()
+        if visible_before != self.tab_bar_should_be_visible:
+            self.tabbar_visibility_changed()
         return True
 
     @property
@@ -1425,9 +1422,11 @@ class TabManager:  # {{{
         return t
 
     def remove(self, removed_tab: Tab) -> None:
+        visible_before = is_tab_bar_visible(self.os_window_id)
         active_tab_before_removal = self.active_tab
         tabs = tuple(self.tabs_to_be_shown_in_tab_bar)
-        self._remove_tab(removed_tab)
+        remove_tab(self.os_window_id, removed_tab.id)
+        self.tabs.remove(removed_tab)
         while True:
             try:
                 self.active_tab_history.remove(removed_tab.id)
@@ -1488,6 +1487,8 @@ class TabManager:  # {{{
                 self._active_tab_idx = 0
         self.mark_tab_bar_dirty()
         removed_tab.destroy()
+        if self.tab_bar_should_be_visible != visible_before:
+            self.tabbar_visibility_changed()
 
     @property
     def tab_bar_data(self) -> list[TabBarData]:
