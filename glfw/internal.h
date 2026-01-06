@@ -814,7 +814,7 @@ void _glfwInputWindowMonitor(_GLFWwindow* window, _GLFWmonitor* monitor);
 
 void _glfwInputKeyboard(_GLFWwindow *window, GLFWkeyevent *ev);
 void _glfwInputClipboardLost(GLFWClipboardType which);
-void _glfwInputScroll(_GLFWwindow* window, double xoffset, double yoffset, int flags, int mods);
+void _glfwInputScroll(_GLFWwindow* window, const GLFWScrollEvent *ev);
 void _glfwInputMouseClick(_GLFWwindow* window, int button, int action, int mods);
 void _glfwInputCursorPos(_GLFWwindow* window, double xpos, double ypos);
 void _glfwInputCursorEnter(_GLFWwindow* window, bool entered);
@@ -885,6 +885,7 @@ void _glfwPlatformRemoveTimer(unsigned long long timer_id);
 int _glfwPlatformSetWindowBlur(_GLFWwindow* handle, int value);
 MonitorGeometry _glfwPlatformGetMonitorGeometry(_GLFWmonitor* monitor);
 bool _glfwPlatformGrabKeyboard(bool grab);
+void glfw_handle_scroll_event_for_momentum(_GLFWwindow *w, const GLFWScrollEvent *ev, bool stopped, bool is_finger_based);
 
 char* _glfw_strdup(const char* source);
 

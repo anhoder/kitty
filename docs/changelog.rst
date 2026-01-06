@@ -151,11 +151,29 @@ Detailed list of changes
 -------------------------------------
 
 0.45.1 [future]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Wayland: Add momentum scrolling for touchpads
 
 - choose-files kitten: Fix JXL image preview not working (:iss:`9323`)
 
 - Fix tab bar rendering glitches when using :opt:`tab_bar_filter` in some
   circumstances (:iss:`9328`)
+
+- Add support for specifying colors in :file:`kitty.conf` in OKLCH and LAB
+  color spaces (:pull:`9325`)
+
+- Fix a regression that broke using line numbers with the edit-in-kitty command
+  (:pull:`9346`)
+
+- macOS: Fix changes to :opt:`macos_titlebar_color` while in full screen not being applied after exiting fullscreen (:iss:`9350`)
+
+- ncurses: Fix ncurses not using dim because it is missing from the sgr property
+  in terminfo even though it is present in the dim property.
+
+- Fix a regression in the previous release that caused moving between neighbors
+  in the vertical and horizontal layouts to go in the opposite direction (:iss:`9355`)
+
 
 0.45.0 [2025-12-24]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

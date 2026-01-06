@@ -193,7 +193,10 @@ static void
 pointer_handle_axis(void *data UNUSED, struct wl_pointer *pointer UNUSED, uint32_t time, uint32_t axis, wl_fixed_t value) {
     _GLFWwindow* window = _glfw.wl.pointerFocus;
     if (!window) return;
-    if (!info.timestamp_ns) info.timestamp_ns = ms_to_monotonic_t(time);
+switch (axis) {
+        case WL_POINTER_AXIS_VERTICAL_SCROLL: if (!info.y_start_time) info.y_start_time = ms_to_monotonic_t(time); break;
+        case WL_POINTER_AXIS_HORIZONTAL_SCROLL: if (!info.x_start_time) info.x_start_time = ms_to_monotonic_t(time); break;
+    }
     pointer_handle_axis_common(AXIS_EVENT_CONTINUOUS, axis, value);
 }
 
@@ -201,41 +204,54 @@ static void
 pointer_handle_frame(void *data UNUSED, struct wl_pointer *pointer UNUSED) {
     _GLFWwindow* window = _glfw.wl.pointerFocus;
     if (!window) return;
-    float x = 0, y = 0;
-    static const int HIGHRES = 1;
-    static const int VALUE120 = 1 << 4;
-    int flags = 0;
+    GLFWScrollEvent ev = {.keyboard_modifiers=_glfw.wl.xkb.states.modifiers};
 
     if (info.discrete.y_axis_type != AXIS_EVENT_UNKNOWN) {
-        y = info.discrete.y;
-        if (info.discrete.y_axis_type == AXIS_EVENT_VALUE120) flags |= VALUE120;
+        ev.y_offset = info.discrete.y;
+        if (info.discrete.y_axis_type == AXIS_EVENT_VALUE120) ev.offset_type = GLFW_SCROLL_OFFEST_V120;
     } else if (info.continuous.y_axis_type != AXIS_EVENT_UNKNOWN) {
-        flags |= HIGHRES;
-        y = info.continuous.y;
+        ev.offset_type = GLFW_SCROLL_OFFEST_HIGHRES;
+        ev.y_offset = info.continuous.y;
     }
 
     if (info.discrete.x_axis_type != AXIS_EVENT_UNKNOWN) {
-        x = info.discrete.x;
-        if (info.discrete.x_axis_type == AXIS_EVENT_VALUE120) flags |= VALUE120;
+        ev.x_offset = info.discrete.x;
+        if (info.discrete.x_axis_type == AXIS_EVENT_VALUE120) ev.offset_type = GLFW_SCROLL_OFFEST_V120;
     } else if (info.continuous.x_axis_type != AXIS_EVENT_UNKNOWN) {
-        flags |= HIGHRES;
-        x = info.continuous.x;
+        ev.offset_type = GLFW_SCROLL_OFFEST_HIGHRES;
+        ev.x_offset = info.continuous.x;
     }
+    float scale = (float)_glfwWaylandWindowScale(window);
+    ev.x_offset *= scale; ev.y_offset *= scale;
+    ev.x_offset *= -1;
+    glfw_handle_scroll_event_for_momentum(
+        window, &ev, info.y_stop_received || info.x_stop_received, info.source_type == WL_POINTER_AXIS_SOURCE_FINGER);
     /* clear pointer_curr_axis_info for next frame */
     memset(&info, 0, sizeof(info));
-
-    if (x != 0.0f || y != 0.0f) {
-        float scale = (float)_glfwWaylandWindowScale(window);
-        y *= scale; x *= scale;
-        _glfwInputScroll(window, -x, y, flags, _glfw.wl.xkb.states.modifiers);
-    }
 }
 
 static void
-pointer_handle_axis_source(void* data UNUSED, struct wl_pointer* pointer UNUSED, uint32_t source UNUSED) { }
+pointer_handle_axis_source(void* data UNUSED, struct wl_pointer* pointer UNUSED, uint32_t source) {
+    _GLFWwindow* window = _glfw.wl.pointerFocus;
+    if (!window) return;
+    info.source_type = source;
+}
 
 static void
-pointer_handle_axis_stop(void *data UNUSED, struct wl_pointer *wl_pointer UNUSED, uint32_t time UNUSED, uint32_t axis UNUSED) { }
+pointer_handle_axis_stop(void *data UNUSED, struct wl_pointer *wl_pointer UNUSED, uint32_t time UNUSED, uint32_t axis) {
+    _GLFWwindow* window = _glfw.wl.pointerFocus;
+    if (!window) return;
+    switch (axis) {
+        case WL_POINTER_AXIS_VERTICAL_SCROLL:
+            info.y_stop_received = true;
+            info.y_stop_time = ms_to_monotonic_t(time);
+            break;
+        case WL_POINTER_AXIS_HORIZONTAL_SCROLL:
+            info.x_stop_received = true;
+            info.x_stop_time = ms_to_monotonic_t(time);
+            break;
+    }
+}
 
 
 static void

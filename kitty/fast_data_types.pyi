@@ -740,6 +740,9 @@ def patch_global_colors(spec: Dict[str, Optional[int]], configured: bool) -> Non
 
 
 class Color:
+    @classmethod
+    def parse_color(cls, spec: str) -> Color | None: ...
+
     @property
     def rgb(self) -> int:
         pass
@@ -1075,6 +1078,7 @@ def mark_tab_bar_dirty(os_window_id: int, should_be_shown: bool) -> None:
 
 
 def is_tab_bar_visible(os_window_id: int) -> bool: ...
+
 
 def detach_window(os_window_id: int, tab_id: int, window_id: int) -> None:
     pass
@@ -1770,6 +1774,7 @@ def buffer_keys_in_window(os_window_id: int, tab_id: int, window_id: int, enable
 def sprite_idx_to_pos(idx: int, xnum: int, ynum: int) -> tuple[int, int, int]: ...
 def render_box_char(ch: int, width: int, height: int, scale: float = 1.0, dpi_x: float = 96.0, dpi_y: float = 96.0) -> bytes: ...
 def run_at_exit_cleanup_functions() -> None: ...
+def all_color_names() -> tuple[tuple[str, Color], ...]: ...
 def grab_keyboard(grab: bool | None) -> bool: ...
 DecorationTypes = Literal[
     'curl', 'dashed', 'dotted', 'double', 'straight', 'strikethrough', 'beam_cursor', 'underline_cursor', 'hollow_cursor', 'missing']
