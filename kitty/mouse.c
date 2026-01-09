@@ -6,6 +6,7 @@
  */
 
 #include "state.h"
+#include "screen.h"
 #include "charsets.h"
 #include <limits.h>
 #include <math.h>
@@ -433,18 +434,18 @@ typedef struct {
 
 
 static bool
-validate_scrollbar_state(Window *w) {
+validate_scrollbar_state(const Window *w) {
     return w && w->render_data.screen &&
            w->render_data.screen->historybuf &&
            w->render_data.screen->historybuf->count > 0;
 }
 
 static ScrollbarGeometry
-calculate_scrollbar_geometry(Window *w) {
+calculate_scrollbar_geometry(const Window *w) {
     ScrollbarGeometry geom = {0};
     if (!w || !w->render_data.screen) return geom;
 
-    WindowGeometry *g = &w->render_data.geometry;
+    const WindowGeometry *g = &w->render_data.geometry;
     unsigned cell_width = w->render_data.screen->cell_size.width;
     geom.width = (double)OPT(scrollbar_width) * cell_width;
     if (w->scrollbar.is_hovering) geom.width = (double)OPT(scrollbar_hover_width) * cell_width;
@@ -461,7 +462,7 @@ calculate_scrollbar_geometry(Window *w) {
 }
 
 static ScrollbarHitType
-get_scrollbar_hit_type(Window *w, double mouse_x, double mouse_y) {
+get_scrollbar_hit_type(const Window *w, double mouse_x, double mouse_y) {
     if (!w || !validate_scrollbar_state(w)) return SCROLLBAR_HIT_NONE;
 
     ScrollbarGeometry geom = calculate_scrollbar_geometry(w);
@@ -495,7 +496,7 @@ handle_scrollbar_track_click(Window *w, double mouse_y) {
         ScrollbarGeometry geom = calculate_scrollbar_geometry(w);
         double scrollbar_height = geom.bottom - geom.top;
         double mouse_pane_fraction = (mouse_y - geom.top) / scrollbar_height;
-        unsigned int target_scrolled_by = (unsigned int)(screen->historybuf->count * (1.0 - mouse_pane_fraction));
+        double target_scrolled_by = screen->historybuf->count * (1.0 - mouse_pane_fraction);
         screen_history_scroll_to_absolute(screen, target_scrolled_by);
     } else {
         OSWindow *os_window = global_state.callback_os_window;
@@ -560,14 +561,11 @@ handle_scrollbar_drag(Window *w, double mouse_y) {
     if (available_space > 0) {
         double scroll_fraction = delta_y / available_space;
         double target = w->scrollbar.drag_start_scrolled_by - scroll_fraction * screen->historybuf->count;
-        unsigned int new_scrolled_by;
+        double new_scrolled_by;
         if (target < 0) new_scrolled_by = 0;
         else if (target > screen->historybuf->count) new_scrolled_by = screen->historybuf->count;
-        else new_scrolled_by = (unsigned int)target;
-
-        if (new_scrolled_by != screen->scrolled_by) {
-            screen_history_scroll_to_absolute(screen, new_scrolled_by);
-        }
+        else new_scrolled_by = target;
+        screen_history_scroll_to_absolute(screen, new_scrolled_by);
     }
 }
 
@@ -1232,6 +1230,11 @@ scroll_phase(GLFWMomentumType t) {
 }
 
 
+static inline bool
+pixel_scroll_enabled_for_screen(const Screen *screen) {
+    return OPT(pixel_scroll) && screen->linebuf == screen->main_linebuf;
+}
+
 void
 scroll_event(const GLFWScrollEvent *ev) {
     debug("\x1b[36mScroll\x1b[m %s x: %f y: %f momentum: %s modifiers: %s\n", scroll_offset_type(ev->offset_type), ev->x_offset, ev->y_offset, scroll_phase(ev->momentum_type), format_mods(ev->keyboard_modifiers));
@@ -1285,30 +1288,41 @@ scroll_event(const GLFWScrollEvent *ev) {
         case GLFW_MOMENTUM_PHASE_MAY_BEGIN:
             break;
     }
-    int s;
     if (ev->y_offset != 0.0) {
-        s = scale_scroll(screen->modes.mouse_tracking_mode, ev->y_offset, ev->offset_type, &screen->pending_scroll_pixels_y, global_state.callback_os_window->fonts_data->fcm.cell_height);
-        if (s) {
-            bool upwards = s > 0;
-            if (screen->modes.mouse_tracking_mode) {
-                int sz = encode_mouse_scroll(w, upwards ? 4 : 5, ev->keyboard_modifiers);
-                if (sz > 0) {
-                    mouse_event_buf[sz] = 0;
-                    for (s = abs(s); s > 0; s--) {
-                        write_escape_code_to_child(screen, ESC_CSI, mouse_event_buf);
-                    }
-                }
+        if (screen->modes.mouse_tracking_mode == NO_TRACKING && pixel_scroll_enabled_for_screen(screen) && (ev->offset_type == GLFW_SCROLL_OFFEST_HIGHRES || ev->offset_type == GLFW_SCROLL_OFFEST_V120)) {
+            double delta_pixels;
+            if (ev->offset_type == GLFW_SCROLL_OFFEST_HIGHRES) {
+                delta_pixels = ev->y_offset * OPT(touch_scroll_multiplier);
             } else {
-                if (screen->linebuf == screen->main_linebuf) {
-                    screen_history_scroll(screen, abs(s), upwards);
-                    if (screen->selections.in_progress) update_drag(w);
+                const double offset_lines = (ev->y_offset / 120.) * OPT(wheel_scroll_multiplier);
+                delta_pixels = offset_lines * global_state.callback_os_window->fonts_data->fcm.cell_height;
+            }
+            screen->pending_scroll_pixels_y = 0.0;
+            if (screen_apply_pixel_scroll(screen, delta_pixels) && screen->selections.in_progress) update_drag(w);
+        } else {
+            int s = scale_scroll(screen->modes.mouse_tracking_mode, ev->y_offset, ev->offset_type, &screen->pending_scroll_pixels_y, global_state.callback_os_window->fonts_data->fcm.cell_height);
+            if (s) {
+                bool upwards = s > 0;
+                if (screen->modes.mouse_tracking_mode) {
+                    int sz = encode_mouse_scroll(w, upwards ? 4 : 5, ev->keyboard_modifiers);
+                    if (sz > 0) {
+                        mouse_event_buf[sz] = 0;
+                        for (s = abs(s); s > 0; s--) {
+                            write_escape_code_to_child(screen, ESC_CSI, mouse_event_buf);
+                        }
+                    }
+            } else {
+                    if (screen->linebuf == screen->main_linebuf) {
+                        screen_history_scroll(screen, abs(s), upwards);
+                        if (screen->selections.in_progress) update_drag(w);
+                    }
+                    else fake_scroll(w, abs(s), upwards);
                 }
-                else fake_scroll(w, abs(s), upwards);
             }
         }
     }
     if (ev->x_offset != 0.0) {
-        s = scale_scroll(screen->modes.mouse_tracking_mode, ev->x_offset, ev->offset_type, &screen->pending_scroll_pixels_x, global_state.callback_os_window->fonts_data->fcm.cell_width);
+        int s = scale_scroll(screen->modes.mouse_tracking_mode, ev->x_offset, ev->offset_type, &screen->pending_scroll_pixels_x, global_state.callback_os_window->fonts_data->fcm.cell_width);
         if (s) {
             if (screen->modes.mouse_tracking_mode) {
                 int sz = encode_mouse_scroll(w, s > 0 ? 6 : 7, ev->keyboard_modifiers);

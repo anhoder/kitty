@@ -153,7 +153,9 @@ Detailed list of changes
 0.45.1 [future]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- Wayland: Add momentum scrolling for touchpads
+- Pixel scrolling for the kitty scrollback buffer controlled via :opt:`pixel_scroll` (:pull:`9330`)
+
+- Wayland: Add momentum scrolling in the kitty scrollback buffer for touchpads and touchscreens
 
 - choose-files kitten: Fix JXL image preview not working (:iss:`9323`)
 
@@ -173,6 +175,9 @@ Detailed list of changes
 
 - Fix a regression in the previous release that caused moving between neighbors
   in the vertical and horizontal layouts to go in the opposite direction (:iss:`9355`)
+
+- Fix :ac:`goto_session` not respecting the focus_tab session directive when
+  creating a session in an existing OS window (:iss:`9366`)
 
 
 0.45.0 [2025-12-24]
