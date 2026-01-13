@@ -301,7 +301,8 @@ typedef enum GLFWOffsetType {
 } GLFWOffsetType;
 
 typedef struct GLFWScrollEvent {
-    double x_offset, y_offset;  // offsets are scaled by the window scale
+    double x_offset, y_offset;  // offsets are scaled by the window scale for HIGHRES
+    struct { double x, y; } unscaled;  // unscaled offsets, aka logical pixels
     GLFWMomentumType momentum_type;
     GLFWOffsetType offset_type;
     int keyboard_modifiers;
@@ -2404,6 +2405,10 @@ GFW_EXTERN glfwWaylandBeep_func glfwWaylandBeep_impl;
 typedef pid_t (*glfwWaylandCompositorPID_func)(void);
 GFW_EXTERN glfwWaylandCompositorPID_func glfwWaylandCompositorPID_impl;
 #define glfwWaylandCompositorPID glfwWaylandCompositorPID_impl
+
+typedef void (*glfwConfigureMomentumScroller_func)(double, double, double, unsigned);
+GFW_EXTERN glfwConfigureMomentumScroller_func glfwConfigureMomentumScroller_impl;
+#define glfwConfigureMomentumScroller glfwConfigureMomentumScroller_impl
 
 typedef unsigned long long (*glfwDBusUserNotify_func)(const GLFWDBUSNotificationData*, GLFWDBusnotificationcreatedfun, void*);
 GFW_EXTERN glfwDBusUserNotify_func glfwDBusUserNotify_impl;

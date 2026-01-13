@@ -135,6 +135,7 @@ static void pointerHandleButton(void* data UNUSED,
                                 uint32_t button,
                                 uint32_t state)
 {
+    glfw_cancel_momentum_scroll();
     _glfw.wl.serial = serial; _glfw.wl.input_serial = serial; _glfw.wl.pointer_serial = serial;
 
     _GLFWwindow* window = _glfw.wl.pointerFocus;
@@ -207,23 +208,23 @@ pointer_handle_frame(void *data UNUSED, struct wl_pointer *pointer UNUSED) {
     GLFWScrollEvent ev = {.keyboard_modifiers=_glfw.wl.xkb.states.modifiers};
 
     if (info.discrete.y_axis_type != AXIS_EVENT_UNKNOWN) {
-        ev.y_offset = info.discrete.y;
+        ev.unscaled.y = info.discrete.y;
         if (info.discrete.y_axis_type == AXIS_EVENT_VALUE120) ev.offset_type = GLFW_SCROLL_OFFEST_V120;
     } else if (info.continuous.y_axis_type != AXIS_EVENT_UNKNOWN) {
         ev.offset_type = GLFW_SCROLL_OFFEST_HIGHRES;
-        ev.y_offset = info.continuous.y;
+        ev.unscaled.y = info.continuous.y;
     }
 
     if (info.discrete.x_axis_type != AXIS_EVENT_UNKNOWN) {
-        ev.x_offset = info.discrete.x;
+        ev.unscaled.x = info.discrete.x;
         if (info.discrete.x_axis_type == AXIS_EVENT_VALUE120) ev.offset_type = GLFW_SCROLL_OFFEST_V120;
     } else if (info.continuous.x_axis_type != AXIS_EVENT_UNKNOWN) {
         ev.offset_type = GLFW_SCROLL_OFFEST_HIGHRES;
-        ev.x_offset = info.continuous.x;
+        ev.unscaled.x = info.continuous.x;
     }
-    float scale = (float)_glfwWaylandWindowScale(window);
-    ev.x_offset *= scale; ev.y_offset *= scale;
-    ev.x_offset *= -1;
+    ev.unscaled.x *= -1;
+    const double scale = ev.offset_type == GLFW_SCROLL_OFFEST_HIGHRES ? _glfwWaylandWindowScale(window) : 1;
+    ev.x_offset = scale * ev.unscaled.x; ev.y_offset = scale * ev.unscaled.y;
     glfw_handle_scroll_event_for_momentum(
         window, &ev, info.y_stop_received || info.x_stop_received, info.source_type == WL_POINTER_AXIS_SOURCE_FINGER);
     /* clear pointer_curr_axis_info for next frame */
@@ -395,6 +396,7 @@ static void keyboardHandleKey(void* data UNUSED,
                               uint32_t key,
                               uint32_t state)
 {
+    glfw_cancel_momentum_scroll();
     _GLFWwindow* window = _glfwWindowForId(_glfw.wl.keyboardFocusId);
     if (!window)
         return;
