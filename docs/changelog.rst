@@ -181,6 +181,20 @@ Detailed list of changes
 - Fix :ac:`goto_session` not respecting the focus_tab session directive when
   creating a session in an existing OS window (:iss:`9366`)
 
+- Fix another rendering glitch caused by :opt:`tab_bar_filter` when adding tabs
+  from a session (:iss:`9382`)
+
+- Wayland: Fix a regression in the previous release that caused doubled key
+  repeats on compositors that implement compositor side key repeat events
+  (:iss:`9374`)
+
+- icat: Fix a regression in the previous release when rendering GIF animations
+  with frames that dispose onto background with non-zero delay using the native
+  engine (:iss:`9376`)
+
+- Wayland: Remove usage of the wayland color management protocol to inform
+  compositors of the color space used by kitty
+
 
 0.45.0 [2025-12-24]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

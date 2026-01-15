@@ -315,9 +315,11 @@ static void keyboardHandleKeymap(void* data UNUSED,
 
 }
 
+static bool
+needs_synthetic_key_repeat(void) { return _glfw.wl.keyboardRepeatRate > 0 && !_glfw.wl.has_key_repeat_events; }
+
 static void
 start_key_repeat_timer(bool initial) {
-    if (_glfw.wl.keyboardRepeatRate <= 0) return;
 #ifdef HAS_TIMER_FD
     (void)initial;
     struct itimerspec new_value = {.it_value={.tv_nsec = _glfw.wl.keyboardRepeatDelay}, .it_interval={.tv_nsec = (s_to_monotonic_t(1ll) / (monotonic_t)_glfw.wl.keyboardRepeatRate)}};
@@ -346,7 +348,7 @@ static void
 send_key_repeat_timer_event(id_type timer_id UNUSED, void *data UNUSED) {
     char b = 1;
     b += write(_glfw.wl.eventLoopData.key_repeat_fds[1], &b, 1);
-    if (_glfw.wl.keyboardRepeatRate > 0) start_key_repeat_timer(false);
+    if (needs_synthetic_key_repeat()) start_key_repeat_timer(false);
 }
 #endif
 
@@ -366,7 +368,7 @@ static void keyboardHandleEnter(void* data UNUSED,
     if (keys && _glfw.wl.keyRepeatInfo.key) {
         wl_array_for_each(key, keys) {
             if (*key == _glfw.wl.keyRepeatInfo.key) {
-                if (_glfw.wl.keyboardRepeatRate > 0) start_key_repeat_timer(true);
+                if (needs_synthetic_key_repeat()) start_key_repeat_timer(true);
                 break;
             }
         }
@@ -411,7 +413,7 @@ static void keyboardHandleKey(void* data UNUSED,
 
     _glfw.wl.serial = serial; _glfw.wl.input_serial = serial;
     glfw_xkb_handle_key_event(window, &_glfw.wl.xkb, key, action);
-    if (action == GLFW_PRESS && _glfw.wl.keyboardRepeatRate > 0 && glfw_xkb_should_repeat(&_glfw.wl.xkb, key))
+    if (action == GLFW_PRESS && needs_synthetic_key_repeat() && glfw_xkb_should_repeat(&_glfw.wl.xkb, key))
     {
         _glfw.wl.keyRepeatInfo.key = key;
         _glfw.wl.keyRepeatInfo.keyboardFocusId = window->id;
@@ -500,53 +502,6 @@ static const struct wl_seat_listener seatListener = {
     seatHandleCapabilities,
     seatHandleName,
 };
-
-static void
-ignored_color_manager_event(void *data UNUSED, struct wp_color_manager_v1 *wp_color_manager_v1 UNUSED, uint32_t x UNUSED) {}
-
-static void
-on_color_manger_features_done(void *data UNUSED, struct wp_color_manager_v1 *wp_color_manager_v1 UNUSED) {
-    _glfw.wl.color_manager.capabilities_reported = true;
-}
-
-static void
-on_supported_color_primaries(void *data UNUSED, struct wp_color_manager_v1 *wp_color_manager_v1 UNUSED, uint32_t x) {
-    switch(x) {
-        case WP_COLOR_MANAGER_V1_PRIMARIES_SRGB:
-            _glfw.wl.color_manager.supported_primaries.srgb = true; break;
-    }
-}
-
-static void
-on_supported_color_feature(void *data UNUSED, struct wp_color_manager_v1 *wp_color_manager_v1 UNUSED, uint32_t x) {
-    switch(x) {
-        case WP_COLOR_MANAGER_V1_FEATURE_PARAMETRIC:
-            _glfw.wl.color_manager.supported_features.parametric = true; break;
-        case WP_COLOR_MANAGER_V1_FEATURE_SET_PRIMARIES:
-            _glfw.wl.color_manager.supported_features.set_primaries = true; break;
-    }
-}
-
-static void
-on_supported_color_transfer_function(void *data UNUSED, struct wp_color_manager_v1 *wp_color_manager_v1 UNUSED, uint32_t x) {
-    switch(x) {
-        case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_SRGB:
-            _glfw.wl.color_manager.supported_transfer_functions.srgb = true; break;
-        case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_GAMMA22:
-            _glfw.wl.color_manager.supported_transfer_functions.gamma22 = true; break;
-        case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_LINEAR:
-            _glfw.wl.color_manager.supported_transfer_functions.ext_linear = true; break;
-    }
-}
-
-static const struct wp_color_manager_v1_listener color_manager_listener = {
-    .supported_intent = ignored_color_manager_event,
-    .supported_feature = on_supported_color_feature,
-    .supported_primaries_named = on_supported_color_primaries,
-    .supported_tf_named = on_supported_color_transfer_function,
-    .done = on_color_manger_features_done,
-};
-
 static void wmBaseHandlePing(void* data UNUSED,
                              struct xdg_wm_base* wmBase,
                              uint32_t serial)
@@ -592,8 +547,10 @@ static void registryHandleGlobal(void* data UNUSED,
     {
         if (!_glfw.wl.seat)
         {
+            _glfw.wl.has_key_repeat_events = false;
 #if defined(WL_KEYBOARD_KEY_STATE_REPEATED_SINCE_VERSION)
             _glfw.wl.seatVersion = MIN(WL_KEYBOARD_KEY_STATE_REPEATED_SINCE_VERSION, (int)version);
+            _glfw.wl.has_key_repeat_events = _glfw.wl.seatVersion >= WL_KEYBOARD_KEY_STATE_REPEATED_SINCE_VERSION;
 #elif defined(WL_POINTER_AXIS_RELATIVE_DIRECTION_SINCE_VERSION)
             _glfw.wl.seatVersion = MIN(WL_POINTER_AXIS_RELATIVE_DIRECTION_SINCE_VERSION, (int)version);
 #elif defined(WL_POINTER_AXIS_VALUE120_SINCE_VERSION)
@@ -705,9 +662,6 @@ static void registryHandleGlobal(void* data UNUSED,
         _glfw.wl.xdg_system_bell_v1 = wl_registry_bind(registry, name, &xdg_system_bell_v1_interface, 1);
     } else if (is(xdg_toplevel_tag_manager_v1)) {
         _glfw.wl.xdg_toplevel_tag_manager_v1 = wl_registry_bind(registry, name, &xdg_toplevel_tag_manager_v1_interface, 1);
-    } else if (is(wp_color_manager_v1)) {
-        _glfw.wl.wp_color_manager_v1 = wl_registry_bind(registry, name, &wp_color_manager_v1_interface, 1);
-        wp_color_manager_v1_add_listener(_glfw.wl.wp_color_manager_v1, &color_manager_listener, NULL);
     }
 #undef is
 }
@@ -819,10 +773,10 @@ get_compositor_missing_capabilities(void) {
     C(single_pixel_buffer, wp_single_pixel_buffer_manager_v1); C(preferred_scale, has_preferred_buffer_scale);
     C(idle_inhibit, idle_inhibit_manager); C(icon, xdg_toplevel_icon_manager_v1); C(bell, xdg_system_bell_v1);
     C(window-tag, xdg_toplevel_tag_manager_v1); C(keyboard_shortcuts_inhibit, keyboard_shortcuts_inhibit_manager);
+    C(key-repeat, has_key_repeat_events);
 #define P(x) p += snprintf(p, sizeof(buf) - (p - buf), "%s ", x);
     if (_glfw.wl.xdg_wm_base_version < 6) P("window-state-suspended");
     if (_glfw.wl.xdg_wm_base_version < 5) P("window-capabilities");
-    if (!_glfw.wl.color_manager.has_needed_capabilities) P("color-manager");
 #undef P
 #undef C
     while (p > buf && (p - 1)[0] == ' ') { p--; *p = 0; }
@@ -830,25 +784,6 @@ get_compositor_missing_capabilities(void) {
 }
 
 GLFWAPI const char* glfwWaylandMissingCapabilities(void) { return get_compositor_missing_capabilities(); }
-
-static void
-image_description_failed(void *data UNUSED, struct wp_image_description_v1 *d, uint32_t cause, const char *msg) {
-    wp_image_description_v1_destroy(d);
-    _glfwInputError(GLFW_PLATFORM_ERROR, "Failed to create color mamagement profile description with cause: %d and error: %s", cause, msg);
-    _glfw.wl.color_manager.image_description_done = true;
-}
-
-static void
-image_description_ready(void *data UNUSED, struct wp_image_description_v1 *d, uint32_t identity UNUSED) {
-    _glfw.wl.color_manager.image_description_done = true;
-    _glfw.wl.color_manager.image_description = d;
-}
-
-static const struct wp_image_description_v1_listener image_description_listener = {
-    .failed = image_description_failed,
-    .ready = image_description_ready,
-};
-
 
 int _glfwPlatformInit(bool *supports_window_occlusion)
 {
@@ -909,23 +844,6 @@ int _glfwPlatformInit(bool *supports_window_occlusion)
 
     // Sync so we got all initial output events
     wl_display_roundtrip(_glfw.wl.display);
-
-    // Sync so we get all color manager capabilities
-    if (_glfw.wl.wp_color_manager_v1) {
-        while (!_glfw.wl.color_manager.capabilities_reported) wl_display_roundtrip(_glfw.wl.display);
-        _glfw.wl.color_manager.has_needed_capabilities = \
-                _glfw.wl.color_manager.supported_transfer_functions.srgb &&
-                _glfw.wl.color_manager.supported_features.parametric &&
-                _glfw.wl.color_manager.supported_features.set_primaries;
-        if (_glfw.wl.color_manager.has_needed_capabilities) {
-            struct wp_image_description_creator_params_v1 *c = wp_color_manager_v1_create_parametric_creator(
-                    _glfw.wl.wp_color_manager_v1);
-            wp_image_description_creator_params_v1_set_tf_named(c, WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_SRGB);
-            wp_image_description_creator_params_v1_set_primaries_named(c, WP_COLOR_MANAGER_V1_PRIMARIES_SRGB);
-            wp_image_description_v1_add_listener(wp_image_description_creator_params_v1_create(c),
-                    &image_description_listener, NULL);
-        }
-    }
 
     for (i = 0; i < _glfw.monitorCount; ++i)
     {
@@ -1040,11 +958,6 @@ void _glfwPlatformTerminate(void)
         xdg_system_bell_v1_destroy(_glfw.wl.xdg_system_bell_v1);
     if (_glfw.wl.xdg_toplevel_tag_manager_v1)
         xdg_toplevel_tag_manager_v1_destroy(_glfw.wl.xdg_toplevel_tag_manager_v1);
-    if (_glfw.wl.wp_color_manager_v1) {
-        if (_glfw.wl.color_manager.image_description)
-            wp_image_description_v1_destroy(_glfw.wl.color_manager.image_description);
-        wp_color_manager_v1_destroy(_glfw.wl.wp_color_manager_v1);
-    }
     if (_glfw.wl.wp_single_pixel_buffer_manager_v1)
         wp_single_pixel_buffer_manager_v1_destroy(_glfw.wl.wp_single_pixel_buffer_manager_v1);
     if (_glfw.wl.wp_cursor_shape_manager_v1)
