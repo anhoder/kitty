@@ -240,6 +240,7 @@ typedef struct XIScrollValuator {
 
 typedef struct XIScrollDevice {
     bool is_highres;
+    bool is_finger_based;
     int deviceid, sourceid;
     XIScrollValuator valuators[8];
     unsigned num_valuators;
@@ -426,7 +427,7 @@ typedef struct _GLFWlibraryX11
         XIScrollDevice scroll_devices[16];
         unsigned num_scroll_devices;
         int master_pointer_id;
-        Atom LIBINPUT_SCROLL_METHOD_ENABLED;
+        Atom LIBINPUT_SCROLL_METHOD_ENABLED, LIBINPUT_TAPPING;
     } xi;
 
     struct {
