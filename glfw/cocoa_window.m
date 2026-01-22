@@ -1586,8 +1586,13 @@ static bool is_modifier_pressed(NSUInteger flags, NSUInteger target_mask,
     return kEmptyRange;
 }
 
-- (NSRange)selectedRange {
-  return kEmptyRange;
+- (NSRange)selectedRange
+{
+    // Return position 0 with no selection to indicate text can be inserted.
+    // This is required for macOS dictation to work - returning kEmptyRange
+    // (NSNotFound, 0) causes dictation to fail because the system doesn't
+    // know where to insert text. See https://github.com/kovidgoyal/kitty/issues/3732
+    return NSMakeRange(0, 0);
 }
 
 - (void)setMarkedText:(id)string
@@ -1747,11 +1752,18 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
   return YES;
 }
 
-- (BOOL)isAccessibilitySelectorAllowed:(SEL)selector {
-  if (selector == @selector(accessibilityRole) ||
-      selector == @selector(accessibilitySelectedText))
-    return YES;
-  return NO;
+- (BOOL)isAccessibilitySelectorAllowed:(SEL)selector
+{
+    // Allow accessibility selectors needed for dictation and other accessibility features
+    // See https://github.com/kovidgoyal/kitty/issues/3732
+    if (selector == @selector(accessibilityRole) ||
+        selector == @selector(accessibilitySelectedText) ||
+        selector == @selector(accessibilitySelectedTextRange) ||
+        selector == @selector(accessibilityNumberOfCharacters) ||
+        selector == @selector(accessibilityInsertionPointLineNumber) ||
+        selector == @selector(accessibilityValue) ||
+        selector == @selector(setAccessibilityValue:)) return YES;
+    return NO;
 }
 
 #if (TARGET_OS_OSX && __MAC_OS_X_VERSION_MIN_REQUIRED >= 101400)
@@ -1772,6 +1784,44 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
     }
   }
   return text;
+}
+
+// Accessibility methods required for dictation support
+// See https://github.com/kovidgoyal/kitty/issues/3732
+
+- (NSRange)accessibilitySelectedTextRange
+{
+    // Return position 0 with no selection for dictation support
+    return NSMakeRange(0, 0);
+}
+
+- (NSInteger)accessibilityNumberOfCharacters
+{
+    // Terminal doesn't have a fixed text buffer, return 0
+    return 0;
+}
+
+- (NSInteger)accessibilityInsertionPointLineNumber
+{
+    // Return line 0 as the insertion point
+    return 0;
+}
+
+- (NSString *)accessibilityValue
+{
+    // Terminal doesn't expose its buffer as an accessibility value
+    return @"";
+}
+
+- (void)setAccessibilityValue:(NSString *)value
+{
+    // When dictation or other accessibility features set text, insert it as keyboard input
+    if (value && [value length] > 0 && window) {
+        const char *utf8 = [value UTF8String];
+        debug_key("Inserting text via setAccessibilityValue: %s\n", utf8);
+        GLFWkeyevent glfw_keyevent = {.text=utf8, .ime_state=GLFW_IME_COMMIT_TEXT};
+        _glfwInputKeyboard(window, &glfw_keyevent);
+    }
 }
 
 // <https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/SysServices/Articles/using.html>
