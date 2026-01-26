@@ -150,7 +150,7 @@ consumption to do the same tasks.
 Detailed list of changes
 -------------------------------------
 
-0.45.1 [future]
+0.46.0 [future]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - Pixel scrolling for the kitty scrollback buffer controlled via :opt:`pixel_scroll` (:pull:`9330`)
@@ -199,6 +199,11 @@ Detailed list of changes
 
 - Linux: Fix a regression in 0.40 that caused horizontal alignment for emoji to
   be incorrect in some cases (:iss:`9395`)
+
+- icat kitten: When catting multiple images display the images in input order (:iss:`9413`)
+
+- kitten @: Fix relative paths for --password-file being resolved relative to
+  CWD instead of the kitty config directory
 
 
 0.45.0 [2025-12-24]

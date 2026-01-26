@@ -4403,7 +4403,7 @@ find_cmd_output(Screen *self, OutputOffset *oo, index_type start_screen_y, unsig
             found_prompt = true;
             // change direction to downwards to find command output
             direction = 1;
-        } else if (line && line->attrs.prompt_kind == OUTPUT_START && !range_line_is_continued(self, y1)) {
+        } else if (line && line->attrs.prompt_kind == OUTPUT_START) {
             found_output = true; start = y1;
             found_prompt = true;
             direction = 1;
@@ -4417,13 +4417,13 @@ find_cmd_output(Screen *self, OutputOffset *oo, index_type start_screen_y, unsig
         // find upwards: find prompt after the output, and the first output
         while (y1 >= upward_limit) {
             line = checked_range_line(self, y1);
-            if (line && line->attrs.prompt_kind == PROMPT_START && !range_line_is_continued(self, y1)) {
+            if (line && line->attrs.prompt_kind == PROMPT_START) {
                 if (direction == 0) {
                     found_prompt = true;
                     break;
                 }
                 found_next_prompt = true; end = y1;
-            } else if (line && line->attrs.prompt_kind == OUTPUT_START && !range_line_is_continued(self, y1)) {
+            } else if (line && line->attrs.prompt_kind == OUTPUT_START) {
                 found_output = true; start = y1;
                 found_prompt = true;
                 break;
@@ -4449,12 +4449,12 @@ find_cmd_output(Screen *self, OutputOffset *oo, index_type start_screen_y, unsig
                         break;
                     }
                     found_prompt = true;
-                } else if (found_prompt && !found_output) {
+                } else if (!found_output) {
                     // skip fetching wrapped prompt lines
                     while (range_line_is_continued(self, y2)) {
                         y2++;
                     }
-                } else if (found_output && !found_next_prompt) {
+                } else if (!found_next_prompt) {
                     found_next_prompt = true; end = y2;
                     break;
                 }
@@ -4532,7 +4532,7 @@ cmd_output(Screen *self, PyObject *args) {
             bool reached_upper_limit = false;
             while (!found && !reached_upper_limit) {
                 line = checked_range_line(self, y);
-                if (!line || (line->attrs.prompt_kind == OUTPUT_START && !range_line_is_continued(self, y))) {
+                if (!line || (line->attrs.prompt_kind == OUTPUT_START)) {
                     int start = line ? y : y + 1; reached_upper_limit = !line;
                     int y2 = start; unsigned int num_lines = 0;
                     bool found_content = false;
@@ -5064,6 +5064,45 @@ screen_history_scroll(Screen *self, int amt, bool upwards) {
         return true;
     }
     return false;
+}
+
+static bool
+screen_fractional_scroll(Screen *self, double amt) {
+    if (amt == 0) return false;
+    index_type before_scrolled_by = self->scrolled_by;
+    double before_pixels = self->pixel_scroll_offset_y;
+    double integral_part, fractional_part = modf(amt, &integral_part);
+    int lines = (int)integral_part;
+    double pixels = fractional_part * self->cell_size.height;
+    if (amt > 0) {  // downwards
+        pixels = pixels > self->pixel_scroll_offset_y ? pixels - self->pixel_scroll_offset_y : 0;
+        self->pixel_scroll_offset_y = 0;
+        self->scrolled_by = self->scrolled_by > (unsigned)lines ? self->scrolled_by - lines : 0;
+        if (pixels > 0 && self->scrolled_by > 0) {
+            self->scrolled_by--; self->pixel_scroll_offset_y = self->cell_size.height - pixels;
+        }
+    } else {
+        self->pixel_scroll_offset_y -= pixels;  // pixels is negative
+        if (self->pixel_scroll_offset_y >= self->cell_size.height) {
+            self->pixel_scroll_offset_y = 0; self->scrolled_by++;
+        }
+        self->scrolled_by = MIN(self->scrolled_by - lines, self->historybuf->count);
+        if (self->scrolled_by >= self->historybuf->count) self->pixel_scroll_offset_y = 0;
+    }
+    if (self->scrolled_by != before_scrolled_by || self->pixel_scroll_offset_y != before_pixels) {
+        dirty_scroll(self);
+        return true;
+    }
+    return false;
+}
+
+static PyObject*
+fractional_scroll(Screen *self, PyObject *amt) {
+    double y;
+    if (PyFloat_Check(amt)) y = PyFloat_AS_DOUBLE(amt);
+    else if (PyLong_Check(amt)) y = PyLong_AsDouble(amt);
+    else { PyErr_SetString(PyExc_TypeError, "amt must be a float"); return NULL; }
+    return Py_NewRef(screen_fractional_scroll(self, y) ? Py_True : Py_False);
 }
 
 static PyObject*
@@ -5939,6 +5978,7 @@ static PyMethodDef methods[] = {
     MND(text_for_marked_url, METH_VARARGS)
     MND(is_rectangle_select, METH_NOARGS)
     MND(scroll, METH_VARARGS)
+    MND(fractional_scroll, METH_O)
     MND(scroll_to_prompt, METH_VARARGS)
     MND(set_last_visited_prompt, METH_VARARGS)
     MND(send_escape_code_to_child, METH_VARARGS)
