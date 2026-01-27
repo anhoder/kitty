@@ -155,7 +155,7 @@ Detailed list of changes
 
 - Pixel scrolling for the kitty scrollback buffer controlled via :opt:`pixel_scroll` (:pull:`9330`)
 
-- Wayland: momentum scrolling in the kitty scrollback buffer for touchpads and touchscreens, see :opt:`momentum_scroll`
+- Linux: momentum scrolling in the kitty scrollback buffer for touchpads and touchscreens, see :opt:`momentum_scroll`
 
 - X11: support high resolution scroll events from touchpads, etc
 
@@ -183,9 +183,6 @@ Detailed list of changes
 - Fix :ac:`goto_session` not respecting the focus_tab session directive when
   creating a session in an existing OS window (:iss:`9366`)
 
-- Fix another rendering glitch caused by :opt:`tab_bar_filter` when adding tabs
-  from a session (:iss:`9382`)
-
 - Wayland: Fix a regression in the previous release that caused doubled key
   repeats on compositors that implement compositor side key repeat events
   (:iss:`9374`)
@@ -194,8 +191,8 @@ Detailed list of changes
   with frames that dispose onto background with non-zero delay using the native
   engine (:iss:`9376`)
 
-- Wayland: Remove usage of the wayland color management protocol to inform
-  compositors of the color space used by kitty
+- Wayland: Remove usage of the Wayland color management protocol to inform
+  compositors of the color space used by kitty (:iss:`9341`)
 
 - Linux: Fix a regression in 0.40 that caused horizontal alignment for emoji to
   be incorrect in some cases (:iss:`9395`)
@@ -204,6 +201,12 @@ Detailed list of changes
 
 - kitten @: Fix relative paths for --password-file being resolved relative to
   CWD instead of the kitty config directory
+
+- kitten choose-files: Add a new binding of :kbd:`Alt+Enter` to modify the name
+  of an existing file when choosing a save file name (:iss:`9387`)
+
+- kitten choose-files: Fix TAB completion in the choose save file name prompt
+  not working with respect to the current working directory (:iss:`9387`)
 
 
 0.45.0 [2025-12-24]
