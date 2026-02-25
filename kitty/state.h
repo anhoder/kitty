@@ -98,6 +98,7 @@ typedef struct Options {
     bool sync_to_monitor;
     bool close_on_child_death;
     bool window_alert_on_bell;
+    bool macos_dock_badge_on_bell;
     bool debug_keyboard;
     bool allow_hyperlinks;
     struct { monotonic_t on_end, on_pause; } resize_debounce_time;
@@ -342,6 +343,7 @@ typedef struct OSWindow {
     id_type last_focused_counter;
     CloseRequest close_request;
     bool is_layer_shell, hide_on_focus_loss;
+    struct { int x, y; } last_drag_event;
 } OSWindow;
 
 static inline float
@@ -373,6 +375,30 @@ typedef struct GlobalState {
     int gl_version;
     bool supports_framebuffer_srgb;
     PyObject *options_object;
+
+    struct {
+        PyObject *data;
+        id_type os_window_id;
+        double x, y;
+        size_t num_left;
+    } drop_dest;
+
+    struct {
+        bool is_active, was_dropped, was_canceled, needs_toplevel_on_wayland;
+        char *accepted_mime_type;
+        int action, thumbnail_idx;
+        PyObject *drag_data, *thumbnails;
+    } drag_source;
+    struct {
+        id_type os_window, window;
+        char callback[32];
+        bool include_tab_bar;
+        double scale; unsigned max_width;
+    } thumbnail_callback;
+    struct {
+        id_type id; bool drag_started;
+        double x, y;
+    } tab_being_dragged;
 } GlobalState;
 
 extern GlobalState global_state;
@@ -476,3 +502,5 @@ void dispatch_buffered_keys(Window *w);
 bool screen_needs_rendering_in_layers(OSWindow *os_window, Window *w, Screen *screen);
 void setup_os_window_for_rendering(OSWindow*, Tab*, Window*, bool);
 void swap_window_buffers(OSWindow *w);
+void take_screenshot_of_rectangular_region(OSWindow *os_window, Region region, unsigned char *dst_buf, unsigned *thumb_w, unsigned *thumb_h);
+bool current_framebuffer_is_ok(void);

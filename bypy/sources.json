@@ -1,9 +1,9 @@
 [
     {
-        "name": "zlib 1.3.1",
+        "name": "zlib 1.3.2",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "sha256:38ef96b8dfe510d42707d9c781877914792541133e1870841463bfa73f883e32",
+            "hash": "sha256:d7a0654783a4da529d1bb793b7ad9c3318020af77667bcae35f95d0e42a792f3",
             "urls": ["https://zlib.net/{filename}"]
         }
     },
@@ -154,10 +154,10 @@
     },
 
     {
-        "name": "libpng 1.6.54",
+        "name": "libpng 1.6.55",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "sha256:01c9d8a303c941ec2c511c14312a3b1d36cedb41e2f5168ccdaa85d53b887805",
+            "hash": "sha256:d925722864837ad5ae2a82070d4b2e0603dc72af44bd457c3962298258b8e82d",
             "urls": ["https://downloads.sourceforge.net/sourceforge/libpng/{filename}"]
         }
     },
@@ -202,11 +202,11 @@
     },
 
     {
-        "name": "glib 2.82.5",
+        "name": "glib 2.86.3",
         "os": "linux",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "sha256:05c2031f9bdf6b5aba7a06ca84f0b4aced28b19bf1b50c6ab25cc675277cbc3f",
+            "hash": "sha256:b3211d8d34b9df5dca05787ef0ad5d7ca75dec998b970e1aab0001d229977c65",
             "urls": ["https://download.gnome.org/sources/glib/{version_except_last}/{filename}"]
         }
     },

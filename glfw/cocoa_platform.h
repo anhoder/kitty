@@ -116,6 +116,13 @@ typedef void* (*PFN_TISGetInputSourceProperty)(TISInputSourceRef,CFStringRef);
 typedef UInt8 (*PFN_LMGetKbdType)(void);
 #define LMGetKbdType _glfw.ns.tis.GetKbdType
 
+typedef struct _GLFWDropData {
+    const char **mimes;
+    size_t mimes_count;
+    id pasteboard;
+    id data_mapping;
+    id file_promise_mapping;
+} _GLFWDropData;
 
 // Cocoa-specific per-window data
 //
@@ -167,6 +174,10 @@ typedef struct _GLFWwindowNS
     // update cursor after switching desktops with Mission Control
     bool delayed_cursor_update_requested;
     GLFWcocoarenderframefun resizeCallback;
+
+    // Cached MIME types from drag enter (for move events)
+    _GLFWDropData drop_data;
+
 } _GLFWwindowNS;
 
 // Cocoa-specific global data
@@ -205,6 +216,8 @@ typedef struct _GLFWlibraryNS
     // the callback to handle url open events
     GLFWhandleurlopen url_open_callback;
 
+    // Active drag session (NSDraggingSession*) and view (NSView*)
+    id drag_session, drag_view, drag_image;
 } _GLFWlibraryNS;
 
 // Cocoa-specific per-monitor data

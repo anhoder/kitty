@@ -2,7 +2,7 @@ module github.com/kovidgoyal/kitty
 
 go 1.24.0
 
-toolchain go1.24.12
+toolchain go1.24.13
 
 require (
 	github.com/ALTree/bigfloat v0.2.0
@@ -12,20 +12,20 @@ require (
 	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/hako/durafmt v0.0.0-20210608085754-5c1018a4e16b
-	github.com/klauspost/compress v1.18.3
+	github.com/klauspost/compress v1.18.4
 	github.com/kovidgoyal/dbus v0.0.0-20250519011319-e811c41c0bc1
 	github.com/kovidgoyal/go-parallel v1.1.1
 	github.com/kovidgoyal/go-shm v1.0.0
-	github.com/kovidgoyal/imaging v1.8.19
+	github.com/kovidgoyal/imaging v1.8.20
 	github.com/nwaples/rardecode/v2 v2.2.2
 	github.com/seancfoley/ipaddress-go v1.7.1
-	github.com/shirou/gopsutil/v4 v4.25.12
+	github.com/shirou/gopsutil/v4 v4.26.1
 	github.com/ulikunitz/xz v0.5.15
 	github.com/zeebo/xxh3 v1.1.0
 	golang.org/x/exp v0.0.0-20230801115018-d63ba01acd4b
-	golang.org/x/image v0.35.0
-	golang.org/x/sys v0.40.0
-	golang.org/x/text v0.33.0
+	golang.org/x/image v0.36.0
+	golang.org/x/sys v0.41.0
+	golang.org/x/text v0.34.0
 	howett.net/plist v1.0.1
 )
 

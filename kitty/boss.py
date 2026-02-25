@@ -73,6 +73,7 @@ from .fast_data_types import (
     apply_options_update,
     background_opacity_of,
     change_background_opacity,
+    change_drag_thumbnail,
     cocoa_hide_app,
     cocoa_hide_other_apps,
     cocoa_minimize_os_window,
@@ -88,11 +89,13 @@ from .fast_data_types import (
     get_boss,
     get_options,
     get_os_window_size,
+    get_tab_being_dragged,
     glfw_get_monitor_workarea,
     global_font_size,
     grab_keyboard,
     is_layer_shell_supported,
     last_focused_os_window_id,
+    load_png_data,
     macos_cycle_through_os_windows,
     mark_os_window_for_close,
     monitor_pid,
@@ -111,11 +114,14 @@ from .fast_data_types import (
     set_os_window_chrome,
     set_os_window_size,
     set_os_window_title,
+    set_tab_being_dragged,
+    start_drag_with_data,
     thread_write,
     toggle_fullscreen,
     toggle_maximized,
     toggle_os_window_visibility,
     toggle_secure_input,
+    viewport_for_window,
     wrapped_kitten_names,
 )
 from .key_encoding import get_name_to_functional_number_map
@@ -153,7 +159,6 @@ from .utils import (
     open_url,
     parse_address_spec,
     parse_os_window_state,
-    parse_uri_list,
     platform_window_id,
     safe_print,
     sanitize_url_for_display_to_user,
@@ -799,7 +804,9 @@ class Boss:
         if peer_id > 0:
             if response is None:
                 send_data_to_peer(peer_id, b'')
-            elif not isinstance(response, AsyncResponse):
+            elif isinstance(response, AsyncResponse):
+                send_data_to_peer(peer_id, b'', True)
+            else:
                 send_data_to_peer(peer_id, encode_response_for_peer(response))
 
     def _execute_remote_command(
@@ -1369,10 +1376,13 @@ class Boss:
             run_update_check(get_options().update_check_interval * 60 * 60)
             self.update_check_started = True
 
-    def handle_click_on_tab(self, os_window_id: int, x: int, button: int, modifiers: int, action: int) -> None:
-        tm = self.os_window_map.get(os_window_id)
-        if tm is not None:
-            tm.handle_click_on_tab(x, button, modifiers, action)
+    def handle_tab_bar_mouse(self, os_window_id: int, x: float, y: float, button: int, modifiers: int, action: int) -> None:
+        if tm := self.os_window_map.get(os_window_id):
+            tm.handle_tab_bar_mouse(x, y, button, modifiers, action)
+
+    def start_tab_drag(self, os_window_id: int, window_id: int, pixels: bytes, width: int, height: int) -> None:
+        if tm := self.os_window_map.get(os_window_id):
+            tm.start_tab_drag(pixels, width, height)
 
     def on_window_resize(self, os_window_id: int, w: int, h: int, dpi_changed: bool) -> None:
         if dpi_changed:
@@ -1885,20 +1895,73 @@ class Boss:
         if tm is not None:
             tm.update_tab_bar_data()
 
-    def on_drop(self, os_window_id: int, mime: str, data: bytes) -> None:
-        tm = self.os_window_map.get(os_window_id)
-        if tm is not None:
-            w = tm.active_window
-            if w is not None:
-                text = data.decode('utf-8', 'replace')
-                if mime == 'text/uri-list':
-                    urls = parse_uri_list(text)
-                    if w.at_prompt:
-                        import shlex
-                        text = ' '.join(map(shlex.quote, urls))
-                    else:
-                        text = '\n'.join(urls)
-                w.paste_text(text)
+    def on_drop_move(self, os_window_id: int, x: int, y: int, from_self: bool, is_leave: bool) -> None:
+        if (tm := self.os_window_map.get(os_window_id)) is None:
+            return
+        if from_self:
+            tab_id, drag_started = get_tab_being_dragged()[:2]
+            if tab_id and drag_started and (tab := self.tab_for_id(tab_id)):
+                central, tab_bar = viewport_for_window(os_window_id)[:2]
+                in_tab_bar = tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < tab_bar.bottom
+                detach = not in_tab_bar or tab.os_window_id != tm.os_window_id or is_leave
+                change_drag_thumbnail(tab.os_window_id, 1 if detach else 0)
+                for q in self.all_tab_managers:
+                    is_dest = q is tm and (in_tab_bar or os_window_id != tab.os_window_id) and not is_leave
+                    q.on_tab_drop_move(tab_id, is_dest, x, y)
+
+    def on_drop(self, os_window_id: int, drop: dict[str, bytes] | int, from_self: bool, x: int, y: int) -> None:
+        if isinstance(drop, int):
+            import errno
+            code = errno.errorcode.get(drop, str(drop))
+            msg = 'Unknown error'
+            with suppress(ValueError):
+                msg = os.strerror(drop)
+            self.show_error(_('Drop failed'), f'[{code}] {msg}')
+            return
+        if (tm := self.os_window_map.get(os_window_id)) is None:
+            return
+        if (tidb := drop.get(f'application/net.kovidgoyal.kitty-tab-{os.getpid()}')) and (tab := self.tab_for_id(int(tidb))):
+            central, tab_bar = viewport_for_window(os_window_id)[:2]
+            in_tab_bar = tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < tab_bar.bottom
+            if in_tab_bar or tab.os_window_id != tm.os_window_id:
+                tm.on_tab_drop(x, y)
+            else:
+                self._move_tab_to(tab)
+            set_tab_being_dragged()
+            for tm in self.all_tab_managers:
+                tm.on_tab_drop_move()
+                tm.layout_tab_bar()  # ensure tab bar is fully updated
+            return
+        central, tab_bar = viewport_for_window(os_window_id)[:2]
+        if central.left <= x < central.right and central.top <= y < central.bottom:
+            x -= central.left
+            y -= central.top
+            if tab := tm.active_tab:
+                for window in tab:
+                    g = window.geometry
+                    if g.left <= x < g.right and g.top <= y < g.bottom:
+                        window.on_drop(drop)
+                        break
+        elif tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < tab_bar.bottom:
+            if (tab_id := tm.tab_bar.tab_id_at(x)) and (tab := self.tab_for_id(tab_id)) and (w := tab.active_window):
+                w.on_drop(drop)
+
+    def on_drag_source_finished(
+        self, was_dropped: bool, was_canceled: bool, accepted_mime_type: str, action: int, data: dict[str, bytes] | None,
+        needs_toplevel_on_wayland: bool
+    ) -> None:
+        if (tab_id := int((data or {}).get(f'application/net.kovidgoyal.kitty-tab-{os.getpid()}', b'0').decode())
+        ) and get_tab_being_dragged()[0] == tab_id and (tab := self.tab_for_id(tab_id)):
+            if needs_toplevel_on_wayland:
+                for tm in self.all_tab_managers:
+                    if tm.tab_being_dropped:
+                        tm.on_tab_drop(0, 0, bypass_move=True)
+                        return
+            set_tab_being_dragged()
+            for tm in self.all_tab_managers:
+                tm.on_tab_drop_move()
+            if was_dropped:  # detach tab into new OS Window
+                self._move_tab_to(tab)
 
     @ac('win', '''
         Focus the nth OS window if positive or the previously active OS windows if negative. When the number is larger
@@ -3109,10 +3172,10 @@ class Boss:
             self._cleanup_tab_after_window_removal(src_tab)
             target_tab.make_active()
 
-    def _move_tab_to(self, tab: Tab | None = None, target_os_window_id: int | None = None) -> None:
+    def _move_tab_to(self, tab: Tab | None = None, target_os_window_id: int | None = None) -> Tab | None:
         tab = tab or self.active_tab
         if tab is None:
-            return
+            return None
         if target_os_window_id is None:
             target_os_window_id = self.add_os_window()
         tm = self.os_window_map[target_os_window_id]
@@ -3120,6 +3183,7 @@ class Boss:
         target_tab.take_over_from(tab)
         self._cleanup_tab_after_window_removal(tab)
         target_tab.make_active()
+        return target_tab
 
     def choose_entry(
         self, title: str, entries: Iterable[tuple[_T | str | None, str]],
@@ -3243,7 +3307,8 @@ class Boss:
         ''')
     def detach_tab(self, *args: str) -> None:
         if not args or args[0] == 'new':
-            return self._move_tab_to()
+            self._move_tab_to()
+            return
 
         items: list[tuple[str | int, str]] = []
         ct = self.active_tab_manager_with_dispatch
@@ -3307,6 +3372,14 @@ class Boss:
                         self.on_system_color_scheme_change('light', False)
             case _:
                 self.show_error(_('Unknown color scheme type'), _('{} is not a valid color scheme type').format(which))
+
+    @ac('debug', ''' Start a test drag operation, for use with mouse_map ''')
+    def test_dragging(self) -> None:
+        if wid := current_os_window():
+            with open(logo_png_file, 'rb') as f:
+                rgba, width, height = load_png_data(f.read())
+            drag_data = {'text/plain': b'This is a test drag of some basic text with the kitty logo as the drag icon.'}
+            start_drag_with_data(wid, drag_data, ((rgba, width, height),))
 
     def launch_urls(self, *urls: str, no_replace_window: bool = False) -> None:
         from .launch import force_window_launch

@@ -768,7 +768,7 @@ selections even if :opt:`copy_on_select` is enabled.
 opt('paste_actions', 'quote-urls-at-prompt,confirm',
     option_type='paste_actions',
     long_text='''
-A comma separated list of actions to take when pasting text into the terminal.
+A comma separated list of actions to take when pasting or dropping text into the terminal.
 The supported paste actions are:
 
 :code:`quote-urls-at-prompt`:
@@ -1129,6 +1129,15 @@ window in which the bell occurred.
 '''
     )
 
+opt('macos_dock_badge_on_bell', 'yes',
+    option_type='to_bool', ctype='bool',
+    long_text='''
+Show a badge on kitty's dock icon when a bell occurs and kitty is not the
+active application (macOS only). The badge is automatically cleared when kitty
+regains focus.
+'''
+    )
+
 opt('bell_path', 'none',
     option_type='config_or_absolute_path', ctype='!bell_path',
     long_text='''
@@ -1340,10 +1349,17 @@ opt('hide_window_decorations', 'no',
     option_type='hide_window_decorations', ctype='uint',
     long_text='''
 Hide the window decorations (title-bar and window borders) with :code:`yes`. On
-macOS, :code:`titlebar-only` and :code:`titlebar-and-corners` can be used to only hide the titlebar and the rounded corners.
+macOS, :code:`titlebar-only` and :code:`titlebar-and-corners` can be used to
+only hide the titlebar and the rounded corners.
+
+On Wayland, :code:`titlebar-only` can be used to hide the titlebar while keeping
+the window shadow for resizing. On compositors that have server-side
+decorations (such as anything but GNOME), both :code:`yes` and :code:`titlebar-only` force
+client-side decoration mode.
+
 Whether this works and exactly what effect it has depends on the window manager/operating
 system. Note that the effects of changing this option when reloading config
-are undefined. When using :code:`titlebar-only`, it is useful to also set
+are undefined. When using :code:`titlebar-only` on macOS, it is useful to also set
 :opt:`window_margin_width` and :opt:`placement_strategy` to prevent the rounded
 corners from clipping text. Or use :code:`titlebar-and-corners`.
 '''
@@ -1679,8 +1695,7 @@ opt('tab_bar_background', 'none',
     long_text='''
 Background color for the tab bar. Defaults to using the terminal background
 color.
-'''
-    )
+''')
 
 opt('tab_bar_margin_color', 'none',
     option_type='to_color_or_none', ctype='color_or_none_as_int',
@@ -1688,8 +1703,25 @@ opt('tab_bar_margin_color', 'none',
 Color for the tab bar margin area. Defaults to using the terminal background
 color for margins above and below the tab bar. For side margins the default
 color is chosen to match the background color of the neighboring tab.
-'''
-    )
+''')
+
+opt(
+    'tab_bar_drag_threshold',
+    '5',
+    option_type='positive_int',
+    long_text="""
+Control when dragging of tabs to re-order them happens.
+The value is the drag threshold in pixels, the distance the mouse must move
+before a drag begins. A value of zero disables tab dragging entirely.
+Dragging a tab to another kitty window moves it there, while dragging
+outside any kitty window detaches it into a new OS window.
+
+Note that on Wayland, :link:`because of poor design
+<https://gitlab.freedesktop.org/wayland/wayland/-/issues/140>` cancelling
+a drag will detach the tab. This is worked around for compositors that support
+:link:`xdg-toplevel-drag <https://wayland.app/protocols/xdg-toplevel-drag-v1>`.
+""",
+)
 egr()  # }}}
 
 
@@ -1747,7 +1779,7 @@ control the :italic:`blur radius` (amount of blurring). Setting it to too high
 a value will cause severe performance issues and/or rendering artifacts.
 Usually, values up to 64 work well. Note that this might cause performance issues,
 depending on how the platform implements it, so use with care. Currently supported
-on macOS and KDE.
+on macOS and Wayland, when the compositor supports the background blur extension.
 ''')
 
 opt('transparent_background_colors', '', option_type='transparent_background_colors', long_text='''

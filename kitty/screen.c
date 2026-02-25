@@ -1483,7 +1483,7 @@ cursor_within_margins(Screen *self) {
 }
 
 static inline void
-reset_pixel_scroll(Screen *self, double val) { self->pixel_scroll_offset_y = val; }
+reset_pixel_scroll(Screen *self, unsigned val) { self->pixel_scroll_offset_y = val; }
 
 
 // Remove all cell images from a portion of the screen and mark lines that
@@ -2318,7 +2318,8 @@ screen_cursor_at_a_shell_prompt(const Screen *self) {
 }
 
 bool
-screen_prompt_supports_click_events(const Screen *self) {
+screen_prompt_supports_click_events(const Screen *self, bool *is_relative) {
+    *is_relative = (bool) self->prompt_settings.relative_click_events;
     return (bool) self->prompt_settings.supports_click_events;
 }
 
@@ -3065,7 +3066,13 @@ parse_prompt_mark(Screen *self, char *buf, PromptKind *pk) {
         if (strcmp(token, "k=s") == 0) *pk = SECONDARY_PROMPT;
         else if (strcmp(token, "redraw=0") == 0) self->prompt_settings.redraws_prompts_at_all = 0;
         else if (strcmp(token, "special_key=1") == 0) self->prompt_settings.uses_special_keys_for_cursor_movement = 1;
-        else if (strcmp(token, "click_events=1") == 0) self->prompt_settings.supports_click_events = 1;
+        else if (strcmp(token, "click_events=1") == 0) {
+            self->prompt_settings.supports_click_events = 1;
+            self->prompt_settings.relative_click_events = 0;
+        } else if (strcmp(token, "click_events=2") == 0) {
+            self->prompt_settings.supports_click_events = 1;
+            self->prompt_settings.relative_click_events = 1;
+        }
     }
 }
 
@@ -3972,7 +3979,7 @@ static hyperlink_id_type
 hyperlink_id_for_range(Screen *self, const Selection *sel) {
     IterationData idata;
     iteration_data(sel, &idata, self->columns, -self->historybuf->count, 0);
-    for (int i = 0, y = idata.y; y < idata.y_limit && y < (int)self->lines; y++, i++) {
+    for (int y = idata.y; y < idata.y_limit && y < (int)self->lines; y++) {
         Line *line = range_line_(self, y);
         XRange xr = xrange_for_iteration(&idata, y, line);
         for (index_type x = xr.x; x < xr.x_limit; x++) {
@@ -5001,7 +5008,7 @@ void
 screen_history_scroll_to_absolute(Screen *self, double target_scrolled_by) {
     if (self->linebuf != self->main_linebuf) return;
     index_type target_scrolled_by_line = (index_type)target_scrolled_by;
-    double pixel_scroll_offset_y = (target_scrolled_by - target_scrolled_by_line) * self->cell_size.height;
+    unsigned pixel_scroll_offset_y = (unsigned)((target_scrolled_by - target_scrolled_by_line) * self->cell_size.height);
     if (!OPT(pixel_scroll)) pixel_scroll_offset_y = 0;
     if (target_scrolled_by_line > self->historybuf->count) target_scrolled_by_line = self->historybuf->count;
     if (target_scrolled_by_line >= self->historybuf->count) pixel_scroll_offset_y = 0;
@@ -5024,7 +5031,7 @@ screen_apply_pixel_scroll(Screen *self, double delta_pixels) {
     if (total < 0.0) total = 0.0;
     if (total > max_total) total = max_total;
     const unsigned int new_scrolled_by = (unsigned int)floor(total / cell_height);
-    const double offset = total - (double)new_scrolled_by * cell_height;
+    const unsigned offset = (unsigned)(total - (double)new_scrolled_by * cell_height);
     bool changed = false;
     if (new_scrolled_by != self->scrolled_by) {
         self->scrolled_by = new_scrolled_by;
@@ -5059,9 +5066,8 @@ screen_history_scroll(Screen *self, int amt, bool upwards) {
         amt = MIN((unsigned int)amt, self->scrolled_by);
         amt *= -1;
     }
-    if (amt == 0) return false;
     unsigned int new_scroll = MIN(self->scrolled_by + amt, self->historybuf->count);
-    if (new_scroll != self->scrolled_by) {
+    if (new_scroll != self->scrolled_by || (new_scroll == 0 && self->pixel_scroll_offset_y != 0)) {
         self->scrolled_by = new_scroll;
         reset_pixel_scroll(self, 0);
         dirty_scroll(self);
@@ -5077,15 +5083,23 @@ screen_fractional_scroll(Screen *self, double amt) {
     double before_pixels = self->pixel_scroll_offset_y;
     double integral_part, fractional_part = modf(amt, &integral_part);
     int lines = (int)integral_part;
-    double pixels = fractional_part * self->cell_size.height;
+    int pixels = (int)(fractional_part * self->cell_size.height);
     if (amt > 0) {  // downwards
-        pixels = pixels > self->pixel_scroll_offset_y ? pixels - self->pixel_scroll_offset_y : 0;
-        self->pixel_scroll_offset_y = 0;
-        self->scrolled_by = self->scrolled_by > (unsigned)lines ? self->scrolled_by - lines : 0;
-        if (pixels > 0 && self->scrolled_by > 0) {
-            self->scrolled_by--; self->pixel_scroll_offset_y = self->cell_size.height - pixels;
+        if (fractional_part != 0) pixels = MAX(1, pixels);
+        if (lines > (int)self->scrolled_by) {
+            self->scrolled_by = 0; self->pixel_scroll_offset_y = 0;
+        } else {
+            self->scrolled_by -= lines;
+            if (pixels <= (int)self->pixel_scroll_offset_y) self->pixel_scroll_offset_y -= pixels;
+            else {
+                self->pixel_scroll_offset_y = 0;
+                if (self->scrolled_by) {
+                    self->scrolled_by--; self->pixel_scroll_offset_y = self->cell_size.height - pixels;
+                }
+            }
         }
     } else {
+        if (fractional_part != 0) pixels = MIN(-1, pixels);
         self->pixel_scroll_offset_y -= pixels;  // pixels is negative
         if (self->pixel_scroll_offset_y >= self->cell_size.height) {
             self->pixel_scroll_offset_y = 0; self->scrolled_by++;

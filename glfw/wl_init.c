@@ -513,6 +513,17 @@ static const struct xdg_wm_base_listener wmBaseListener = {
     wmBaseHandlePing
 };
 
+static void extBackgroundEffectHandleCapabilities(void* data UNUSED,
+                                                  struct ext_background_effect_manager_v1* manager UNUSED,
+                                                  uint32_t flags)
+{
+    _glfw.wl.ext_background_effect_capabilities = flags;
+}
+
+static const struct ext_background_effect_manager_v1_listener extBackgroundEffectManagerListener = {
+    extBackgroundEffectHandleCapabilities
+};
+
 static void registryHandleGlobal(void* data UNUSED,
                                  struct wl_registry* registry,
                                  uint32_t name,
@@ -608,9 +619,7 @@ static void registryHandleGlobal(void* data UNUSED,
     else if (is(wl_data_device_manager))
     {
         _glfw.wl.dataDeviceManager =
-            wl_registry_bind(registry, name,
-                             &wl_data_device_manager_interface,
-                             1);
+            wl_registry_bind(registry, name, &wl_data_device_manager_interface, 3);
         if (_glfw.wl.seat && _glfw.wl.dataDeviceManager && !_glfw.wl.dataDevice) {
             _glfwSetupWaylandDataDevice();
         }
@@ -643,6 +652,10 @@ static void registryHandleGlobal(void* data UNUSED,
     else if (is(org_kde_kwin_blur_manager)) {
         _glfw.wl.org_kde_kwin_blur_manager = wl_registry_bind(registry, name, &org_kde_kwin_blur_manager_interface, 1);
     }
+    else if (is(ext_background_effect_manager_v1)) {
+        _glfw.wl.ext_background_effect_manager_v1 = wl_registry_bind(registry, name, &ext_background_effect_manager_v1_interface, 1);
+        ext_background_effect_manager_v1_add_listener(_glfw.wl.ext_background_effect_manager_v1, &extBackgroundEffectManagerListener, NULL);
+    }
     else if (is(zwlr_layer_shell_v1)) {
         if (version >= 4) {
             _glfw.wl.zwlr_layer_shell_v1_version = version;
@@ -662,6 +675,8 @@ static void registryHandleGlobal(void* data UNUSED,
         _glfw.wl.xdg_system_bell_v1 = wl_registry_bind(registry, name, &xdg_system_bell_v1_interface, 1);
     } else if (is(xdg_toplevel_tag_manager_v1)) {
         _glfw.wl.xdg_toplevel_tag_manager_v1 = wl_registry_bind(registry, name, &xdg_toplevel_tag_manager_v1_interface, 1);
+    } else if (is(xdg_toplevel_drag_manager_v1)) {
+        _glfw.wl.xdg_toplevel_drag_manager_v1 = wl_registry_bind(registry, name, &xdg_toplevel_drag_manager_v1_interface, 1);
     }
 #undef is
 }
@@ -768,12 +783,13 @@ get_compositor_missing_capabilities(void) {
     char *p = buf;
     *p = 0;
     C(viewporter, wp_viewporter); C(fractional_scale, wp_fractional_scale_manager_v1);
-    C(blur, org_kde_kwin_blur_manager); C(server_side_decorations, decorationManager);
+    if (!_glfw.wl.org_kde_kwin_blur_manager && !_glfw.wl.ext_background_effect_manager_v1) p += snprintf(p, sizeof(buf) - (p - buf), "%s ", "blur");
+    C(server_side_decorations, decorationManager);
     C(cursor_shape, wp_cursor_shape_manager_v1); C(layer_shell, zwlr_layer_shell_v1);
     C(single_pixel_buffer, wp_single_pixel_buffer_manager_v1); C(preferred_scale, has_preferred_buffer_scale);
     C(idle_inhibit, idle_inhibit_manager); C(icon, xdg_toplevel_icon_manager_v1); C(bell, xdg_system_bell_v1);
     C(window-tag, xdg_toplevel_tag_manager_v1); C(keyboard_shortcuts_inhibit, keyboard_shortcuts_inhibit_manager);
-    C(key-repeat, has_key_repeat_events);
+    C(key-repeat, has_key_repeat_events); C(top_level_drag, xdg_toplevel_drag_manager_v1);
 #define P(x) p += snprintf(p, sizeof(buf) - (p - buf), "%s ", x);
     if (_glfw.wl.xdg_wm_base_version < 6) P("window-state-suspended");
     if (_glfw.wl.xdg_wm_base_version < 5) P("window-capabilities");
@@ -937,11 +953,14 @@ void _glfwPlatformTerminate(void)
         wl_data_source_destroy(_glfw.wl.dataSourceForClipboard);
     if (_glfw.wl.dataSourceForPrimarySelection)
         zwp_primary_selection_source_v1_destroy(_glfw.wl.dataSourceForPrimarySelection);
-    for (size_t doi=0; doi < arraysz(_glfw.wl.dataOffers); doi++) {
-        if (_glfw.wl.dataOffers[doi].id) {
-            destroy_data_offer(&_glfw.wl.dataOffers[doi]);
+    for (size_t doi=0; doi < arraysz(_glfw.wl.untyped_data_offers); doi++) {
+        if (_glfw.wl.untyped_data_offers[doi].id) {
+            destroy_data_offer(&_glfw.wl.untyped_data_offers[doi]);
         }
     }
+    if (_glfw.wl.primary_data_offer.id) destroy_data_offer(&_glfw.wl.primary_data_offer);
+    if (_glfw.wl.clipboard_data_offer.id) destroy_data_offer(&_glfw.wl.clipboard_data_offer);
+    if (_glfw.wl.drop_data_offer.id) destroy_data_offer(&_glfw.wl.drop_data_offer);
     if (_glfw.wl.dataDevice)
         wl_data_device_destroy(_glfw.wl.dataDevice);
     if (_glfw.wl.dataDeviceManager)
@@ -958,6 +977,8 @@ void _glfwPlatformTerminate(void)
         xdg_system_bell_v1_destroy(_glfw.wl.xdg_system_bell_v1);
     if (_glfw.wl.xdg_toplevel_tag_manager_v1)
         xdg_toplevel_tag_manager_v1_destroy(_glfw.wl.xdg_toplevel_tag_manager_v1);
+    if (_glfw.wl.xdg_toplevel_drag_manager_v1)
+        xdg_toplevel_drag_manager_v1_destroy(_glfw.wl.xdg_toplevel_drag_manager_v1);
     if (_glfw.wl.wp_single_pixel_buffer_manager_v1)
         wp_single_pixel_buffer_manager_v1_destroy(_glfw.wl.wp_single_pixel_buffer_manager_v1);
     if (_glfw.wl.wp_cursor_shape_manager_v1)
@@ -968,6 +989,8 @@ void _glfwPlatformTerminate(void)
         wp_fractional_scale_manager_v1_destroy(_glfw.wl.wp_fractional_scale_manager_v1);
     if (_glfw.wl.org_kde_kwin_blur_manager)
         org_kde_kwin_blur_manager_destroy(_glfw.wl.org_kde_kwin_blur_manager);
+    if (_glfw.wl.ext_background_effect_manager_v1)
+        ext_background_effect_manager_v1_destroy(_glfw.wl.ext_background_effect_manager_v1);
     if (_glfw.wl.zwlr_layer_shell_v1)
         zwlr_layer_shell_v1_destroy(_glfw.wl.zwlr_layer_shell_v1);
     if (_glfw.wl.idle_inhibit_manager)

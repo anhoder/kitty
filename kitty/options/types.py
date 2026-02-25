@@ -379,6 +379,7 @@ option_names = (
     'listen_on',
     'macos_colorspace',
     'macos_custom_beam_cursor',
+    'macos_dock_badge_on_bell',
     'macos_hide_from_tasks',
     'macos_menubar_title_max_length',
     'macos_option_as_alt',
@@ -448,6 +449,7 @@ option_names = (
     'tab_activity_symbol',
     'tab_bar_align',
     'tab_bar_background',
+    'tab_bar_drag_threshold',
     'tab_bar_edge',
     'tab_bar_filter',
     'tab_bar_margin_color',
@@ -575,6 +577,7 @@ class Options:
     listen_on: str = 'none'
     macos_colorspace: choices_for_macos_colorspace = 'srgb'
     macos_custom_beam_cursor: bool = False
+    macos_dock_badge_on_bell: bool = True
     macos_hide_from_tasks: bool = False
     macos_menubar_title_max_length: int = 0
     macos_option_as_alt: int = 0
@@ -637,6 +640,7 @@ class Options:
     tab_activity_symbol: str = ''
     tab_bar_align: choices_for_tab_bar_align = 'left'
     tab_bar_background: kitty.fast_data_types.Color | None = None
+    tab_bar_drag_threshold: int = 5
     tab_bar_edge: int = 8
     tab_bar_filter: str = ''
     tab_bar_margin_color: kitty.fast_data_types.Color | None = None

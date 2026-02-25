@@ -40,6 +40,7 @@ class TabBarData(NamedTuple):
     is_active: bool
     needs_attention: bool
     tab_id: int
+    os_window_id: int
     num_windows: int
     num_window_groups: int
     layout_name: str
@@ -262,7 +263,7 @@ safe_builtins = {
 }
 
 
-def draw_title(draw_data: DrawData, screen: Screen, tab: TabBarData, index: int, max_title_length: int = 0) -> None:
+def apply_title_template(draw_data: DrawData, tab: TabBarData, index: int, max_title_length: int = 0) -> str:
     ta = TabAccessor(tab.tab_id)
     data = {
         'index': index,
@@ -286,6 +287,7 @@ def draw_title(draw_data: DrawData, screen: Screen, tab: TabBarData, index: int,
         'num_window_groups': tab.num_window_groups,
         'title': tab.title,
         'tab': ta,
+        'tab_id': tab.tab_id,
         'fmt': Formatter,
         'sup': SupSub(data),
         'sub': SupSub(data, True),
@@ -306,10 +308,15 @@ def draw_title(draw_data: DrawData, screen: Screen, tab: TabBarData, index: int,
         template = '{fmt.fg.red}' + prefix + '{fmt.fg.tab}' + template
     eval_locals['custom'] = load_custom_draw_title(eval_locals)
     try:
-        title = eval(compile_template(template), {'__builtins__': safe_builtins}, eval_locals)
+        title: str = eval(compile_template(template), {'__builtins__': safe_builtins}, eval_locals)
     except Exception as e:
         report_template_failure(template, str(e))
         title = tab.title
+    return title
+
+
+def draw_title(draw_data: DrawData, screen: Screen, tab: TabBarData, index: int, max_title_length: int = 0) -> None:
+    title = apply_title_template(draw_data, tab, index, max_title_length)
     before_draw = screen.cursor.x
     draw_attributed_string(title, screen)
     if draw_data.max_tab_title_length > 0:
@@ -563,6 +570,7 @@ class TabBar:
 
     def __init__(self, os_window_id: int):
         self.os_window_id = os_window_id
+        self.last_laid_out_tabs: Sequence[TabBarData] = ()
         self.num_tabs = 1
         self.data_buffer_size = 0
         self.blank_rects: tuple[Border, ...] = ()
@@ -722,6 +730,7 @@ class TabBar:
         s = self.screen
         last_tab = data[-1] if data else None
         ed = ExtraData()
+        self.last_laid_out_tabs = data
 
         def draw_tab(i: int, tab: TabBarData, cell_ranges: list[TabExtent], max_tab_length: int) -> None:
             ed.prev_tab = data[i - 1] if i > 0 else None

@@ -161,6 +161,9 @@ Detailed list of changes
 
 - macOS: Implement support for Apple dictation to input text in kitty (:iss:`3732`)
 
+- Allow dragging tabs in the tab bar to re-order, move to another OS Window or
+  detach (:pull:`9296`)
+
 - choose-files kitten: Fix JXL image preview not working (:iss:`9323`)
 
 - Fix tab bar rendering glitches when using :opt:`tab_bar_filter` in some
@@ -209,6 +212,39 @@ Detailed list of changes
   not working with respect to the current working directory (:iss:`9387`)
 
 - Fix line-at-once selection not extending wrapped lines into scrollback (:iss:`9437`)
+
+- ssh kitten: Restore keyboard mode even if the ssh connection drops
+
+- edit-in-kitty: Handle connection drop more gracefully (:pull:`9480`)
+
+- macOS: Fix changing window title with global menubar menu open causes menu to
+  get stuck (:pull:`9490`)
+
+- Fix :opt:`focus_follows_mouse` not working during a drag and drop (:iss:`9497`)
+
+- :ac:`goto_session`: Add a ``--active-only`` option to select from only active
+  sessions (:pull:`9503`)
+
+- Shell integration: Allow sending click events to shells using y co-ordinates
+  relative to prompts (:iss:`9500`)
+
+- A new action :ac:`copy_selection_or_last_command_output` (:pull:`9512`)
+
+- Wayland: Add support for the background blur extension (:iss:`9534`)
+
+- macOS: A new option :opt:`macos_dock_badge_on_bell` to show a badge on the
+  kitty dock icon when a bell occurs (:pull:`9529`)
+
+- macOS: Workaround for yet another Tahoe bug causing rendering to fail
+  (:pull:`9520`)
+
+- URL detection: Allow trailing asterisks in URLs (:iss:`9543`)
+
+- Wayland: Add support for :code:`titlebar-only` in :opt:`hide_window_decorations`
+  to hide the titlebar while keeping shadows for window resizing. (:pull:`9486`)
+
+- Text sizing protocol: Fix alignment/cropping issues when rendering text with
+  a fractional scale (:iss:`9471`)
 
 
 0.45.0 [2025-12-24]

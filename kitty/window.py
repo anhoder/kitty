@@ -106,6 +106,7 @@ from .utils import (
     log_error,
     open_cmd,
     open_url,
+    parse_uri_list,
     path_from_osc7_url,
     resolve_custom_file,
     resolved_shell,
@@ -981,10 +982,6 @@ class Window:
         if update_ime_position:
             update_ime_position_for_window(self.id, True)
 
-    def contains(self, x: int, y: int) -> bool:
-        g = self.geometry
-        return g.left <= x <= g.right and g.top <= y <= g.bottom
-
     def close(self) -> None:
         get_boss().mark_window_for_close(self)
 
@@ -1848,7 +1845,7 @@ class Window:
         self.clipboard_request_manager.send_paste_event(is_primary_selection)
         return True
 
-    def paste_with_actions(self, text: str) -> None:
+    def paste_with_actions(self, text: str, from_drop: bool = False, is_uri_list: bool = False) -> None:
         if self.destroyed or not text:
             return
         opts = get_options()
@@ -1857,18 +1854,24 @@ class Window:
             if not text:
                 return
         if 'quote-urls-at-prompt' in opts.paste_actions and self.at_prompt:
-            prefixes = '|'.join(opts.url_prefixes)
-            m = re.match(f'({prefixes}):(.+)', text)
-            if m is not None:
-                scheme, rest = m.group(1), m.group(2)
-                if rest.startswith('//') or scheme in ('mailto', 'irc'):
-                    import shlex
-                    text = shlex.quote(text)
+            if is_uri_list:
+                import shlex
+                urls = text.splitlines(keepends=False)
+                text = ' '.join(map(shlex.quote, urls))
+            else:
+                prefixes = '|'.join(opts.url_prefixes)
+                m = re.match(f'({prefixes}):(.+)', text)
+                if m is not None:
+                    scheme, rest = m.group(1), m.group(2)
+                    if rest.startswith('//') or scheme in ('mailto', 'irc'):
+                        import shlex
+                        text = shlex.quote(text)
         if 'replace-dangerous-control-codes' in opts.paste_actions:
             text = replace_c0_codes_except_nl_space_tab(text)
         if 'replace-newline' in opts.paste_actions and 'confirm' not in opts.paste_actions:
             text = text.replace('\n', '\x1bE')
         btext = text.encode('utf-8')
+        which = 'drop' if from_drop else 'paste'
         if 'confirm' in opts.paste_actions:
             sanitized = replace_c0_codes_except_nl_space_tab(btext)
             replaced_c0_control_codes = sanitized != btext
@@ -1885,20 +1888,24 @@ class Window:
                 replaced_newlines = t != sanitized
                 sanitized = t
             if replaced_c0_control_codes or replaced_newlines:
-                msg = _('The text to be pasted contains terminal control codes.\n\nIf the terminal program you are pasting into does not properly'
-                        ' sanitize pasted text, this can lead to \x1b[31mcode execution vulnerabilities\x1b[39m.\n\nHow would you like to proceed?')
+                msg = _(
+                    'The text to be {0} contains terminal control codes.\n\nIf the terminal program you are {1}'
+                    ' into does not properly sanitize text, this can lead to'
+                    ' \x1b[31mcode execution vulnerabilities\x1b[39m.\n\nHow would you like to proceed?'
+                ).format('dropped' if from_drop else 'pasted', 'dropping' if from_drop else 'pasting')
                 get_boss().choose(
                     msg, partial(self.handle_dangerous_paste_confirmation, btext, sanitized),
-                    's;green:Sanitize and paste', 'p;red:Paste anyway', 'c;yellow:Cancel',
-                    window=self, default='s', title=_('Allow paste?'),
+                    's;green:Sanitize and ' + which, f'a;red:{which.capitalize()} anyway', 'c;yellow:Cancel',
+                    window=self, default='s', title=_('Allow {}?').format(which),
                 )
                 return
         if 'confirm-if-large' in opts.paste_actions:
             msg = ''
             if len(btext) > 16 * 1024:
-                msg = _('Pasting very large amounts of text ({} bytes) can be slow.').format(len(btext))
-                get_boss().confirm(msg + _(' Are you sure?'), partial(self.handle_large_paste_confirmation, btext), window=self, title=_(
-                'Allow large paste?'))
+                msg = _('{1} very large amounts of text ({0} bytes) can be slow.').format(
+                    len(btext), 'Dropping' if from_drop else 'Pasting')
+                get_boss().confirm(msg + _(' Are you sure?'), partial(self.handle_large_paste_confirmation, btext),
+                                   window=self, title=_('Allow large {}?').format('drop' if from_drop else 'paste'))
                 return
         self.paste_text(btext)
 
@@ -1941,6 +1948,21 @@ class Window:
     def current_mouse_position(self) -> Optional['MousePosition']:
         ' Return the last position at which a mouse event was received by this window '
         return get_mouse_data_for_window(self.os_window_id, self.tab_id, self.id)
+
+    def on_drop(self, drop: dict[str, bytes]) -> None:
+        text = ''
+        is_uri_list = False
+        if uri_list := drop.pop('text/uri-list', b''):
+            urls = parse_uri_list(uri_list.decode('utf-8', 'replace'))
+            text = '\n'.join(urls)
+            is_uri_list = True
+        elif tp := drop.pop('text/plain', b''):
+            text = tp.decode('utf-8', 'replace')
+        elif tp := drop.pop('text/plain;charset=utf-8', b''):
+            text = tp.decode('utf-8', 'replace')
+        if text:
+            self.paste_with_actions(text, from_drop=True, is_uri_list=is_uri_list)
+
 
     # Serialization {{{
     def as_dict(
@@ -2219,6 +2241,12 @@ class Window:
     def copy_and_clear_or_interrupt(self) -> None:
         self.copy_or_interrupt()
         self.screen.clear_selection()
+
+    @ac('cp', 'Copy the selected text from the active window to the clipboard,'
+        ' if no selection, copy the last command output (requires shell integration to work)')
+    def copy_selection_or_last_command_output(self) -> None:
+        if (text := self.text_for_selection() or self.cmd_output(CommandOutput.last_non_empty, as_ansi=False, add_wrap_markers=False)):
+            set_clipboard_string(text)
 
     @ac('cp', 'Pass the selected text from the active window to the specified program')
     def pass_selection_to_program(self, *args: str) -> None:
