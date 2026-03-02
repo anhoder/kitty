@@ -14,6 +14,7 @@ from contextlib import contextmanager, suppress
 from functools import partial
 from gettext import gettext as _
 from gettext import ngettext
+from math import floor
 from time import sleep
 from typing import (
     TYPE_CHECKING,
@@ -23,6 +24,8 @@ from typing import (
     Union,
 )
 from weakref import WeakValueDictionary
+
+from kitty.types import WindowResizeDrag
 
 from .child import cached_process_data, default_env, set_default_env
 from .cli import create_opts, green, parse_args
@@ -54,6 +57,7 @@ from .constants import (
     website_url,
 )
 from .fast_data_types import (
+    BOTTOM_EDGE,
     CLOSE_BEING_CONFIRMED,
     GLFW_FKEY_ESCAPE,
     GLFW_MOD_ALT,
@@ -63,7 +67,10 @@ from .fast_data_types import (
     GLFW_MOUSE_BUTTON_LEFT,
     GLFW_PRESS,
     IMPERATIVE_CLOSE_REQUESTED,
+    LEFT_EDGE,
     NO_CLOSE_REQUESTED,
+    RIGHT_EDGE,
+    TOP_EDGE,
     ChildMonitor,
     Color,
     EllipticCurveKey,
@@ -383,6 +390,7 @@ class Boss:
         global_shortcuts: dict[str, SingleKey],
         talk_fd: int = -1,
     ):
+        self.drag_resize_of_window = WindowResizeDrag()
         self.atexit = Atexit()
         set_layout_options(opts)
         self.clipboard = Clipboard()
@@ -2416,6 +2424,48 @@ class Boss:
         tab = self.active_tab
         if tab:
             tab.set_active_window(window_id)
+
+    def drag_resize_start(
+        self, edges: int, x: float, y: float, window_id: int, cell_width: int, cell_height: int,
+    ) -> bool:
+        if (w := self.window_id_map.get(window_id)) and (tab := w.tabref()):
+            data = tab.current_layout.drag_resize_target_windows(w, x, y, edges, tab.windows)
+            if not edges & (LEFT_EDGE | RIGHT_EDGE):
+                data = data._replace(horizontal_id=None)
+            if not edges & (TOP_EDGE | BOTTOM_EDGE):
+                data = data._replace(vertical_id=None)
+            self.drag_resize_of_window = WindowResizeDrag(
+                is_active=True, tab_id=tab.id, data=data,
+                cell_width=cell_width, cell_height=cell_height, initial_x=x, initial_y=y,
+            )
+            for cw in tab:
+                cw.pause_resize_notifications_to_child()
+            return True
+        return False
+
+    def drag_resize_update(self, x: float, y: float) -> None:
+        if not (r := self.drag_resize_of_window) or not (tab := self.tab_for_id(r.tab_id)):
+            return
+        if (h := r.data.horizontal_id) is not None:
+            mult = 1 if r.data.width_increases_rightwards else -1
+            step_x = floor((x - r.initial_x) / r.cell_width) * mult
+            dx = step_x - r.last_step_x
+            if dx != 0:
+                if tab.drag_resize_window(h, float(dx), True):
+                    self.drag_resize_of_window = r._replace(last_step_x=step_x)
+        if (v := r.data.vertical_id) is not None:
+            mult = 1 if r.data.height_increases_downwards else -1
+            step_y = floor((y - r.initial_y) / r.cell_height) * mult
+            dy = step_y - r.last_step_y
+            if dy != 0:
+                if tab.drag_resize_window(v, float(dy), False):
+                    self.drag_resize_of_window = r._replace(last_step_y=step_y)
+
+    def drag_resize_end(self) -> None:
+        if tab := self.tab_for_id(self.drag_resize_of_window.tab_id):
+            for cw in tab:
+                cw.pause_resize_notifications_to_child(pause=False)
+        self.drag_resize_of_window = WindowResizeDrag()
 
     def open_kitty_website(self) -> None:
         self.open_url(website_url())

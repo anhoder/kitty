@@ -164,6 +164,9 @@ Detailed list of changes
 - Allow dragging tabs in the tab bar to re-order, move to another OS Window or
   detach (:pull:`9296`)
 
+- Allow dragging window borders to resize kitty windows in all the different
+  layouts, controlled by :opt:`window_drag_tolerance` (:pull:`9447`)
+
 - choose-files kitten: Fix JXL image preview not working (:iss:`9323`)
 
 - Fix tab bar rendering glitches when using :opt:`tab_bar_filter` in some
@@ -174,6 +177,8 @@ Detailed list of changes
 
 - Fix a regression that broke using line numbers with the edit-in-kitty command
   (:pull:`9346`)
+
+- Key maps: Allow specifying a timeout for multi key mappings and keyboard modes (:pull:`9551`)
 
 - macOS: Fix changes to :opt:`macos_titlebar_color` while in full screen not being applied after exiting fullscreen (:iss:`9350`)
 
@@ -245,6 +250,9 @@ Detailed list of changes
 
 - Text sizing protocol: Fix alignment/cropping issues when rendering text with
   a fractional scale (:iss:`9471`)
+
+- macOS: Fix a crash when using :opt:`macos_traditional_fullscreen` with split
+  view (:pull:`9573`)
 
 
 0.45.0 [2025-12-24]

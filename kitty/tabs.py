@@ -562,6 +562,12 @@ class Tab:  # {{{
             return None
         return 'Could not resize'
 
+    def drag_resize_window(self, object_id: int, increment: float, is_horizontal: bool) -> bool:
+        increment_as_percent = self.current_layout.bias_increment_for_cell(self.windows, is_horizontal) * increment
+        if resized := self.current_layout.drag_resize_window(self.windows, object_id, increment_as_percent, is_horizontal):
+            self.relayout()
+        return resized
+
     @ac('win', '''
         Resize the active window by the specified amount
 
@@ -809,7 +815,9 @@ class Tab:  # {{{
             overlay_for = window.id
 
     def set_active_window(self, x: Window | int, for_keep_focus: Window | None = None) -> None:
-        self.windows.set_active_window_group_for(x, for_keep_focus=for_keep_focus)
+        if (w := self.windows.window_for_id(x) if isinstance(x, int) else x) is not None:
+            self.windows.set_active_window_group_for(w, for_keep_focus=for_keep_focus)
+            self.windows.move_window_to_top_of_group(w)
 
     def get_nth_window(self, n: int) -> Window | None:
         if self.windows:

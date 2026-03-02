@@ -141,6 +141,7 @@ typedef struct Options {
     struct { float thickness; int unit; } underline_exclusion;
     float box_drawing_scale[4];
     double momentum_scroll;
+    double window_drag_tolerance;
 } Options;
 
 typedef struct WindowLogoRenderData {
@@ -237,7 +238,9 @@ typedef struct Window {
 
 typedef struct BorderRect {
     float left, top, right, bottom;
+    struct { unsigned left, top, right, bottom; } px;
     uint32_t color;
+    int border_type;
 } BorderRect;
 
 typedef struct BorderRects {
@@ -367,7 +370,7 @@ typedef struct GlobalState {
     bool has_pending_resizes, has_pending_closes;
     bool check_for_active_animated_images;
     struct { double x, y; } default_dpi;
-    id_type active_drag_in_window, tracked_drag_in_window, mouse_hover_in_window;
+    id_type active_drag_in_window, tracked_drag_in_window, mouse_hover_in_window, active_drag_resize;
     int active_drag_button, tracked_drag_button;
     CloseRequest quit_request;
     bool redirect_mouse_handling;

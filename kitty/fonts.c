@@ -13,6 +13,7 @@
 #include "char-props.h"
 #include "decorations.h"
 #include "glyph-cache.h"
+#include "print-graphics.h"
 
 #define MISSING_GLYPH 1
 #define MAX_NUM_EXTRA_GLYPHS_PUA 4u
@@ -135,12 +136,8 @@ static id_type font_group_id_counter = 0;
 static void initialize_font_group(FontGroup *fg);
 
 static void
-display_rgba_data(const pixel *b, unsigned width, unsigned height) {
-    RAII_PyObject(m, PyImport_ImportModule("kitty.fonts.render"));
-    RAII_PyObject(f, PyObject_GetAttrString(m, "show"));
-    RAII_PyObject(data, PyMemoryView_FromMemory((char*)b, (Py_ssize_t)width * height * sizeof(b[0]), PyBUF_READ));
-    RAII_PyObject(ret, PyObject_CallFunction(f, "OII", data, width, height));
-    if (ret == NULL) PyErr_Print();
+display_glyph(const pixel *b, unsigned width, unsigned height) {
+    print_abgr32(b, width, height);
 }
 
 static void
@@ -360,7 +357,7 @@ calculate_underline_exclusion_zones(pixel *buf, const FontGroup *fg, DecorationG
     }
     thickness = MAX(1u, thickness);
     if (0) printf("dg: %u %u cell_height: %u scaled_cell_height: %u\n", dg.top, dg.height, fg->fcm.cell_height, scaled_metrics.cell_height);
-    if (0) { display_rgba_data(buf, fg->fcm.cell_width, fg->fcm.cell_height); printf("\n"); }
+    if (0) { display_glyph(buf, fg->fcm.cell_width, fg->fcm.cell_height); printf("\n"); }
     unsigned max_overlap = 0;
 #define is_rendered(x, y) ((buf[(y) * fg->fcm.cell_width + (x)] & 0x000000ff) > 0)
     for (unsigned x = 0; x < fg->fcm.cell_width; x++) {
@@ -390,7 +387,7 @@ current_send_sprite_to_gpu(FontGroup *fg, pixel *buf, DecorationMetadata dec, Fo
     if (dec.underline_region.height && OPT(underline_exclusion).thickness > 0) calculate_underline_exclusion_zones(
             buf, fg, dec.underline_region, scaled_metrics);
     send_sprite_to_gpu((FONTS_DATA_HANDLE)fg, ans, buf, dec.start_idx);
-    if (0) { printf("Sprite: %u dec_idx: %u\n", ans, dec.start_idx); display_rgba_data(buf, fg->fcm.cell_width, fg->fcm.cell_height); printf("\n"); }
+    if (0) { printf("Sprite: %u dec_idx: %u\n", ans, dec.start_idx); display_glyph(buf, fg->fcm.cell_width, fg->fcm.cell_height); printf("\n"); }
     return ans;
 }
 
@@ -796,7 +793,7 @@ static PyObject *descriptor_for_idx = NULL;
 
 void
 render_alpha_mask(const uint8_t *alpha_mask, pixel* dest, const Region *src_rect, const Region *dest_rect, size_t src_stride, size_t dest_stride, pixel color_rgb) {
-    pixel col = color_rgb << 8;
+    pixel col = (color_rgb << 8) & 0xffffff00;
     for (size_t sr = src_rect->top, dr = dest_rect->top; sr < src_rect->bottom && dr < dest_rect->bottom; sr++, dr++) {
         pixel *d = dest + dest_stride * dr;
         const uint8_t *s = alpha_mask + src_stride * sr;
@@ -959,7 +956,7 @@ map_scaled_decoration_geometry(DecorationGeometry sdg, Region src, Region dest) 
     unsigned unscaled_top = dest.top + (scaled_top - src.top);
     unsigned unscaled_bottom = unscaled_top + (scaled_bottom > scaled_top ? scaled_bottom - scaled_top : 0);
     unscaled_bottom = MIN(unscaled_bottom, dest.bottom);
-    /*printf("111111 src: (%u, %u) dest: (%u, %u) sdg: (%u, %u) scaled: (%u, %u) unscaled: (%u, %u)\n",*/
+    /*printf("src: (%u, %u) dest: (%u, %u) sdg: (%u, %u) scaled: (%u, %u) unscaled: (%u, %u)\n",*/
     /*    src.top, src.bottom, dest.top, dest.bottom, sdg.top, sdg.top + sdg.height, scaled_top, scaled_bottom, unscaled_top, unscaled_bottom);*/
     return (Region){.top=unscaled_top, .bottom=MAX(unscaled_top, unscaled_bottom)};
 }
@@ -1194,7 +1191,7 @@ render_group(
     }
 
     ensure_canvas_can_fit(fg, MAX(num_cells, num_scaled_cells) + 1, rf.scale);
-    if (rendering_in_smaller_area) ensure_canvas_can_fit(fg, 2 * num_cells + 1, 1);  // scratch space
+    if (rendering_in_smaller_area) ensure_canvas_can_fit(fg, 2 * num_cells + 1, (unsigned)ceil(scale));  // scratch space
     pixel *scratch = fg->canvas.buf + canvas_width * unscaled_metrics.cell_height;
     text_in_cell(cpu_cells, tc, global_glyph_render_scratch.lc);
     bool is_only_filled_boxes = false;
@@ -1218,8 +1215,12 @@ render_group(
     if (canvas == scratch) {
         if (canvas_width != scaled_canvas_width) {
             unsigned stride = MIN(canvas_width, scaled_canvas_width);
-            for (unsigned y = 0; y < scaled_metrics.cell_height; y++) memcpy(
-                fg->canvas.buf + y * canvas_width, canvas + y * scaled_canvas_width, sizeof(pixel) * stride);
+            for (unsigned y = 0; y < scaled_metrics.cell_height; y++) {
+                pixel *dest_row = fg->canvas.buf + y * canvas_width;
+                memcpy(dest_row, canvas + y * scaled_canvas_width, sizeof(pixel) * stride);
+                if (scaled_canvas_width < canvas_width) memset(
+                    dest_row + scaled_canvas_width, 0, sizeof(pixel) * (canvas_width - scaled_canvas_width));
+            }
             ri.canvas_width = canvas_width;
             scaled_canvas_width = canvas_width;
         } else memcpy(fg->canvas.buf, canvas, sizeof(pixel) * canvas_width * scaled_metrics.cell_height);
@@ -1229,6 +1230,7 @@ render_group(
         canvas, rf, center_glyph, ri, canvas_width,
         scaled_metrics.cell_height, num_scaled_cells, num_glyphs, was_colored);
     if (PyErr_Occurred()) PyErr_Print();
+    // display_glyph(canvas, canvas_width, scaled_metrics.cell_height); printf("\n");
 
     fg->fcm = unscaled_metrics;  // needed for current_send_sprite_to_gpu()
 

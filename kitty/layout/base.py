@@ -7,9 +7,9 @@ from itertools import repeat
 from typing import Any, Callable, NamedTuple
 
 from kitty.borders import BorderColor
-from kitty.fast_data_types import Region, get_options, set_active_window, viewport_for_window
+from kitty.fast_data_types import BOTTOM_EDGE, RIGHT_EDGE, Region, get_options, set_active_window, viewport_for_window
 from kitty.options.types import Options
-from kitty.types import Edges, NeighborsMap, WindowGeometry, WindowMapper
+from kitty.types import Edges, NeighborsMap, WindowGeometry, WindowMapper, WindowResizeDragData
 from kitty.typing_compat import WindowType
 from kitty.window_list import WindowGroup, WindowList
 
@@ -267,6 +267,7 @@ class Layout:
         if idx is None or not increment:
             return False
         return self.apply_bias(idx, increment, all_windows, is_horizontal)
+    drag_resize_window = modify_size_of_window
 
     def parse_layout_opts(self, layout_opts: str | None = None) -> LayoutOpts:
         data: dict[str, str] = {}
@@ -451,6 +452,11 @@ class Layout:
 
     def set_layout_state(self, layout_state: dict[str, Any], map_group_id: WindowMapper) -> bool:
         return True
+
+    def drag_resize_target_windows(
+        self, click_window: WindowType, x: float, y: float, edges: int, all_windows: WindowList,
+    ) -> WindowResizeDragData:
+        return WindowResizeDragData(click_window.id, bool(edges & RIGHT_EDGE), click_window.id, bool(edges & BOTTOM_EDGE))
 
     def serialize(self, all_windows: WindowList) -> dict[str, Any]:
         ans = self.layout_state()

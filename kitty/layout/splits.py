@@ -5,7 +5,8 @@ from collections.abc import Collection, Generator, Sequence
 from typing import Any, NamedTuple, Optional, TypedDict, Union
 
 from kitty.borders import BorderColor
-from kitty.types import Edges, NeighborsMap, WindowGeometry, WindowMapper
+from kitty.fast_data_types import BOTTOM_EDGE, RIGHT_EDGE
+from kitty.types import Edges, NeighborsMap, WindowGeometry, WindowMapper, WindowResizeDragData
 from kitty.typing_compat import EdgeLiteral, WindowType
 from kitty.window_list import WindowGroup, WindowList
 
@@ -459,6 +460,15 @@ class Pair:
                     else:
                         yield q
 
+    def window_on_second(self, wid: int) -> bool:
+        if self.one == wid:
+            return False
+        if self.two == wid:
+            return True
+        if not isinstance(self.two, Pair):
+            return False
+        return self.two.window_on_second(wid)
+
 
 class SplitsLayoutOpts(LayoutOpts):
 
@@ -704,6 +714,40 @@ class Splits(Layout):
                     return True
 
         return None
+
+    def drag_resize_window(self, all_windows: WindowList, pair_id: int, increment: float, is_horizontal: bool = True) -> bool:
+        for pair in self.pairs_root.self_and_descendants():
+            if id(pair) == pair_id:
+                new_bias = max(0, min(pair.bias + increment, 1))
+                if new_bias != pair.bias:
+                    pair.bias = new_bias
+                    return True
+        return False
+
+    def drag_resize_target_windows(
+        self, click_window: WindowType, x: float, y: float, edges: int, all_windows: WindowList,
+    ) -> WindowResizeDragData:
+        is_right, is_bottom = bool(edges & RIGHT_EDGE), bool(edges & BOTTOM_EDGE)
+        ans = WindowResizeDragData(None, is_right, None, is_bottom)
+        if (wg := all_windows.group_for_window(click_window)) is None or (pair := self.pairs_root.pair_for_window(wg.id)) is None:
+            return ans
+        pair_parent_map = {}
+        for p in self.pairs_root.self_and_descendants():
+            if isinstance(p.one, Pair):
+                pair_parent_map[p.one] = p
+            if isinstance(p.two, Pair):
+                pair_parent_map[p.two] = p
+        p = pair
+        while ans.horizontal_id is None or ans.vertical_id is None:
+            if not p.is_redundant:
+                if ans.horizontal_id is None and p.horizontal and p.window_on_second(wg.id) != is_right:
+                    ans = ans._replace(horizontal_id=id(p), width_increases_rightwards=not is_right)
+                if ans.vertical_id is None and not p.horizontal and p.window_on_second(wg.id) != is_bottom:
+                    ans = ans._replace(horizontal_id=id(p))
+            if (parent := pair_parent_map.get(p)) is None:
+                break
+            p = parent
+        return ans
 
     def layout_state(self) -> dict[str, Any]:
         return {'pairs': self.pairs_root.serialize()}
