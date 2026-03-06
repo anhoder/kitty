@@ -1230,7 +1230,8 @@ class Boss:
         window: Window | None = None,  # the window associated with the confirmation
         prompt: str = '> ',
         is_password: bool = False,
-        initial_value: str = ''
+        initial_value: str = '',
+        window_title: str = '',
     ) -> None:
         result: str = ''
 
@@ -1244,6 +1245,8 @@ class Boss:
         cmd = ['--type', 'password' if is_password else 'line', '--message', msg, '--prompt', prompt]
         if initial_value:
             cmd.append('--default=' + initial_value)
+        if window_title:
+            cmd.append(f'--title={window_title}')
         self.run_kitten_with_metadata(
             'ask', cmd, window=window, custom_callback=callback_, default_data={'response': ''}, action_on_removal=on_popup_overlay_removal
         )
@@ -1384,6 +1387,10 @@ class Boss:
             run_update_check(get_options().update_check_interval * 60 * 60)
             self.update_check_started = True
 
+    def handle_window_title_bar_mouse(self, os_window_id: int, window_id: int, button: int, modifiers: int, action: int) -> None:
+        if tm := self.os_window_map.get(os_window_id):
+            tm.handle_window_title_bar_mouse(window_id, button, modifiers, action)
+
     def handle_tab_bar_mouse(self, os_window_id: int, x: float, y: float, button: int, modifiers: int, action: int) -> None:
         if tm := self.os_window_map.get(os_window_id):
             tm.handle_tab_bar_mouse(x, y, button, modifiers, action)
@@ -1467,7 +1474,7 @@ class Boss:
     def set_font_size(self, new_size: float) -> None:  # legacy
         self.change_font_size(True, None, new_size)
 
-    @ac('win', '''
+    @ac('fs', '''
         Change the font size for the current or all OS Windows
 
         See :ref:`conf-kitty-shortcuts.fonts` for details.
@@ -2304,6 +2311,14 @@ class Boss:
     def input_unicode_character(self) -> None:
         self.run_kitten_with_metadata('unicode_input', window=self.window_for_dispatch)
 
+    @ac('misc', '''
+        Browse and trigger keyboard shortcuts and actions in a searchable overlay.
+        ''')
+    def command_palette(self) -> None:
+        from kittens.command_palette.main import collect_keys_data
+        data = collect_keys_data(get_options())
+        self.run_kitten_with_metadata('command-palette', input_data=json.dumps(data), window=self.window_for_dispatch)
+
     @ac(
         'tab', '''
         Change the title of the active tab interactively, by typing in the new title.
@@ -2334,7 +2349,7 @@ class Boss:
                 prefilled = ''
             self.get_line(
                 _('Enter the new title for this tab below. An empty title will cause the default title to be used.'),
-                tab.set_title, window=tab.active_window, initial_value=prefilled)
+                tab.set_title, window=tab.active_window, initial_value=prefilled, window_title=_('Rename tab'))
 
     def create_special_window_for_show_error(self, title: str, msg: str, overlay_for: int | None = None) -> SpecialWindowInstance:
         ec = sys.exc_info()
@@ -2973,13 +2988,13 @@ class Boss:
             opts.next_to = opts.next_to or f'id:{self.window_for_dispatch.id}'
         launch(self, opts, args_)
 
-    @ac('tab', 'Move the active tab forward')
+    @ac('tab', 'Move the active tab forward. You can also use drag and drop to re-arrange tabs.')
     def move_tab_forward(self) -> None:
         tm = self.active_tab_manager
         if tm is not None:
             tm.move_tab(1)
 
-    @ac('tab', 'Move the active tab backward')
+    @ac('tab', 'Move the active tab backward. You can also use drag and drop to re-arrange tabs.')
     def move_tab_backward(self) -> None:
         tm = self.active_tab_manager_with_dispatch
         if tm is not None:
@@ -3351,7 +3366,7 @@ class Boss:
         self.choose_entry('Choose a tab to move the window to', items, chosen)
 
     @ac('tab', '''
-        Detach a tab, moving it to another OS Window
+        Detach a tab, moving it to another OS Window. You can also use drag and drop to detach tabs.
 
         See :ref:`detaching windows <detach_window>` for details.
         ''')

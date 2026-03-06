@@ -17,6 +17,8 @@ from kitty.window_list import WindowGroup, WindowList
 class BorderLine(NamedTuple):
     edges: Edges = Edges()
     color: BorderColor = BorderColor.inactive
+    window_id: int = 0
+    horizontal: bool = False
 
 
 class LayoutOpts:
@@ -366,6 +368,13 @@ class Layout:
         self._set_dimensions(all_windows)
         self.update_visibility(all_windows)
         self.blank_rects = []
+        # Set show_title_bar flag on each visible window before layout
+        min_windows = get_options().window_title_bar_min_windows
+        visible_groups = tuple(all_windows.iter_all_layoutable_groups(only_visible=True))
+        show_title_bar = min_windows > 0 and len(visible_groups) >= min_windows
+        for wg in visible_groups:
+            for w in wg.windows:
+                w.show_title_bar = show_title_bar
         self.do_layout(all_windows)
 
     def layout_single_window_group(self, wg: WindowGroup, add_blank_rects: bool = True) -> None:
@@ -436,13 +445,12 @@ class Layout:
     def compute_needs_borders_map(self, all_windows: WindowList) -> dict[int, bool]:
         return all_windows.compute_needs_borders_map(lgd.draw_active_borders)
 
-    def get_minimal_borders(self, windows: WindowList) -> Generator[BorderLine, None, None]:
+    def get_minimal_borders(self, windows: WindowList) -> Iterator[BorderLine]:
         self._set_dimensions(windows)
         yield from self.minimal_borders(windows)
 
-    def minimal_borders(self, windows: WindowList) -> Generator[BorderLine, None, None]:
-        return
-        yield BorderLine()  # type: ignore
+    def minimal_borders(self, windows: WindowList) -> Iterator[BorderLine]:
+        yield from ()
 
     def layout_action(self, action_name: str, args: Sequence[str], all_windows: WindowList) -> bool | None:
         pass

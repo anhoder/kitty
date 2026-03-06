@@ -63,7 +63,7 @@ GlobalState global_state = {{0}};
     }}
 
 static double
-dpi_for_os_window(OSWindow *os_window) {
+dpi_for_os_window(const OSWindow *os_window) {
     double dpi = (os_window->fonts_data->logical_dpi_x + os_window->fonts_data->logical_dpi_y) / 2.;
     if (dpi == 0) dpi = (global_state.default_dpi.x + global_state.default_dpi.y) / 2.;
     return dpi;
@@ -84,7 +84,7 @@ dpi_for_os_window_id(id_type os_window_id) {
 }
 
 static long
-pt_to_px_for_os_window(double pt, OSWindow *w) {
+pt_to_px_for_os_window(double pt, const OSWindow *w) {
     const double dpi = dpi_for_os_window(w);
     return ((long)round((pt * (dpi / 72.0))));
 }
@@ -255,12 +255,16 @@ add_tab(id_type os_window_id) {
 static void
 create_gpu_resources_for_window(Window *w) {
     w->render_data.vao_idx = create_cell_vao();
+    w->window_title_render_data.vao_idx = create_cell_vao();
 }
 
 static void
 release_gpu_resources_for_window(Window *w) {
     if (w->render_data.vao_idx > -1) remove_vao(w->render_data.vao_idx);
     w->render_data.vao_idx = -1;
+    if (w->window_title_render_data.vao_idx > -1) remove_vao(w->window_title_render_data.vao_idx);
+    w->window_title_render_data.vao_idx = -1;
+    Py_CLEAR(w->window_title_render_data.screen);
 }
 
 static bool
@@ -491,7 +495,6 @@ destroy_os_window_item(OSWindow *w) {
     free(w->tabs); w->tabs = NULL;
     free_bgimage(&w->bgimage, true);
     zero_at_ptr(&w->bgimage);
-    if (w->indirect_output.texture_id) free_texture(&w->indirect_output.texture_id);
     if (w->indirect_output.framebuffer_id) free_framebuffer(&w->indirect_output.framebuffer_id);
 }
 
@@ -507,6 +510,11 @@ remove_os_window(id_type os_window_id) {
             REMOVER(global_state.os_windows, os_window_id, global_state.num_os_windows, destroy_os_window_item, global_state.capacity);
         END_WITH_OS_WINDOW_REFS
         update_os_window_references();
+        if (global_state.num_os_windows == 0) {
+            if (global_state.layers_render_texture.texture_id) free_texture(&global_state.layers_render_texture.texture_id);
+            if (global_state.layers_render_texture.framebuffer_id) free_framebuffer(&global_state.layers_render_texture.framebuffer_id);
+            global_state.layers_render_texture.width = 0; global_state.layers_render_texture.height = 0;
+        }
     }
     return found;
 }
@@ -612,16 +620,17 @@ pyset_borders_rects(PyObject *self UNUSED, PyObject *args) {
         ensure_space_for(br, rect_buf, BorderRect, br->num_border_rects + 1, capacity, 32, false);
         for (unsigned i = 0; i < br->num_border_rects; i++) {
             PyObject *pr = PyList_GET_ITEM(rects, i);
-            unsigned long color; int border_type;
+            unsigned long color; long long border_type;
             BorderRect *r = br->rect_buf + i;
+            int horizontal;
             if (!PyArg_ParseTuple(
-                pr, "IIIIki", &r->px.left, &r->px.top, &r->px.right, &r->px.bottom, &color, &border_type
+                pr, "IIIIkLp", &r->px.left, &r->px.top, &r->px.right, &r->px.bottom, &color, &border_type, &horizontal
             )) return NULL;
             r->left = gl_pos_x(r->px.left, osw->viewport_width);
             r->top = gl_pos_y(r->px.top, osw->viewport_height);
             r->right = r->left + gl_size(r->px.right - r->px.left, osw->viewport_width);
             r->bottom = r->top - gl_size(r->px.bottom - r->px.top, osw->viewport_height);
-            r->color = color; r->border_type = border_type;
+            r->color = color; r->border_type = border_type; r->horizontal = horizontal;
         }
     END_WITH_TAB
     Py_RETURN_NONE;
@@ -629,7 +638,7 @@ pyset_borders_rects(PyObject *self UNUSED, PyObject *args) {
 
 
 void
-os_window_regions(OSWindow *os_window, Region *central, Region *tab_bar) {
+os_window_regions(const OSWindow *os_window, Region *central, Region *tab_bar) {
     if (!OPT(tab_bar_hidden) && os_window->num_tabs && !os_window->has_too_few_tabs) {
         long margin_outer = pt_to_px_for_os_window(OPT(tab_bar_margin_height.outer), os_window);
         long margin_inner = pt_to_px_for_os_window(OPT(tab_bar_margin_height.inner), os_window);
@@ -852,6 +861,17 @@ PYWRAP1(set_tab_bar_render_data) {
     WITH_OS_WINDOW(os_window_id)
         init_window_render_data(&os_window->tab_bar_render_data, g, screen);
     END_WITH_OS_WINDOW
+    Py_RETURN_NONE;
+}
+
+PYWRAP1(set_window_title_bar_render_data) {
+    WindowGeometry g;
+    id_type os_window_id, tab_id, window_id;
+    Screen *screen;
+    PA("KKKOIIII", &os_window_id, &tab_id, &window_id, &screen, &g.left, &g.top, &g.right, &g.bottom);
+    WITH_WINDOW(os_window_id, tab_id, window_id)
+        init_window_render_data(&window->window_title_render_data, g, screen);
+    END_WITH_WINDOW
     Py_RETURN_NONE;
 }
 
@@ -1592,6 +1612,7 @@ static PyMethodDef module_methods[] = {
     MW(reorder_tabs, METH_VARARGS),
     MW(set_borders_rects, METH_VARARGS),
     MW(set_tab_bar_render_data, METH_VARARGS),
+    MW(set_window_title_bar_render_data, METH_VARARGS),
     MW(set_window_render_data, METH_VARARGS),
     MW(set_window_padding, METH_VARARGS),
     MW(viewport_for_window, METH_VARARGS),

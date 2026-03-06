@@ -1,21 +1,16 @@
 #!/usr/bin/env python
 # License: GPLv3 Copyright: 2020, Kovid Goyal <kovid at kovidgoyal.net>
 
-from collections.abc import Collection, Generator, Sequence
-from typing import Any, NamedTuple, Optional, TypedDict, Union
+from collections.abc import Collection, Generator, Iterator, Sequence
+from typing import Any, Optional, TypedDict, Union
 
 from kitty.borders import BorderColor
-from kitty.fast_data_types import BOTTOM_EDGE, RIGHT_EDGE
+from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, RIGHT_EDGE, TOP_EDGE
 from kitty.types import Edges, NeighborsMap, WindowGeometry, WindowMapper, WindowResizeDragData
 from kitty.typing_compat import EdgeLiteral, WindowType
 from kitty.window_list import WindowGroup, WindowList
 
 from .base import BorderLine, Layout, LayoutOpts, blank_rects_for_window, lgd, window_geometry_from_layouts
-
-
-class Extent(NamedTuple):
-    start: int = 0
-    end: int = 0
 
 
 class SerializedPair(TypedDict, total=False):
@@ -33,8 +28,9 @@ class Pair:
         self.two: Pair | int | None = None
         self.bias = 0.5
         self.top = self.left = self.width = self.height = 0
-        self.between_borders: list[Edges] = []
-        self.first_extent = self.second_extent = Extent()
+        self.between_borders: tuple[Sequence[BorderLine], Sequence[BorderLine]] | None = None
+        self.first_extent = self.second_extent = Edges()  # not including between_borders
+        self.border_width: int = 0
 
     def serialize(self) -> SerializedPair:
         ans: SerializedPair = {}
@@ -242,12 +238,12 @@ class Pair:
         id_window_map: dict[int, WindowGroup],
         layout_object: Layout
     ) -> None:
-        self.between_borders = []
+        self.between_borders = None
         self.left, self.top, self.width, self.height = left, top, width, height
-        bw = self.effective_border(id_window_map) if lgd.draw_minimal_borders else 0
+        self.first_extent = self.second_extent = Edges(left, top, left + width, top + height)
+        self.border_width = bw = self.effective_border(id_window_map) if lgd.draw_minimal_borders else 0
         border_mult = 0 if lgd.draw_minimal_borders else 1
         bw2 = bw * 2
-        self.first_extent = self.second_extent = Extent()
         if self.one is None or self.two is None:
             q = self.one or self.two
             if isinstance(q, Pair):
@@ -258,9 +254,11 @@ class Pair:
             xl = next(layout_object.xlayout(iter((wg,)), start=left, size=width, border_mult=border_mult))
             yl = next(layout_object.ylayout(iter((wg,)), start=top, size=height, border_mult=border_mult))
             geom = window_geometry_from_layouts(xl, yl)
-            self.first_extent = Extent(left, left + width)
             self.apply_window_geometry(q, geom, id_window_map, layout_object)
             return
+        one: list[BorderLine] = []
+        two: list[BorderLine] = []
+        self.between_borders = one, two
         if self.horizontal:
             min_w1 = self.one.minimum_width(id_window_map) if isinstance(self.one, Pair) else lgd.cell_width
             min_w2 = self.two.minimum_width(id_window_map) if isinstance(self.two, Pair) else lgd.cell_width
@@ -269,26 +267,33 @@ class Pair:
             if w2 < min_w2 and w1 >= min_w1 + bw2:
                 w2 = min_w2
                 w1 = width - w2
-            self.first_extent = Extent(max(0, left - bw), left + w1 + bw)
-            self.second_extent = Extent(left + w1 + bw, left + width + bw)
+            bleft = left + w1
+            self.first_extent = Edges(left, top, left + w1, top + height)
             if isinstance(self.one, Pair):
                 self.one.layout_pair(left, top, w1, height, id_window_map, layout_object)
+                if bw:
+                    for etop, ebottom, window_id in self.one.edge_border(RIGHT_EDGE, id_window_map):
+                        one.append(BorderLine(Edges(bleft, etop, bleft + bw, ebottom), window_id=window_id, horizontal=False))
             else:
                 wg = id_window_map[self.one]
                 yl = next(layout_object.ylayout(iter((wg,)), start=top, size=height, border_mult=border_mult))
                 xl = next(layout_object.xlayout(iter((wg,)), start=left, size=w1, border_mult=border_mult))
                 geom = window_geometry_from_layouts(xl, yl)
                 self.apply_window_geometry(self.one, geom, id_window_map, layout_object)
-            self.between_borders = [
-                Edges(left + w1, top, left + w1 + bw, top + height),
-                Edges(left + w1 + bw, top, left + w1 + bw2, top + height),
-            ]
-            left += bw2
+                if bw:
+                    one.append(BorderLine(Edges(bleft, top, bleft + bw, top + height), window_id=wg.active_window_id, horizontal=False))
+            left += w1 + bw2
+            self.second_extent = Edges(left, top, left + w2, top + height)
             if isinstance(self.two, Pair):
-                self.two.layout_pair(left + w1, top, w2, height, id_window_map, layout_object)
+                self.two.layout_pair(left, top, w2, height, id_window_map, layout_object)
+                if bw:
+                    for etop, ebottom, window_id in self.two.edge_border(LEFT_EDGE, id_window_map):
+                        two.append(BorderLine(Edges(left - bw, etop, left, ebottom), window_id=window_id, horizontal=False))
             else:
                 wg = id_window_map[self.two]
-                xl = next(layout_object.xlayout(iter((wg,)), start=left + w1, size=w2, border_mult=border_mult))
+                if bw:
+                    two.append(BorderLine(Edges(left - bw, top, left, top + height), window_id=-wg.active_window_id, horizontal=False))
+                xl = next(layout_object.xlayout(iter((wg,)), start=left, size=w2, border_mult=border_mult))
                 yl = next(layout_object.ylayout(iter((wg,)), start=top, size=height, border_mult=border_mult))
                 geom = window_geometry_from_layouts(xl, yl)
                 self.apply_window_geometry(self.two, geom, id_window_map, layout_object)
@@ -300,29 +305,106 @@ class Pair:
             if h2 < min_h2 and h1 >= min_h1 + bw2:
                 h2 = min_h2
                 h1 = height - h2
-            self.first_extent = Extent(max(0, top - bw), top + h1 + bw)
-            self.second_extent = Extent(top + h1 + bw, top + height + bw)
+            btop = top + h1
+            self.first_extent = Edges(left, top, left + width, top + h1)
             if isinstance(self.one, Pair):
                 self.one.layout_pair(left, top, width, h1, id_window_map, layout_object)
+                if bw:
+                    for eleft, eright, window_id in self.one.edge_border(BOTTOM_EDGE, id_window_map):
+                        one.append(BorderLine(Edges(eleft, btop, eright, btop + bw), window_id=window_id, horizontal=True))
             else:
                 wg = id_window_map[self.one]
                 xl = next(layout_object.xlayout(iter((wg,)), start=left, size=width, border_mult=border_mult))
                 yl = next(layout_object.ylayout(iter((wg,)), start=top, size=h1, border_mult=border_mult))
                 geom = window_geometry_from_layouts(xl, yl)
                 self.apply_window_geometry(self.one, geom, id_window_map, layout_object)
-            self.between_borders = [
-                Edges(left, top + h1, left + width, top + h1 + bw),
-                Edges(left, top + h1 + bw, left + width, top + h1 + bw2),
-            ]
-            top += bw2
+                if bw:
+                    one.append(BorderLine(Edges(left, btop, left + width, btop + bw), window_id=wg.active_window_id, horizontal=True))
+            top += bw2 + h1
+            self.second_extent = Edges(left, top, left + width, top + h2)
             if isinstance(self.two, Pair):
-                self.two.layout_pair(left, top + h1, width, h2, id_window_map, layout_object)
+                self.two.layout_pair(left, top, width, h2, id_window_map, layout_object)
+                if bw:
+                    for eleft, eright, window_id in self.two.edge_border(TOP_EDGE, id_window_map):
+                        two.append(BorderLine(Edges(eleft, top - bw, eright, top), window_id=window_id, horizontal=True))
             else:
                 wg = id_window_map[self.two]
+                if bw:
+                    two.append(BorderLine(Edges(left, top - bw, left + width, top), window_id=-wg.active_window_id, horizontal=True))
                 xl = next(layout_object.xlayout(iter((wg,)), start=left, size=width, border_mult=border_mult))
-                yl = next(layout_object.ylayout(iter((wg,)), start=top + h1, size=h2, border_mult=border_mult))
+                yl = next(layout_object.ylayout(iter((wg,)), start=top, size=h2, border_mult=border_mult))
                 geom = window_geometry_from_layouts(xl, yl)
                 self.apply_window_geometry(self.two, geom, id_window_map, layout_object)
+
+    def edge_border(self, which: int, id_group_map: dict[int, WindowGroup]) -> Iterator[tuple[int, int, int]]:
+        mult = 1 if which & (RIGHT_EDGE | BOTTOM_EDGE) else -1
+
+        def edge(x: int, p: Pair) -> tuple[int, int, int]:
+            wid = id_group_map[x].active_window_id * mult
+            if which & (LEFT_EDGE | RIGHT_EDGE):
+                return p.top, p.top + p.height, wid
+            return p.left, p.left + p.width, wid
+
+        def edges(x: int | Pair, parent: Pair) -> Iterator[tuple[int, int, int]]:
+            if isinstance(x, int):
+                yield edge(x, parent)
+            else:
+                yield from x.edge_border(which, id_group_map)
+
+        if self.two is None or self.one is None:
+            x = self.one or self.two
+            if x is not None:
+                yield from edges(x, self)
+            return
+
+        def as_pair(e: Edges, gid: int) -> Pair:
+            g1 = Pair()
+            g1.one = g1.two = gid
+            g1.left, g1.top, g1.width, g1.height = e.left, e.top, e.right - e.left, e.bottom - e.top
+            return g1
+
+        needs_vertical_edges = which in (LEFT_EDGE, RIGHT_EDGE)
+        if self.horizontal == needs_vertical_edges:
+            yield from edges(self.one if which in (LEFT_EDGE, TOP_EDGE) else self.two, self)
+        else:
+            g1 = as_pair(self.first_extent, self.one) if isinstance(self.one, int) else self.one
+            g2 = as_pair(self.second_extent, self.two) if isinstance(self.two, int) else self.two
+            yield from edges(self.one, g1)
+            first_id = second_id = 0
+            if isinstance(self.one, int):
+                first_id = self.one
+            if isinstance(self.two, int):
+                second_id = self.two
+            if self.horizontal:
+                start = g1.left + g1.width
+                if isinstance(self.one, Pair):
+                    first_id = self.one.corner_group_id(which | RIGHT_EDGE)
+                if isinstance(self.two, Pair):
+                    second_id = self.two.corner_group_id(which | LEFT_EDGE)
+            else:
+                start = g1.top + g1.height
+                if isinstance(self.one, Pair):
+                    first_id = self.one.corner_group_id(which | BOTTOM_EDGE)
+                if isinstance(self.two, Pair):
+                    second_id = self.two.corner_group_id(which | TOP_EDGE)
+            if g := id_group_map.get(first_id):
+                first_id = g.active_window_id
+            if g := id_group_map.get(second_id):
+                second_id = g.active_window_id
+            yield start, start + self.border_width, first_id * mult
+            yield start + self.border_width, start + 2*self.border_width, second_id * mult
+            yield from edges(self.two, g2)
+
+    def corner_group_id(self, which: int) -> int:
+        if self.is_redundant:
+            q = self.one or self.two
+        elif self.horizontal:
+            q = self.one if which & LEFT_EDGE else self.two
+        else:
+            q = self.one if which & TOP_EDGE else self.two
+        if q is None:
+            return 0
+        return q if isinstance(q, int) else q.corner_group_id(which)
 
     def set_bias(self, window_id: int, bias: int) -> None:
         b = max(0, min(bias, 100)) / 100
@@ -342,55 +424,6 @@ class Pair:
             which = 1 if parent.one is self else 2
             return parent.modify_size_of_child(which, increment, is_horizontal, layout_object)
         return False
-
-    def borders_for_window(self, layout_object: 'Splits', window_id: int) -> Generator[Edges, None, None]:
-        is_first = self.one == window_id
-        if self.between_borders:
-            yield self.between_borders[0 if is_first else 1]
-        q = self
-        found_same_direction = found_transverse1 = found_transverse2 = False
-        while not (found_same_direction and found_transverse1 and found_transverse2):
-            parent = q.parent(layout_object.pairs_root)
-            if parent is None:
-                break
-            q = parent
-            if not q.between_borders:
-                continue
-            if q.horizontal == self.horizontal:
-                if not found_same_direction:
-                    if self.horizontal:
-                        is_before = q.between_borders[0].left <= self.left
-                    else:
-                        is_before = q.between_borders[0].top <= self.top
-                    if is_before == is_first:
-                        found_same_direction = True
-                        edges = q.between_borders[1 if is_before else 0]
-                        if self.horizontal:
-                            yield edges._replace(top=self.top, bottom=self.top + self.height)
-                        else:
-                            yield edges._replace(left=self.left, right=self.left + self.width)
-            else:
-                if self.horizontal:
-                    is_before = q.between_borders[0].top <= self.top
-                else:
-                    is_before = q.between_borders[0].left <= self.left
-                extent = self.first_extent if is_first else self.second_extent
-                if is_before:
-                    if not found_transverse1:
-                        found_transverse1 = True
-                        edges = q.between_borders[1]
-                        if self.horizontal:
-                            yield edges._replace(left=extent.start, right=extent.end)
-                        else:
-                            yield edges._replace(top=extent.start, bottom=extent.end)
-                else:
-                    if not found_transverse2:
-                        found_transverse2 = True
-                        edges = q.between_borders[0]
-                        if self.horizontal:
-                            yield edges._replace(left=extent.start, right=extent.end)
-                        else:
-                            yield edges._replace(top=extent.start, bottom=extent.end)
 
     def neighbors_for_window(self, window_id: int, ans: NeighborsMap, layout_object: 'Splits', all_windows: WindowList) -> None:
 
@@ -460,14 +493,14 @@ class Pair:
                     else:
                         yield q
 
-    def window_on_second(self, wid: int) -> bool:
-        if self.one == wid:
+    def is_group_on_second(self, gid: int) -> bool:
+        if self.one == gid:
             return False
-        if self.two == wid:
+        if self.two == gid:
             return True
         if not isinstance(self.two, Pair):
             return False
-        return self.two.window_on_second(wid)
+        return self.two.is_group_on_second(gid)
 
 
 class SplitsLayoutOpts(LayoutOpts):
@@ -597,24 +630,28 @@ class Splits(Layout):
             pair.bias = 0.5
         return True
 
-    def minimal_borders(self, all_windows: WindowList) -> Generator[BorderLine, None, None]:
+    def minimal_borders(self, all_windows: WindowList) -> Iterator[BorderLine]:
         groups = tuple(all_windows.iter_all_layoutable_groups())
         window_count = len(groups)
         if not lgd.draw_minimal_borders or window_count < 2:
             return
-        for pair in self.pairs_root.self_and_descendants():
-            for edges in pair.between_borders:
-                yield BorderLine(edges)
         needs_borders_map = all_windows.compute_needs_borders_map(lgd.draw_active_borders)
         ag = all_windows.active_group
         active_group_id = -1 if ag is None else ag.id
+
+        border_color_map = {}
         for grp_id, needs_borders in needs_borders_map.items():
             if needs_borders:
-                qpair = self.pairs_root.pair_for_window(grp_id)
-                if qpair is not None:
+                wid = g.active_window_id if (g := all_windows.group_for_id(grp_id)) else 0
+                if wid:
                     color = BorderColor.active if grp_id is active_group_id else BorderColor.bell
-                    for edges in qpair.borders_for_window(self, grp_id):
-                        yield BorderLine(edges, color)
+                    border_color_map[wid] = color
+
+        for pair in self.pairs_root.self_and_descendants():
+            if pair.between_borders:
+                for which in pair.between_borders:
+                    for bb in which:
+                        yield bb._replace(color=border_color_map.get(abs(bb.window_id), BorderColor.inactive))
 
     def neighbors_for_window(self, window: WindowType, all_windows: WindowList) -> NeighborsMap:
         wg = all_windows.group_for_window(window)
@@ -722,12 +759,14 @@ class Splits(Layout):
                 if new_bias != pair.bias:
                     pair.bias = new_bias
                     return True
+                break
         return False
 
     def drag_resize_target_windows(
         self, click_window: WindowType, x: float, y: float, edges: int, all_windows: WindowList,
     ) -> WindowResizeDragData:
         is_right, is_bottom = bool(edges & RIGHT_EDGE), bool(edges & BOTTOM_EDGE)
+        is_leading_edge = not (is_right or is_bottom)
         ans = WindowResizeDragData(None, is_right, None, is_bottom)
         if (wg := all_windows.group_for_window(click_window)) is None or (pair := self.pairs_root.pair_for_window(wg.id)) is None:
             return ans
@@ -738,12 +777,41 @@ class Splits(Layout):
             if isinstance(p.two, Pair):
                 pair_parent_map[p.two] = p
         p = pair
+        def size_increases_forwards(p: Pair) -> bool:
+            in_leading_half = not p.is_group_on_second(wg.id)
+            if p is pair:
+                return is_leading_edge != in_leading_half
+            parent = pair_parent_map.get(p) or Pair()
+            if parent.horizontal != p.horizontal and is_leading_edge:
+                return True
+            return not in_leading_half
+
+        def ancestor_with_neighboring_border_of_same_orientation(p: Pair) -> Pair | None:
+            horizontal = bool(edges & (LEFT_EDGE | RIGHT_EDGE))
+            while (q := pair_parent_map.get(p)):
+                if q.horizontal == horizontal:
+                    if q.between_borders:
+                        return q
+                    break
+                p = q
+            return None
+
+        def pair_or_parent(p: Pair) -> tuple[Pair, bool]:
+            in_leading_half = not p.is_group_on_second(wg.id)
+            if is_leading_edge == in_leading_half and p is pair and (parent := ancestor_with_neighboring_border_of_same_orientation(p)):
+                # special case for leading edge of one or trailing edge of two with parent being same orientation
+                return parent, True
+            return p, size_increases_forwards(p)
+
         while ans.horizontal_id is None or ans.vertical_id is None:
-            if not p.is_redundant:
-                if ans.horizontal_id is None and p.horizontal and p.window_on_second(wg.id) != is_right:
-                    ans = ans._replace(horizontal_id=id(p), width_increases_rightwards=not is_right)
-                if ans.vertical_id is None and not p.horizontal and p.window_on_second(wg.id) != is_bottom:
-                    ans = ans._replace(horizontal_id=id(p))
+            if p.is_redundant:
+                continue
+            if ans.horizontal_id is None and p.horizontal:
+                p, fwd = pair_or_parent(p)
+                ans = ans._replace(horizontal_id=id(p), width_increases_rightwards=fwd)
+            if ans.vertical_id is None and not p.horizontal:
+                p, fwd = pair_or_parent(p)
+                ans = ans._replace(vertical_id=id(p), height_increases_downwards=fwd)
             if (parent := pair_parent_map.get(p)) is None:
                 break
             p = parent

@@ -439,7 +439,15 @@ class Tab:  # {{{
         self.name = title or ''
         self.mark_tab_bar_dirty()
 
+    def update_window_title_bars(self) -> None:
+        active_group = self.windows.active_group
+        for wg in self.windows.iter_all_layoutable_groups(only_visible=True):
+            is_active = wg is active_group
+            for w in wg.windows:
+                w.update_title_bar(is_active=is_active)
+
     def title_changed(self, window: Window) -> None:
+        self.update_window_title_bars()
         if window is self.active_window:
             tm = self.tab_manager_ref()
             if tm is not None:
@@ -468,6 +476,7 @@ class Tab:  # {{{
                 current_layout=ly, tab_bar_rects=tm.tab_bar_rects,
                 draw_window_borders=draw_borders
             )
+            self.update_window_title_bars()
 
     def create_layout_object(self, name: str) -> Layout:
         return create_layout_object_for(name, self.os_window_id, self.id)
@@ -886,11 +895,11 @@ class Tab:  # {{{
             self.current_layout.next_window(self.windows, delta)
             self.relayout_borders()
 
-    @ac('win', 'Focus the next window in the current tab')
+    @ac('win', 'Focus the next window in the current tab. Does not traverse overlay windows.')
     def next_window(self) -> None:
         self._next_window()
 
-    @ac('win', 'Focus the previous window in the current tab')
+    @ac('win', 'Focus the previous window in the current tab. Does not traverse overlay windows.')
     def previous_window(self) -> None:
         self._next_window(-1)
 
@@ -1117,6 +1126,7 @@ class TabManager:  # {{{
         self.wm_class = wm_class
         self.created_in_session_name = startup_session.session_name if startup_session else ''
         self.recent_mouse_events: Deque[TabMouseEvent] = deque()
+        self.recent_title_bar_mouse_events: Deque[TabMouseEvent] = deque()
         self.wm_name = wm_name
         self.args = args
         self.tab_bar_hidden = get_options().tab_bar_style == 'hidden'
@@ -1164,6 +1174,11 @@ class TabManager:  # {{{
             # focus_tab.
             if (at := self.active_tab) and (w := at.active_window):
                 w.last_focused_at = monotonic()
+        active_tab = self.active_tab
+        for tab in added_tabs:
+            w = tab.active_window
+            for q in tab:
+                q.focus_changed(w is q and tab is active_tab)
 
     @property
     def active_tab_idx(self) -> int:
@@ -1479,6 +1494,10 @@ class TabManager:  # {{{
     def remove(self, removed_tab: Tab) -> None:
         active_tab_before_removal = self.active_tab
         tabs = tuple(self.tabs_to_be_shown_in_tab_bar)
+        try:
+            idx_before_removal = tabs.index(active_tab_before_removal)
+        except Exception:
+            idx_before_removal = -1
         remove_tab(self.os_window_id, removed_tab.id)
         self.tabs.remove(removed_tab)
         while True:
@@ -1529,7 +1548,10 @@ class TabManager:  # {{{
                         next_active_tab = tabs[-1]
                         remove_from_end_of_active_history(next_active_tab)
                 if next_active_tab not in self.tabs:
-                    next_active_tab = self.tabs[max(0, min(self.active_tab_idx, len(self.tabs) - 1))]
+                    if idx_before_removal > -1 and (left_tabs := tuple(t for t in tabs if t is not removed_tab)):
+                        next_active_tab = left_tabs[max(0, min(idx_before_removal, len(left_tabs) - 1))]
+                    else:
+                        next_active_tab = self.tabs[max(0, min(self.active_tab_idx, len(self.tabs) - 1))]
                 self._set_active_tab(self.tabs.index(next_active_tab), store_in_history=False)
         else:
             if len(self.tabs):
@@ -1704,6 +1726,20 @@ class TabManager:  # {{{
                 else:
                     drag_started = get_tab_being_dragged()[1]
                     if not drag_started:
+                        if len(self.recent_mouse_events) > 2:
+                            ci = get_click_interval()
+                            prev, prev2 = self.recent_mouse_events[-1], self.recent_mouse_events[-2]
+                            if (
+                                prev.button == button and prev2.button == button and
+                                prev.action == GLFW_PRESS and prev2.action == GLFW_RELEASE and
+                                prev.tab_id == tab.id and prev2.tab_id == tab.id and
+                                now - prev.at <= ci and now - prev2.at <= 2 * ci
+                            ):  # double click on tab
+                                self.set_active_tab(tab)
+                                get_boss().set_tab_title()
+                                self.recent_mouse_events.clear()
+                                set_tab_being_dragged()
+                                return
                         self.set_active_tab(tab)
                         set_tab_being_dragged()
             elif button == GLFW_MOUSE_BUTTON_MIDDLE:
@@ -1714,6 +1750,30 @@ class TabManager:  # {{{
         self.recent_mouse_events.append(TabMouseEvent(button, modifiers, action, now, tab.id if tab else 0))
         if len(self.recent_mouse_events) > 5:
             self.recent_mouse_events.popleft()
+
+    def handle_window_title_bar_mouse(self, window_id: int, button: int, modifiers: int, action: int) -> None:
+        now = monotonic()
+        boss = get_boss()
+        if button == GLFW_MOUSE_BUTTON_LEFT:
+            if action == GLFW_PRESS:
+                if (w := boss.window_id_map.get(window_id)) is not None:
+                    get_boss().set_active_window(w, switch_os_window_if_needed=True)
+            elif action == GLFW_RELEASE and len(self.recent_title_bar_mouse_events) > 2:
+                ci = get_click_interval()
+                prev, prev2 = self.recent_title_bar_mouse_events[-1], self.recent_title_bar_mouse_events[-2]
+                if (
+                    prev.button == button and prev2.button == button and
+                    prev.action == GLFW_PRESS and prev2.action == GLFW_RELEASE and
+                    prev.tab_id == window_id and prev2.tab_id == window_id and
+                    now - prev.at <= ci and now - prev2.at <= 2 * ci
+                ):  # double click on window title bar
+                    if (w := boss.window_id_map.get(window_id)) is not None:
+                        w.set_window_title()
+                    self.recent_title_bar_mouse_events.clear()
+                    return
+        self.recent_title_bar_mouse_events.append(TabMouseEvent(button, modifiers, action, now, window_id))
+        if len(self.recent_title_bar_mouse_events) > 5:
+            self.recent_title_bar_mouse_events.popleft()
 
     def update_progress(self) -> None:
         self.num_of_windows_with_progress = 0

@@ -167,6 +167,12 @@ Detailed list of changes
 - Allow dragging window borders to resize kitty windows in all the different
   layouts, controlled by :opt:`window_drag_tolerance` (:pull:`9447`)
 
+- Allow showing :opt:`configurable window titles <window_title_bar>` for individual kitty
+  windows via a window title bar (:pull:`9450`)
+
+- A command palette to browse and trigger all mapped and unmapped actions
+  (:pull:`9545`)
+
 - choose-files kitten: Fix JXL image preview not working (:iss:`9323`)
 
 - Fix tab bar rendering glitches when using :opt:`tab_bar_filter` in some
@@ -253,6 +259,15 @@ Detailed list of changes
 
 - macOS: Fix a crash when using :opt:`macos_traditional_fullscreen` with split
   view (:pull:`9573`)
+
+- macOS: Fix flickering during OS Window resize (:disc:`9582`)
+
+- Cursor trail: Show a cursor trail when switching tabs (:pull:`9588`)
+
+- Make shift+left click extend the current selection instead of starting a new
+  selection when the mouse is not grabbed by the TUI application (:disc:`9608`)
+
+- Allow double clicking on a tab to rename it (:pull:`9609`)
 
 
 0.45.0 [2025-12-24]

@@ -1394,6 +1394,9 @@ class Screen:
     def insert_characters(self, num: int) -> None:
         pass
 
+    def delete_characters(self, num: int) -> None: ...
+    def erase_characters(self, num: int) -> None: ...
+
     def line_edge_colors(self) -> Tuple[int, int]:
         pass
 
@@ -1405,6 +1408,13 @@ class Screen:
 
 def set_tab_bar_render_data(
     os_window_id: int, screen: Screen, left: int, top: int, right: int, bottom: int
+) -> None:
+    pass
+
+
+def set_window_title_bar_render_data(
+    os_window_id: int, tab_id: int, window_id: int, screen: Screen,
+    left: int, top: int, right: int, bottom: int
 ) -> None:
     pass
 

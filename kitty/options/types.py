@@ -37,6 +37,8 @@ choices_for_terminfo_type = typing.Literal['path', 'direct', 'none']
 choices_for_undercurl_style = typing.Literal['thin-sparse', 'thin-dense', 'thick-sparse', 'thick-dense']
 choices_for_underline_hyperlinks = typing.Literal['hover', 'always', 'never']
 choices_for_window_logo_position = choices_for_placement_strategy
+choices_for_window_title_bar = typing.Literal['top', 'bottom']
+choices_for_window_title_bar_align = choices_for_tab_bar_align
 
 option_names = (
     'action_alias',
@@ -45,6 +47,7 @@ option_names = (
     'active_tab_font_style',
     'active_tab_foreground',
     'active_tab_title_template',
+    'active_window_title_template',
     'allow_cloning',
     'allow_hyperlinks',
     'allow_remote_control',
@@ -497,6 +500,14 @@ option_names = (
     'window_padding_width',
     'window_resize_step_cells',
     'window_resize_step_lines',
+    'window_title_bar',
+    'window_title_bar_active_background',
+    'window_title_bar_active_foreground',
+    'window_title_bar_align',
+    'window_title_bar_inactive_background',
+    'window_title_bar_inactive_foreground',
+    'window_title_bar_min_windows',
+    'window_title_template',
 )
 
 
@@ -506,6 +517,7 @@ class Options:
     active_tab_font_style: tuple[bool, bool] = (True, True)
     active_tab_foreground: Color = Color(0, 0, 0)
     active_tab_title_template: str | None = None
+    active_window_title_template: str = 'none'
     allow_cloning: choices_for_allow_cloning = 'ask'
     allow_hyperlinks: int = 1
     allow_remote_control: choices_for_allow_remote_control = 'no'
@@ -689,6 +701,14 @@ class Options:
     window_padding_width: FloatEdges = FloatEdges(left=0, top=0, right=0, bottom=0)
     window_resize_step_cells: int = 2
     window_resize_step_lines: int = 2
+    window_title_bar: choices_for_window_title_bar = 'top'
+    window_title_bar_active_background: kitty.fast_data_types.Color | None = None
+    window_title_bar_active_foreground: kitty.fast_data_types.Color | None = None
+    window_title_bar_align: choices_for_window_title_bar_align = 'center'
+    window_title_bar_inactive_background: kitty.fast_data_types.Color | None = None
+    window_title_bar_inactive_foreground: kitty.fast_data_types.Color | None = None
+    window_title_bar_min_windows: int = 0
+    window_title_template: str = '{fmt.fg.red}{bell_symbol}{activity_symbol}{fmt.fg.window}{progress_percent}{title}'
     action_alias: dict[str, str] = {}
     env: dict[str, str] = {}
     exe_search_path: dict[str, str] = {}
@@ -959,6 +979,8 @@ defaults.map = [
     KeyDefinition(is_sequence=True, trigger=SingleKey(mods=256, key=112), rest=(SingleKey(key=121),), definition='kitten hints --type hyperlink'),
     # show_kitty_doc
     KeyDefinition(trigger=SingleKey(mods=256, key=57364), definition='show_kitty_doc overview'),
+    # command_palette
+    KeyDefinition(trigger=SingleKey(mods=256, key=57366), definition='command_palette'),
     # toggle_fullscreen
     KeyDefinition(trigger=SingleKey(mods=256, key=57374), definition='toggle_fullscreen'),
     # toggle_maximized
@@ -1068,6 +1090,8 @@ defaults.mouse_map = [
     MouseMapping(mods=6, repeat_count=3, definition='mouse_selection line_from_point'),
     # extend_selection
     MouseMapping(button=1, definition='mouse_selection extend'),
+    # extend_selection_shift
+    MouseMapping(mods=1, definition='mouse_selection extend'),
     # paste_selection_grabbed
     MouseMapping(button=2, mods=1, repeat_count=-1, grabbed=True, definition='paste_selection'),
     # paste_selection_grabbed
@@ -1076,8 +1100,6 @@ defaults.mouse_map = [
     MouseMapping(button=2, mods=1, grabbed=True, definition='discard_event'),
     # start_simple_selection_grabbed
     MouseMapping(mods=1, grabbed=True, definition='mouse_selection normal'),
-    # start_simple_selection_grabbed
-    MouseMapping(mods=1, definition='mouse_selection normal'),
     # start_rectangle_selection_grabbed
     MouseMapping(mods=7, grabbed=True, definition='mouse_selection rectangle'),
     # start_rectangle_selection_grabbed
@@ -1109,6 +1131,10 @@ nullable_colors = frozenset({
     'cursor_trail_color',
     'visual_bell_color',
     'active_border_color',
+    'window_title_bar_active_foreground',
+    'window_title_bar_active_background',
+    'window_title_bar_inactive_foreground',
+    'window_title_bar_inactive_background',
     'tab_bar_background',
     'tab_bar_margin_color',
     'selection_foreground',

@@ -84,6 +84,7 @@ from .fast_data_types import (
     set_window_logo,
     set_window_padding,
     set_window_render_data,
+    set_window_title_bar_render_data,
     update_ime_position_for_window,
     update_pointer_shape,
     update_window_title,
@@ -658,6 +659,7 @@ class Window:
     creation_spec: WindowCreationSpec | None = None
     created_in_session_name: str = ''
     serialized_id: int = 0
+    show_title_bar: bool = False  # must be set before calling set_geometry
 
     @classmethod
     @contextmanager
@@ -732,6 +734,7 @@ class Window:
         self.tabref: Callable[[], TabType | None] = weakref.ref(tab)
         self.destroyed = False
         self.geometry: WindowGeometry = WindowGeometry(0, 0, 0, 0, 0, 0)
+        self._title_bar_screen: Any = None
         self.needs_layout = True
         self.is_visible_in_layout: bool = True
         self.child = child
@@ -948,7 +951,8 @@ class Window:
 
     def pause_resize_notifications_to_child(self, pause: bool = True) -> None:
         if pause:
-            self._pause_resize_notifications_to_child = -1, -1, -1, -1
+            if self._pause_resize_notifications_to_child is None:
+                self._pause_resize_notifications_to_child = -1, -1, -1, -1
         else:
             p, self._pause_resize_notifications_to_child = self._pause_resize_notifications_to_child, None
             if p and p[0] > 0:
@@ -976,13 +980,36 @@ class Window:
     def set_geometry(self, new_geometry: WindowGeometry) -> None:
         if self.destroyed:
             return
-        if self.needs_layout or new_geometry.xnum != self.screen.columns or new_geometry.ynum != self.screen.lines:
-            self.screen.resize(max(0, new_geometry.ynum), max(0, new_geometry.xnum))
+        # Determine if we need a title bar and compute adjusted dimensions
+        opts = get_options()
+        position = opts.window_title_bar
+        show_tb = self.show_title_bar and new_geometry.ynum > 1
+
+        if show_tb:
+            render_ynum = new_geometry.ynum - 1
+            cell_width, cell_height = cell_size_for_window(self.os_window_id)
+            if position == 'top':
+                render_top = new_geometry.top + cell_height
+                render_bottom = new_geometry.bottom
+                tb_top = new_geometry.top
+                tb_bottom = new_geometry.top + cell_height
+            else:
+                render_top = new_geometry.top
+                render_bottom = new_geometry.bottom - cell_height
+                tb_top = new_geometry.bottom - cell_height
+                tb_bottom = new_geometry.bottom
+        else:
+            render_ynum = new_geometry.ynum
+            render_top = new_geometry.top
+            render_bottom = new_geometry.bottom
+
+        if self.needs_layout or new_geometry.xnum != self.screen.columns or render_ynum != self.screen.lines:
+            self.screen.resize(max(0, render_ynum), max(0, new_geometry.xnum))
             self.needs_layout = False
             call_watchers(weakref.ref(self), 'on_resize', {'old_geometry': self.geometry, 'new_geometry': new_geometry})
         current_pty_size = (
             self.screen.lines, self.screen.columns,
-            max(0, new_geometry.right - new_geometry.left), max(0, new_geometry.bottom - new_geometry.top))
+            max(0, new_geometry.right - new_geometry.left), max(0, render_bottom - render_top))
         update_ime_position = False
         if current_pty_size != self.last_reported_pty_size:
             if self._pause_resize_notifications_to_child is None:
@@ -992,13 +1019,74 @@ class Window:
         else:
             mark_os_window_dirty(self.os_window_id)
 
+        # Store original geometry for borders/padding calculations
         self.geometry = g = new_geometry
+        # Set C-side render data with adjusted top/bottom for content area
         set_window_render_data(self.os_window_id, self.tab_id, self.id, self.screen,
-                             g.left, g.top, g.right, g.bottom,
+                             g.left, render_top, g.right, render_bottom,
                              g.spaces.left, g.spaces.top, g.spaces.right, g.spaces.bottom)
         self.update_effective_padding()
+
+        # Handle title bar screen
+        if show_tb:
+            if self._title_bar_screen is None:
+                from .window_title_bar import WindowTitleBarScreen
+                self._title_bar_screen = WindowTitleBarScreen(self.os_window_id, cell_width, cell_height)
+            tb_geom = WindowGeometry(
+                left=g.left, top=tb_top, right=g.right, bottom=tb_bottom,
+                xnum=0, ynum=1,
+            )
+            self._title_bar_screen.layout(tb_geom)
+            set_window_title_bar_render_data(
+                self.os_window_id, self.tab_id, self.id, self._title_bar_screen.screen,
+                tb_geom.left, tb_geom.top, tb_geom.right, tb_geom.bottom,
+            )
+        elif self._title_bar_screen is not None:
+            # Clear title bar render data
+            set_window_title_bar_render_data(
+                self.os_window_id, self.tab_id, self.id, self._title_bar_screen.screen,
+                0, 0, 0, 0,
+            )
+            self._title_bar_screen = None
+
         if update_ime_position:
             update_ime_position_for_window(self.id, True)
+
+    def update_title_bar(self, is_active: bool = False) -> None:
+        if (pts := self._title_bar_screen) is None:
+            return
+        from .progress import ProgressState
+        from .window_title_bar import WindowTitleData
+
+        progress_percent = ''
+        if self.progress.state is not ProgressState.unset:
+            if self.progress.state is ProgressState.indeterminate:
+                progress_percent = '[…] '
+            elif self.progress.percent > 0:
+                progress_percent = f'[{self.progress.percent}%] '
+
+        has_activity = self.has_activity_since_last_focus
+
+        data = WindowTitleData(
+            title=self.title or '',
+            is_active=is_active,
+            window_id=self.id,
+            tab_id=self.tab_id,
+            needs_attention=self.needs_attention,
+            has_activity_since_last_focus=has_activity,
+        )
+        # If template evaluates to empty string, zero title bar geometry to hide it
+        if pts.render(data, progress_percent):
+            g = pts.geometry
+            set_window_title_bar_render_data(
+                self.os_window_id, self.tab_id, self.id, pts.screen,
+                g.left, g.top, g.right, g.bottom,
+            )
+        else:
+            set_window_title_bar_render_data(
+                self.os_window_id, self.tab_id, self.id, pts.screen,
+                0, 0, 0, 0,
+            )
 
     def close(self) -> None:
         get_boss().mark_window_for_close(self)
@@ -1121,7 +1209,7 @@ class Window:
             prefilled = ''
         get_boss().get_line(
             _('Enter the new title for this window below. An empty title will cause the default title to be used.'),
-            self.set_title, window=self, initial_value=prefilled)
+            self.set_title, window=self, initial_value=prefilled, window_title=_('Rename window'))
 
     def set_user_var(self, key: str, val: str | bytes | None) -> None:
         key = sanitize_control_codes(key).replace('\n', ' ')
@@ -2140,14 +2228,14 @@ class Window:
 
     # actions {{{
 
-    @ac('cp', 'Show scrollback in a pager like less')
+    @ac('sc', 'Show scrollback in a pager like less')
     def show_scrollback(self) -> Optional['Window']:
         text = self.as_text(as_ansi=True, add_history=True, add_wrap_markers=True)
         data = self.pipe_data(text, has_wrap_markers=True)
         cursor_on_screen = self.screen.scrolled_by < self.screen.lines - self.screen.cursor.y
         return get_boss().display_scrollback(self, data['text'], data['input_line_number'], report_cursor=cursor_on_screen)
 
-    @ac('cp', '''
+    @ac('sc', '''
         Search scrollback in a pager like less. If there is selected text, it is automatically searched for.
         Note that this assumes that pressing the / key triggers search mode in the page configured as the
         scrollback pager.
@@ -2170,7 +2258,7 @@ class Window:
         text = text.replace('\r\n', '\n').replace('\r', '\n')
         get_boss().display_scrollback(self, text, title=title, report_cursor=False)
 
-    @ac('cp', '''
+    @ac('sc', '''
         Show output from the first shell command on screen in a pager like less
 
         Requires :ref:`shell_integration` to work
@@ -2178,7 +2266,7 @@ class Window:
     def show_first_command_output_on_screen(self) -> None:
         self.show_cmd_output(CommandOutput.first_on_screen, 'First command output on screen')
 
-    @ac('cp', '''
+    @ac('sc', '''
         Show output from the last shell command in a pager like less
 
         Requires :ref:`shell_integration` to work
@@ -2186,7 +2274,7 @@ class Window:
     def show_last_command_output(self) -> None:
         self.show_cmd_output(CommandOutput.last_run, 'Last command output')
 
-    @ac('cp', '''
+    @ac('sc', '''
         Show the first command output below the last scrolled position via scroll_to_prompt
         or the last mouse clicked command output in a pager like less
 
@@ -2195,7 +2283,7 @@ class Window:
     def show_last_visited_command_output(self) -> None:
         self.show_cmd_output(CommandOutput.last_visited, 'Last visited command output')
 
-    @ac('cp', '''
+    @ac('sc', '''
         Show the last non-empty output from a shell command in a pager like less
 
         Requires :ref:`shell_integration` to work

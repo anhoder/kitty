@@ -769,6 +769,12 @@ prepare_to_render_os_window(OSWindow *os_window, monotonic_t now, unsigned int *
                 set_os_window_title_from_window(w, os_window);
                 *active_window_bg = window_bg;
                 if (OPT(cursor_trail)) {
+                    if (os_window->last_active_tab != os_window->active_tab && os_window->last_active_tab < os_window->num_tabs) {
+                        tab->cursor_trail = os_window->tabs[os_window->last_active_tab].cursor_trail;
+                        tab->cursor_trail.needs_render = true;
+                        tab->cursor_trail.updated_at = now;
+                        os_window->cursor_blink_zero_time = now;
+                    }
                     if (update_cursor_trail(&tab->cursor_trail, w, now, os_window)) {
                         needs_render = true;
                         // A max wait of zero causes key input processing to be
@@ -781,7 +787,6 @@ prepare_to_render_os_window(OSWindow *os_window, monotonic_t now, unsigned int *
                         set_maximum_wait(OPT(cursor_trail) - now + WD.screen->cursor->position_changed_by_client_at);
                     }
                 }
-
             } else {
                 if (WD.screen->cursor_render_info.render_even_when_unfocused) {
                     if (collect_cursor_info(&WD.screen->cursor_render_info, w, now, os_window)) needs_render = true;
@@ -806,6 +811,12 @@ prepare_to_render_os_window(OSWindow *os_window, monotonic_t now, unsigned int *
             }
             if (send_cell_data_to_gpu(WD.vao_idx, WD.screen, os_window)) needs_render = true;
             if (WD.screen->start_visual_bell_at != 0) needs_render = true;
+            // Prepare window title bar screen data for GPU
+            WindowRenderData *trd = &w->window_title_render_data;
+            if (trd->screen && trd->geometry.bottom > trd->geometry.top && trd->geometry.right > trd->geometry.left) {
+                trd->screen->cursor_render_info.is_visible = false;
+                if (send_cell_data_to_gpu(trd->vao_idx, trd->screen, os_window)) needs_render = true;
+            }
         }
     }
     return needs_render || was_previously_rendered_with_layers != os_window->needs_layers;
@@ -866,6 +877,9 @@ render_prepared_os_window(OSWindow *os_window, unsigned int active_window_id, co
             if (is_active_window) active_window = w;
             draw_cells(&WD, os_window, is_active_window, false, num_of_visible_windows == 1, w);
             if (WD.screen->start_visual_bell_at != 0) set_maximum_wait(ANIMATION_SAMPLE_WAIT);
+            WindowRenderData *trd = &w->window_title_render_data;
+            if (trd->screen && trd->geometry.right > trd->geometry.left && trd->geometry.bottom > trd->geometry.top)
+                draw_cells(trd, os_window, i == tab->active_window, true, false, NULL);
         }
     }
     setup_os_window_for_rendering(os_window, tab, active_window, false);

@@ -352,15 +352,22 @@ cocoa_out_of_sequence_render(OSWindow *window) {
     // screen change events. Try to recover by recreating the drawable.
     // See https://github.com/kovidgoyal/kitty/issues/9463
     if (!current_framebuffer_is_ok()) {
+        debug_rendering("Cocoa OpenGL framebuffer broken, re-creating\n");
         if (!glfwCocoaRecreateGLDrawable(window->handle) || !current_framebuffer_is_ok()) {
+            debug_rendering("Cocoa OpenGL framebuffer re-creation failed\n");
             request_tick_callback();
             return;
         }
     }
 
     bool rendered = false;
-    if (window->fonts_data->sprite_map) rendered = render_os_window(window, monotonic(), true);
+    if (window->fonts_data->sprite_map) {
+        window->needs_render = true;
+        window->render_state = RENDER_FRAME_READY;
+        rendered = render_os_window(window, monotonic(), true);
+    }
     if (!rendered) {
+        debug_rendering("Cocoa out of sequence render did not happen\n");
         blank_os_window(window);
         swap_window_buffers(window);
     }
