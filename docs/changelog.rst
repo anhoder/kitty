@@ -269,6 +269,12 @@ Detailed list of changes
 
 - Allow double clicking on a tab to rename it (:pull:`9609`)
 
+- :ac:`remote_control_script` resolve relative paths with respect to kitty
+  config directory (:iss:`9625`)
+
+- Splits layout: Add new mappable actions to maximize a window in the splits
+  layout (:iss:`9629`)
+
 
 0.45.0 [2025-12-24]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
