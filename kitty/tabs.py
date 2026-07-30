@@ -17,7 +17,7 @@ from typing import Any, Concatenate, Deque, Literal, NamedTuple, Optional, Param
 from .borders import Border, Borders
 from .child import Child
 from .cli_stub import CLIOptions, SaveAsSessionOptions
-from .constants import appname
+from .constants import appname, is_macos
 from .fast_data_types import (
     GLFW_MOUSE_BUTTON_LEFT,
     GLFW_MOUSE_BUTTON_MIDDLE,
@@ -1286,6 +1286,8 @@ class TabManager:  # {{{
 
     @property
     def tab_bar_should_be_visible(self) -> bool:
+        if is_macos:
+            return False  # Use Cocoa native tab bar instead
         if self.tab_being_dropped is not None or self.window_drag_over_me:
             return True  # keep tab bar visible in the dest
         count = get_options().tab_bar_min_tabs

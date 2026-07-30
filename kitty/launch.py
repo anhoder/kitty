@@ -13,7 +13,7 @@ from .child import Child
 from .cli import parse_args
 from .cli_stub import LaunchCLIOptions
 from .clipboard import set_clipboard_string, set_primary_selection
-from .constants import is_wayland
+from .constants import is_macos, is_wayland
 from .fast_data_types import add_timer, get_boss, get_options, get_os_window_title, patch_color_profiles
 from .options.utils import env as parse_env
 from .tabs import Tab, TabManager
@@ -472,6 +472,8 @@ def parse_os_window_position(position: str | None) -> tuple[int | None, int | No
 def tab_for_window(boss: Boss, opts: LaunchCLIOptions, target_tab: Tab | None, next_to: Window | None, add_to_session: str) -> Tab:
 
     def create_tab(tm: TabManager | None = None) -> Tab:
+        if is_macos:
+            tm = None  # Always create a new OS window on macOS
         if tm is None:
             if opts.type == 'os-panel':
                 oswid = boss.add_os_panel(layer_shell_config_from_panel_opts(opts.os_panel), opts.os_window_class, opts.os_window_name)

@@ -1151,11 +1151,14 @@ class Boss:
 
     @ac('tab', 'Close the current tab')
     def close_tab(self, tab: Tab | None = None) -> None:
-        if tab is None and self.window_for_dispatch:
-            tab = self.window_for_dispatch.tabref()
-        tab = tab or self.active_tab
-        if tab:
-            self.confirm_tab_close(tab)
+        if is_macos:
+            self.close_os_window()
+        else:
+            if tab is None and self.window_for_dispatch:
+                tab = self.window_for_dispatch.tabref()
+            tab = tab or self.active_tab
+            if tab:
+                self.confirm_tab_close(tab)
 
     @property
     def active_tab_manager_with_dispatch(self) -> TabManager | None:
@@ -1168,6 +1171,8 @@ class Boss:
 
     @ac('tab', 'Close all the tabs in the current OS window other than the currently active tab')
     def close_other_tabs_in_os_window(self) -> None:
+        if is_macos:
+            return  # Not applicable with native tabs
         tm = self.active_tab_manager_with_dispatch
         if tm is not None and len(tm.tabs) > 1:
             active_tab = self.active_tab
@@ -3041,21 +3046,30 @@ class Boss:
 
     @ac('tab', 'Create a new tab')
     def new_tab(self, *args: str) -> None:
-        self._create_tab(list(args))
+        if is_macos:
+            self.new_os_window(*args)
+        else:
+            self._create_tab(list(args))
 
     @ac('tab', '''
         Create a new tab with working directory for the window in it set to the same as the active window.
         The tab is added to the currently active :ref:`session <sessions>`, if any.
     ''')
     def new_tab_with_cwd(self, *args: str) -> None:
-        self._create_tab(list(args), cwd_from=CwdRequest(self.window_for_dispatch or self.active_window_for_cwd))
+        if is_macos:
+            self.new_os_window_with_cwd(*args)
+        else:
+            self._create_tab(list(args), cwd_from=CwdRequest(self.window_for_dispatch or self.active_window_for_cwd))
 
     def new_tab_with_wd(self, wd: str | list[str], str_is_multiple_paths: bool = False) -> None:
-        if isinstance(wd, str):
-            wd = wd.split(os.pathsep) if str_is_multiple_paths else [wd]
-        for path in wd:
-            special_window = SpecialWindow(None, cwd=path)
-            self._new_tab(special_window)
+        if is_macos:
+            self.new_os_window_with_wd(wd, str_is_multiple_paths)
+        else:
+            if isinstance(wd, str):
+                wd = wd.split(os.pathsep) if str_is_multiple_paths else [wd]
+            for path in wd:
+                special_window = SpecialWindow(None, cwd=path)
+                self._new_tab(special_window)
 
     def _new_window(self, args: list[str], cwd_from: CwdRequest | None = None) -> Window | None:
         if not self.os_window_map:
@@ -3120,12 +3134,16 @@ class Boss:
 
     @ac('tab', 'Move the active tab forward. You can also use drag and drop to re-arrange tabs.')
     def move_tab_forward(self) -> None:
+        if is_macos:
+            return  # Not supported with native tabs
         tm = self.active_tab_manager
         if tm is not None:
             tm.move_tab(1)
 
     @ac('tab', 'Move the active tab backward. You can also use drag and drop to re-arrange tabs.')
     def move_tab_backward(self) -> None:
+        if is_macos:
+            return  # Not supported with native tabs
         tm = self.active_tab_manager_with_dispatch
         if tm is not None:
             tm.move_tab(-1)
