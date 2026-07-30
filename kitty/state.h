@@ -10,6 +10,7 @@
 #include "screen.h"
 #include "monotonic.h"
 #include "window_logo.h"
+#include "base64.h"
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
 #include <hb.h>
@@ -31,6 +32,14 @@ typedef struct UrlPrefix {
 
 typedef enum AdjustmentUnit { POINT = 0, PERCENT = 1, PIXEL = 2 } AdjustmentUnit;
 typedef enum UnderlineHyperlinks { UNDERLINE_ON_HOVER = 0, UNDERLINE_ALWAYS = 1, UNDERLINE_NEVER = 2 } UnderlineHyperlinks;
+typedef enum ShowHyperlinkTargets {
+    SHOW_HYPERLINK_TARGETS_NEVER = 0,
+    SHOW_HYPERLINK_TARGETS_ALWAYS = 1,
+    SHOW_HYPERLINK_TARGETS_CTRL = 2,
+    SHOW_HYPERLINK_TARGETS_SHIFT = 4,
+    SHOW_HYPERLINK_TARGETS_SUPER = 8,
+    SHOW_HYPERLINK_TARGETS_ALT = 16
+} ShowHyperlinkTargets;
 
 struct MenuItem {
     const char* *location;
@@ -56,7 +65,8 @@ typedef struct Options {
     float cursor_trail_decay_fast;
     float cursor_trail_decay_slow;
     color_type cursor_trail_color;
-    float cursor_trail_start_threshold;
+    int cursor_trail_start_threshold_x;
+    int cursor_trail_start_threshold_y;
     unsigned int url_style;
     unsigned int scrollback_pager_history_size;
     bool scrollback_fill_enlarged_window;
@@ -65,13 +75,15 @@ typedef struct Options {
     color_type url_color, background, foreground, active_border_color, inactive_border_color, bell_border_color, tab_bar_background, tab_bar_margin_color,
         window_title_bar_active_foreground, window_title_bar_active_background, window_title_bar_inactive_foreground, window_title_bar_inactive_background;
     monotonic_t repaint_delay, input_delay;
-    bool focus_follows_mouse;
+    struct {
+        bool on_cross, on_drop;
+    } focus_follows_mouse;
     unsigned int hide_window_decorations;
-    bool macos_hide_from_tasks, macos_quit_when_last_window_closed, macos_window_resizable, macos_traditional_fullscreen;
+    bool macos_hide_from_tasks, macos_quit_when_last_window_closed, macos_window_resizable, macos_traditional_fullscreen, macos_fullscreen_ignore_safe_area_insets, macos_use_physical_screen_frame;
     unsigned int macos_option_as_alt;
     float macos_thicken_font;
     WindowTitleIn macos_show_window_title_in;
-    char *bell_path, *bell_theme;
+    char *bell_path, *bell_theme, *macos_ns_window_layer;
     float background_opacity, dim_opacity;
 
     ScrollbarVisibilityPolicy scrollbar;
@@ -79,11 +91,17 @@ typedef struct Options {
     float scrollbar_width, scrollbar_radius, scrollbar_gap, scrollbar_min_handle_height, scrollbar_hitbox_expansion;
     float scrollbar_hover_width, scrollbar_handle_opacity, scrollbar_track_opacity, scrollbar_track_hover_opacity;
     color_type scrollbar_handle_color, scrollbar_track_color;
+    ProgressBarPosition progress_bar;
 
     float text_contrast, text_gamma_adjustment;
     bool text_old_gamma;
 
-    char *background_image, *default_window_logo;
+    char *default_window_logo;
+    struct {
+        char **paths;
+        size_t count;
+        unsigned generation;
+    } background_images;
     BackgroundImageLayout background_image_layout;
     ImageAnchorPosition window_logo_position;
     bool background_image_linear;
@@ -93,6 +111,7 @@ typedef struct Options {
     bool dynamic_background_opacity;
     float inactive_text_alpha;
     Edge tab_bar_edge;
+    int tab_title_max_length;
     DisableLigature disable_ligatures;
     bool force_ltr;
     bool resize_in_steps;
@@ -122,7 +141,7 @@ typedef struct Options {
     struct {
         float val; AdjustmentUnit unit;
     } underline_position, underline_thickness, strikethrough_position, strikethrough_thickness, cell_width, cell_height, baseline;
-    bool show_hyperlink_targets;
+    ShowHyperlinkTargets show_hyperlink_targets;
     UnderlineHyperlinks underline_hyperlinks;
     int background_blur;
     long macos_titlebar_color;
@@ -143,6 +162,8 @@ typedef struct Options {
     float box_drawing_scale[4];
     double momentum_scroll;
     double window_drag_tolerance;
+    bool generate_256_palette;
+    int drag_threshold;
 } Options;
 
 typedef struct WindowLogoRenderData {
@@ -180,7 +201,7 @@ typedef struct ClickQueue {
 } ClickQueue;
 
 typedef struct MousePosition {
-    unsigned int cell_x, cell_y;
+    unsigned cell_x, cell_y;
     double global_x, global_y;
     bool in_left_half_of_cell;
 } MousePosition;
@@ -203,6 +224,40 @@ typedef struct WindowBarData {
     hyperlink_id_type hyperlink_id_for_title_object;
     bool needs_render;
 } WindowBarData;
+
+typedef struct PendingEntry {
+    char *buf; size_t header_sz;
+    size_t data_sz;
+    bool as_base64;
+    uint32_t client_id;
+} PendingEntry;
+
+typedef struct PendingData {
+    PendingEntry *items; size_t count, capacity;
+} PendingData;
+
+typedef struct DirHandle {
+    char *path;           /* absolute path of the directory (malloc'd) */
+    char **entries;       /* array of entry names (each malloc'd) */
+    size_t num_entries;
+    uint32_t id;          /* handle id, 1-based; 0 = invalid */
+} DirHandle;
+
+typedef enum { DRAG_SOURCE_NONE, DRAG_SOURCE_BEING_BUILT, DRAG_SOURCE_STARTED, DRAG_SOURCE_DROPPED } DragSourceState;
+
+typedef struct DragRemoteItem {
+    int type;  // 0 regular file, 1 symlink, otherwise directory
+    int fd_plus_one;  // for regular files
+    int top_level_parent_dir_fd_plus_one;
+    uint8_t *data;  // for symlink targets and directory listing
+    size_t data_sz, data_capacity;
+    struct DragRemoteItem *children;  // for directories
+    size_t children_sz;
+    char *dir_entry_name;
+    base64_state base64_state;
+    bool started, waiting_for_completion, completed;
+    struct DragRemoteItem *parent;
+} DragRemoteItem;
 
 typedef struct Window {
     id_type id;
@@ -236,6 +291,61 @@ typedef struct Window {
         double drag_start_scrolled_by;
         bool is_hovering;
     } scrollbar;
+    struct {
+        bool wanted, hovered, dropped, is_remote_client;
+        uint32_t client_id;
+        char *registered_mimes;
+        char *uri_list; size_t uri_list_sz;
+        PendingData pending;
+
+        const char **offerred_mimes; size_t num_offerred_mimes, offered_mimes_total_size;
+
+        char *accepted_mimes; size_t accepted_mimes_sz;
+        int accepted_operation, allowed_operations; bool accept_in_progress;
+        char *getting_data_for_mime;
+
+        DirHandle *dir_handles; size_t num_dir_handles, dir_handles_capacity;
+        uint32_t next_dir_handle_id;
+
+        int file_fd_plus_one;           /* open file descriptor + 1 for chunked file send, 0 when none */
+        monotonic_t last_file_send_at;  /* time of last successful file chunk write */
+        id_type file_send_timer;        /* pending file-send retry timer, 0 = none */
+
+        struct {
+            int32_t cell_x, cell_y;  /* x= and y= keys from request */
+            int32_t pixel_y;         /* Y= key from request (dir handle) */
+        } data_requests[128];
+        size_t num_data_requests;
+        int32_t current_request_x, current_request_y, current_request_Y;
+    } drop;
+    struct {
+        bool can_offer, is_remote_client;
+        struct { index_type x, y; bool active; } potential_url_drag;
+        struct { double x, y; monotonic_t at; } initial_left_press;
+        char *mimes_buf; size_t num_mimes, bufsz;
+        size_t total_remote_data_size;
+        struct {
+            const char *mime_type; uint8_t *optional_data; size_t data_size, data_capacity; base64_state base64_state;
+            bool data_decode_initialized, is_uri_list, requested_remote_files, data_requested_from_client;
+            int fd_plus_one;
+            char** uri_list; size_t num_uris;
+            DragRemoteItem *remote_items; size_t num_remote_items;
+            DragRemoteItem *currently_open_subdir;
+        } *items;
+        struct {
+            int width, height, fmt, opacity; uint8_t *data; size_t sz, capacity; bool started; base64_state base64_state;
+        } images[16];
+        size_t pre_sent_total_sz, images_sent_total_sz;
+        unsigned img_idx;
+        int allowed_operations;
+        DragSourceState state;
+        PendingData pending;
+        uint32_t client_id;
+        char *base_dir_for_remote_items;
+        int base_dir_fd_plus_one;
+        struct { size_t uri_item_idx; DragRemoteItem ri; } *file_promises;
+        size_t file_promises_count, file_promises_capacity;
+    } drag_source;
 } Window;
 
 typedef struct BorderRect {
@@ -312,7 +422,13 @@ typedef struct OSWindow {
     int viewport_width, viewport_height, window_width, window_height;
     double viewport_x_ratio, viewport_y_ratio;
     Tab *tabs;
-    BackgroundImage *bgimage;
+    struct {
+        size_t global_bg_images_idx;
+        BackgroundImage *override;
+        BackgroundImageLayout layout;
+        bool no_image;
+        bool has_layout;
+    } background_image;
     struct {
         uint32_t framebuffer_id, attached_texture_generation;
     } indirect_output;
@@ -331,7 +447,6 @@ typedef struct OSWindow {
     double mouse_x, mouse_y;
     bool mouse_button_pressed[32];
     bool has_too_few_tabs;
-    bool suppress_left_mouse_release;
     PyObject *window_title;
     bool disallow_title_changes, title_is_overriden;
     bool viewport_size_dirty, viewport_updated_at_least_once;
@@ -363,7 +478,11 @@ typedef struct GlobalState {
 
     id_type os_window_id_counter, tab_id_counter, window_id_counter;
     PyObject *boss;
-    BackgroundImage *bgimage;
+    struct {
+        BackgroundImage **images;
+        size_t count, entries_attempted;
+        unsigned generation;
+    } background_images;
     OSWindow *os_windows;
     size_t num_os_windows, capacity;
     OSWindow *callback_os_window;
@@ -375,6 +494,7 @@ typedef struct GlobalState {
     struct { double x, y; } default_dpi;
     id_type active_drag_in_window, tracked_drag_in_window, mouse_hover_in_window, active_drag_resize;
     int active_drag_button, tracked_drag_button;
+    int mods_at_last_key_or_button_event;
     CloseRequest quit_request;
     bool redirect_mouse_handling;
     WindowLogoTable *all_window_logos;
@@ -383,14 +503,17 @@ typedef struct GlobalState {
     PyObject *options_object;
 
     struct {
-        PyObject *data;
-        id_type os_window_id;
+        PyObject *data, *self_drag_data;
+        id_type os_window_id, client_window_data_request;
         double x, y;
         size_t num_left;
+        bool drop_has_happened;
+        int allowed_ops;
     } drop_dest;
 
     struct {
         bool is_active, was_dropped, was_canceled, needs_toplevel_on_wayland;
+        id_type from_window, from_os_window;
         char *accepted_mime_type;
         int action, thumbnail_idx;
         PyObject *drag_data, *thumbnails;
@@ -405,6 +528,10 @@ typedef struct GlobalState {
         id_type id; bool drag_started;
         double x, y;
     } tab_being_dragged;
+    struct {
+        id_type id; bool drag_started;
+        double x, y;
+    } window_being_dragged;
     struct {
         uint32_t texture_id, framebuffer_id, texture_generation;
         int width, height;
@@ -439,6 +566,8 @@ void update_os_window_references(void);
 void mark_os_window_for_close(OSWindow* w, CloseRequest cr);
 void update_os_window_viewport(OSWindow *window, bool notify_boss);
 bool should_os_window_be_rendered(OSWindow* w);
+bool is_os_window_potentially_visible(OSWindow* w);
+void update_os_window_visibility_reports(OSWindow *w);
 void wakeup_main_loop(void);
 bool make_window_context_current(id_type);
 void hide_mouse(OSWindow *w);
@@ -496,7 +625,7 @@ const char* format_mods(unsigned mods);
 void dispatch_pending_clicks(id_type, void*);
 void send_pending_click_to_window(Window*, int);
 void get_platform_dependent_config_values(void *glfw_window);
-bool draw_window_title(double, double, const char *text, color_type fg, color_type bg, uint8_t *output_buf, size_t width, size_t height);
+bool draw_window_title(double, double, const char *text, color_type fg, color_type bg, uint8_t *output_buf, size_t width, size_t height, size_t *actual_width);
 uint8_t* draw_single_ascii_char(const char ch, size_t *result_width, size_t *result_height);
 bool is_os_window_fullscreen(OSWindow *);
 void update_ime_focus(OSWindow* osw, bool focused);
@@ -514,3 +643,11 @@ void setup_os_window_for_rendering(OSWindow*, Tab*, Window*, bool);
 void swap_window_buffers(OSWindow *w);
 void take_screenshot_of_rectangular_region(OSWindow *os_window, Region region, unsigned char *dst_buf, unsigned *thumb_w, unsigned *thumb_h);
 bool current_framebuffer_is_ok(void);
+void request_drop_status_update(OSWindow *osw);
+void register_mimes_for_drop(OSWindow *w, const char **mimes, size_t sz);
+int request_drop_data(OSWindow *w, id_type wid, const char* mime);
+void cancel_current_drag_source(void);
+bool change_drag_image(int idx);
+int start_window_drag(Window *w, bool in_test_mode);
+int notify_drag_data_ready(id_type os_window_id, const char *mime_type, const char *data, size_t data_sz, int type);
+BackgroundImage* background_image_for_os_window(OSWindow *w);

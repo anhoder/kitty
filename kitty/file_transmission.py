@@ -2,6 +2,7 @@
 # License: GPLv3 Copyright: 2021, Kovid Goyal <kovid at kovidgoyal.net>
 
 import errno
+import hmac
 import inspect
 import io
 import json
@@ -546,7 +547,7 @@ class DestFile:
             if self.actual_file is None:
                 self.make_parent_dirs()
                 self.unlink_existing_if_needed()
-                flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_BINARY', 0)
+                flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0)
                 self.actual_file = open(os.open(self.name, flags, self.permissions), mode='r+b', closefd=True)
             af = self.actual_file
             if decompressed or is_last:
@@ -572,12 +573,12 @@ def check_bypass(password: str, request_id: str, bypass_data: str) -> bool:
             delta = time_ns() - int(timestamp)
             if abs(delta) > 5 * 60 * 1e9:
                 return False
-            return payload == f'{request_id};{password}'
+            return hmac.compare_digest(payload, f'{request_id};{password}')
         except Exception as err:
             log_error(f'Invalid file transmission bypass data received: {err}')
             return False
     elif protocol == 'sha256':
-        return (encode_bypass(request_id, password) == bypass_data) if password else False
+        return hmac.compare_digest(encode_bypass(request_id, password), bypass_data) if password else False
     else:
         log_error(f'Invalid file transmission bypass data received with protocol: {protocol}')
     return False
@@ -1086,7 +1087,7 @@ class FileTransmission:
         q = self.active_receives.get(receive_id)
         if q is None:
             return
-        ar = q  # for mypy
+        ar = q  # for type check
         while ar.signature_pending_chunks:
             if self.write_ftc_to_child(ar.signature_pending_chunks[0], use_pending=False):
                 ar.signature_pending_chunks.popleft()
@@ -1171,7 +1172,8 @@ class FileTransmission:
         window = boss.window_id_map.get(self.window_id)
         if window is not None:
             boss.confirm(_(
-                'The remote machine wants to read some files from this computer. Do you want to allow the transfer?'),
+                'The remote machine wants to read some files from this computer.'
+                ' Only allow transfers to computers you trust. Do you want to allow the transfer?'),
                 self.handle_receive_confirmation, asd_id, window=window,
             )
 
@@ -1201,7 +1203,8 @@ class FileTransmission:
         window = boss.window_id_map.get(self.window_id)
         if window is not None:
             boss.confirm(_(
-                'The remote machine wants to send some files to this computer. Do you want to allow the transfer?'),
+                'The remote machine wants to send some files to this computer.'
+                ' Only allow transfers from computers you trust. Do you want to allow the transfer?'),
                 self.handle_send_confirmation, ar_id, window=window,
             )
 
@@ -1241,11 +1244,11 @@ class TestFileTransmission(FileTransmission):
         self.test_responses.append(payload.asdict())
         return True
 
-    def start_receive(self, aid: str) -> None:
-        self.handle_send_confirmation(self.allow, aid)
+    def start_receive(self, ar_id: str) -> None:
+        self.handle_send_confirmation(self.allow, ar_id)
 
-    def start_send(self, aid: str) -> None:
-        self.handle_receive_confirmation(self.allow, aid)
+    def start_send(self, asd_id: str) -> None:
+        self.handle_receive_confirmation(self.allow, asd_id)
 
     def callback_after(self, callback: Callable[[int | None], None], timeout: float = 0) -> int | None:
         callback(None)

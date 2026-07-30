@@ -12,7 +12,7 @@ from kitty.fast_data_types import CTFace, coretext_all_fonts
 from kitty.typing_compat import CoreTextFont
 from kitty.utils import log_error
 
-from . import Descriptor, DescriptorVar, ListedFont, Score, Scorer, VariableData, family_name_to_key
+from . import Descriptor, ListedFont, Score, Scorer, VariableData, family_name_to_key
 
 attr_map = {(False, False): 'font_family',
             (True, False): 'bold_font',
@@ -47,6 +47,11 @@ def create_font_map(all_fonts: Iterable[CoreTextFont]) -> FontMap:
             uniq_per_path.append(sorted(g, key=lambda x: len(x['variation'] or ()))[0])
         ans['variable_map'][k] = uniq_per_path
     return ans
+
+
+def clear_caches() -> None:
+    all_fonts_map.cache_clear()
+    weight_range_for_family.cache_clear()
 
 
 @lru_cache(maxsize=2)
@@ -108,7 +113,7 @@ def weight_range_for_family(family: str) -> WeightRange:
     return WeightRange(mini, maxi, medium, bold)
 
 
-class CTScorer(Scorer):
+class CTScorer(Scorer[CoreTextFont]):
     weight_range: WeightRange | None = None
 
     def score(self, candidate: Descriptor) -> Score:
@@ -135,7 +140,7 @@ class CTScorer(Scorer):
         is_regular_width = not candidate['expanded'] and not candidate['condensed']
         return Score(variable_score, bold_score + italic_score, monospace_match, 0 if is_regular_width else 1)
 
-    def sorted_candidates(self, candidates: Sequence[DescriptorVar], dump: bool = False) -> list[DescriptorVar]:
+    def sorted_candidates(self, candidates: Sequence[CoreTextFont], dump: bool = False) -> list[CoreTextFont]:
         self.weight_range = None
         families = {x['family'] for x in candidates}
         if len(families) == 1:

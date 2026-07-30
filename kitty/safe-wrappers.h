@@ -10,6 +10,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <stdlib.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 static inline int
@@ -70,6 +71,16 @@ safe_open(const char *path, int flags, mode_t mode) {
     }
 }
 
+static inline int
+safe_openat(int dirfd, const char *path, int flags, mode_t mode) {
+    while (true) {
+        int fd = openat(dirfd, path, flags, mode);
+        if (fd == -1 && errno == EINTR) continue;
+        return fd;
+    }
+}
+
+
 static inline FILE*
 safe_fopen(const char *path, const char *mode) {
     while (true) {
@@ -96,6 +107,20 @@ safe_close(int fd, const char* file UNUSED, const int line UNUSED) {
     printf("Closing fd: %d from file: %s line: %d\n", fd, file, line);
 #endif
     while(close(fd) != 0 && errno == EINTR);
+}
+
+static inline int
+safe_ftruncate(int fd, off_t length) {
+    int ret;
+    while ((ret = ftruncate(fd, length)) != 0 && errno == EINTR);
+    return ret;
+}
+
+static inline ssize_t
+safe_write(int fd, const void *buf, size_t nbyte) {
+    ssize_t ret;
+    while ((ret = write(fd, buf, nbyte)) != 0 && errno == EINTR);
+    return ret;
 }
 
 static inline int

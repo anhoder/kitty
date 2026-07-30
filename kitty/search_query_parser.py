@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterator, Sequence
 from enum import Enum
 from functools import lru_cache
 from gettext import gettext as _
-from typing import NamedTuple, TypeVar
+from typing import NamedTuple, TypeVar, cast
 
 from .types import run_once
 
@@ -93,7 +93,8 @@ class NotNode(SearchTreeNode):
         self.rhs = rhs
 
     def __call__(self, candidates: set[T], get_matches: GetMatches[T]) -> set[T]:
-        return candidates.difference(self.rhs(candidates, get_matches))
+        rhs_result: set[T] = self.rhs(candidates, get_matches)
+        return candidates.difference(rhs_result)
 
     def iter_token_nodes(self) -> Iterator['TokenNode']:
         yield from self.rhs.iter_token_nodes()
@@ -120,13 +121,13 @@ class Token(NamedTuple):
 
 @run_once
 def lex_scanner() -> Callable[[str], tuple[list[Token], str]]:
-    return getattr(re, 'Scanner')([  # type: ignore
+    return cast(Callable[[str], tuple[list[Token], str]], getattr(re, 'Scanner')([
             (r'[()]', lambda x, t: Token(TokenType.OPCODE, t)),
             (r'@.+?:[^")\s]+', lambda x, t: Token(TokenType.WORD, str(t))),
             (r'[^"()\s]+', lambda x, t: Token(TokenType.WORD, str(t))),
             (r'".*?((?<!\\)")', lambda x, t: Token(TokenType.QUOTED_WORD, t[1:-1])),
             (r'\s+',              None)
-    ], flags=re.DOTALL).scan
+    ], flags=re.DOTALL).scan)
 
 
 @run_once

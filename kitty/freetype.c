@@ -66,6 +66,8 @@ typedef struct {
     PyObject *name_lookup_table;
     FontFeatures font_features;
     unsigned short dark_palette_index, light_palette_index, palettes_scanned;
+    FT_Matrix matrix;
+    bool has_matrix;
 } Face;
 PyTypeObject Face_Type;
 
@@ -263,7 +265,6 @@ init_ft_face(Face *self, PyObject *path, int hinting, int hintstyle, long index,
     self->harfbuzz_font = hb_ft_font_create(self->face, NULL);
     if (self->harfbuzz_font == NULL) { PyErr_NoMemory(); return false; }
     hb_ft_font_set_load_flags(self->harfbuzz_font, get_load_flags(self->hinting, self->hintstyle, FT_LOAD_DEFAULT));
-    FT_Reference_Face(self->face);
 
     TT_OS2 *os2 = (TT_OS2*)FT_Get_Sfnt_Table(self->face, FT_SFNT_OS2);
     if (os2 != NULL) {
@@ -284,6 +285,29 @@ set_load_error(const char *path, int error) {
     return NULL;
 }
 
+static bool
+read_matrix_from_descriptor(PyObject *descriptor, FT_Matrix *out, bool *out_has) {
+    *out_has = false;
+    PyObject *mt = PyDict_GetItemString(descriptor, "matrix");
+    if (!mt || !PyTuple_Check(mt) || PyTuple_GET_SIZE(mt) != 4) return true;
+    double v[4];
+    for (int i = 0; i < 4; i++) {
+        v[i] = PyFloat_AsDouble(PyTuple_GET_ITEM(mt, i));
+        if (PyErr_Occurred()) return false;
+        if (!isfinite(v[i])) {
+            PyErr_SetString(PyExc_ValueError, "matrix contains non-finite value");
+            return false;
+        }
+    }
+    if (v[0] == 1.0 && v[1] == 0.0 && v[2] == 0.0 && v[3] == 1.0) return true;
+    out->xx = (FT_Fixed)(v[0] * 0x10000);
+    out->xy = (FT_Fixed)(v[1] * 0x10000);
+    out->yx = (FT_Fixed)(v[2] * 0x10000);
+    out->yy = (FT_Fixed)(v[3] * 0x10000);
+    *out_has = true;
+    return true;
+}
+
 bool
 face_equals_descriptor(PyObject *face_, PyObject *descriptor) {
     Face *face = (Face*)face_;
@@ -292,6 +316,13 @@ face_equals_descriptor(PyObject *face_, PyObject *descriptor) {
     if (PyObject_RichCompareBool(face->path, t, Py_EQ) != 1) return false;
     t = PyDict_GetItemString(descriptor, "index");
     if (t && PyLong_AsLong(t) != face->face->face_index) return false;
+    FT_Matrix dmat = {0};
+    bool d_has = false;
+    if (!read_matrix_from_descriptor(descriptor, &dmat, &d_has)) { PyErr_Clear(); return false; }
+    if (d_has != face->has_matrix) return false;
+    if (d_has && (
+        face->matrix.xx != dmat.xx || face->matrix.xy != dmat.xy ||
+        face->matrix.yx != dmat.yx || face->matrix.yy != dmat.yy)) return false;
     return true;
 }
 
@@ -339,6 +370,29 @@ face_from_descriptor(PyObject *descriptor, FONTS_DATA_HANDLE fg) {
             if ((error = FT_Set_Var_Design_Coordinates(self->face, sz, coords))) return set_load_error(path, error);
         }
         if (!create_features_for_face(postscript_name_for_face((PyObject*)self), PyDict_GetItemString(descriptor, "features"), &self->font_features)) return NULL;
+        if (!read_matrix_from_descriptor(descriptor, &self->matrix, &self->has_matrix)) return NULL;
+        if (self->has_matrix) {
+            FT_Set_Transform(self->face, &self->matrix, NULL);
+            if (self->harfbuzz_font) {
+#if HB_VERSION_ATLEAST(4,0,0)
+                // Inform HarfBuzz so shaping (mark positioning, cluster
+                // boundaries) matches the slanted rendering. The HB API
+                // models a horizontal shear ratio, which equals xy/xx for
+                // matrix [[xx,xy],[yx,yy]]. Both operands are FT_Fixed at
+                // the same 16.16 scale so the factor cancels in the
+                // division. Guard against xx==0 (degenerate transform).
+                // Pure scales (s,0,0,s) yield slant=0, which is correct.
+                // Rotations and shear+rotation composites produce a slant
+                // value HB can't represent faithfully, but stock fontconfig
+                // only ever emits horizontal shear here.
+                if (self->matrix.xx != 0) {
+                    float slant = (float)self->matrix.xy / (float)self->matrix.xx;
+                    hb_font_set_synthetic_slant(self->harfbuzz_font, slant);
+                }
+#endif
+                hb_ft_font_changed(self->harfbuzz_font);
+            }
+        }
     }
     Py_XINCREF(retval);
     return retval;
@@ -817,10 +871,40 @@ pt_to_px(double pt, double dpi) {
 }
 
 static void
+apply_cairo_font_size(Face *self, unsigned sz_px) {
+    // The cairo path uses self->face_for_cairo (a second FT_Face opened in
+    // ensure_cairo_resources), which never receives the FT_Set_Transform set
+    // on self->face in face_from_descriptor. cairo owns FT_Set_Transform on
+    // its face and derives it from the font matrix on every render
+    // (_cairo_ft_unscaled_font_set_scale in cairo-ft-font.c), so the only
+    // channel that reaches glyph rasterization is the cairo font matrix.
+    //
+    // FC_MATRIX is overloaded. Besides synthetic slant, fontconfig also encodes
+    // the pixel size fixup of fixed-size faces here, as a pure diagonal scale
+    // (Noto Color Emoji is matched with [0.1147 0; 0 0.1147]). The color path
+    // already sizes glyphs with cairo_set_font_size() + fit_cairo_glyph(), and
+    // fit_cairo_glyph() only shrinks, so feeding the fixup scale in here shrinks
+    // color emoji with no way to recover (#10144). Honor only the shear that
+    // carries synthetic slant and leave the size to cairo_set_font_size().
+    if (!self->has_matrix || self->matrix.xx == 0 || self->matrix.yy == 0) {
+        cairo_set_font_size(self->cairo.cr, sz_px); return;
+    }
+    double shear_xy = (double)self->matrix.xy / (double)self->matrix.xx;
+    double shear_yx = (double)self->matrix.yx / (double)self->matrix.yy;
+    if (shear_xy == 0 && shear_yx == 0) { cairo_set_font_size(self->cairo.cr, sz_px); return; }
+    // FT_Matrix is xx,xy,yx,yy (row-major); cairo_matrix_init takes xx,yx,xy,yy.
+    // The diagonal is unit scale (size is handled above); apply only the shear.
+    double s = (double)sz_px;
+    cairo_matrix_t m;
+    cairo_matrix_init(&m, s, shear_yx * s, shear_xy * s, s, 0, 0);
+    cairo_set_font_matrix(self->cairo.cr, &m);
+}
+
+static void
 set_cairo_font_size(Face *self, double size_in_pts) {
     unsigned sz_px = pt_to_px(size_in_pts, (self->xdpi + self->ydpi) / 2.0);
     if (self->cairo.size_in_px == sz_px) return;
-    cairo_set_font_size(self->cairo.cr, sz_px);
+    apply_cairo_font_size(self, sz_px);
     self->cairo.size_in_px = sz_px;
 }
 
@@ -830,7 +914,7 @@ fit_cairo_glyph(Face *self, cairo_glyph_t *g, cairo_text_extents_t *bb, cairo_sc
         double ratio = MIN(width / bb->width, height / bb->height);
         unsigned sz = (unsigned)(ratio * self->cairo.size_in_px);
         if (sz >= self->cairo.size_in_px) sz = self->cairo.size_in_px - 2;
-        cairo_set_font_size(self->cairo.cr, sz);
+        apply_cairo_font_size(self, sz);
         sf = cairo_get_scaled_font(self->cairo.cr);
         cairo_scaled_font_glyph_extents(sf, g, 1, bb);
         self->cairo.size_in_px = sz;

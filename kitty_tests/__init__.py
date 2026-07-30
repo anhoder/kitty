@@ -60,7 +60,7 @@ class Callbacks:
     def notify_child_of_resize(self):
         self.num_of_resize_events += 1
 
-    def on_reset(self) -> None:
+    def on_reset(self, is_hard_reset: bool = True) -> None:
         if self.pty is not None:
             self.pty.reset_termios_state()
 
@@ -145,12 +145,20 @@ class Callbacks:
         self.bell_count += 1
 
     def on_da1(self) -> None:
-        payload = da1(get_options())
+        opts = None
+        with suppress(RuntimeError):
+            opts = get_options()
+        if opts is None:
+            opts = defaults
+        payload = da1(opts)
         self.da1.append(payload)
         if self.pty and self.pty.needs_da1:
             self.pty.send_da1_response(payload)
 
     def on_activity_since_last_focus(self) -> None:
+        pass
+
+    def finish_scroll_animation(self) -> None:
         pass
 
     def on_mouse_event(self, event):
@@ -328,9 +336,11 @@ class PTY:
 
     def __init__(
         self, argv=None, rows=25, columns=80, scrollback=100, cell_width=10, cell_height=20,
-        cwd=None, env=None, stdin_fd=None, stdout_fd=None, needs_da1=False,
+        cwd=None, env=None, stdin_fd=None, stdout_fd=None, needs_da1=True, window_id=0,
+        log_data_flow=False,
     ):
         self.is_child = False
+        self.log_data_flow = log_data_flow
         if isinstance(argv, str):
             argv = shlex.split(argv)
         self.write_buf = b''
@@ -369,7 +379,7 @@ class PTY:
         self.set_window_size(rows=rows, columns=columns)
         self.needs_da1 = needs_da1
         self.callbacks = Callbacks(self)
-        self.screen = Screen(self.callbacks, rows, columns, scrollback, cell_width, cell_height, 0, self.callbacks)
+        self.screen = Screen(self.callbacks, rows, columns, scrollback, cell_width, cell_height, window_id, self.callbacks)
         self.received_bytes = b''
 
     def reset_termios_state(self):
@@ -385,6 +395,12 @@ class PTY:
         s = termios.tcgetattr(self.master_fd)
         return True if s[3] & termios.ECHO else False
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.__del__()
+
     def __del__(self):
         if not self.is_child:
             if hasattr(self, 'master_fd'):
@@ -394,12 +410,23 @@ class PTY:
                 os.close(self.slave_fd)
                 del self.slave_fd
             if self.child_pid > 0 and not self.child_waited_for:
-                os.waitpid(self.child_pid, 0)
-                self.child_waited_for = True
+                st = time.monotonic()
+                while time.monotonic() - st < 2:
+                    pid, ec = os.waitpid(self.child_pid, os.WNOHANG)
+                    if pid == self.child_pid:
+                        self.child_waited_for = True
+                        break
+                    time.sleep(0.1)
+                if not self.child_waited_for:
+                    os.kill(self.child_pid, signal.SIGKILL)
+                    os.waitpid(self.child_pid, 0)
+                    self.child_waited_for = True
 
     def write_to_child(self, data, flush=False):
         if isinstance(data, str):
             data = data.encode('utf-8')
+        if self.log_data_flow:
+            print('t -> c:', bytes(data))
         self.write_buf += data
         if flush:
             self.process_input_from_child(0)
@@ -423,6 +450,8 @@ class PTY:
             data = os.read(self.master_fd, io.DEFAULT_BUFFER_SIZE)
             bytes_read += len(data)
             self.received_bytes += data
+            if self.log_data_flow:
+                print('c -> t:', data)
             parse_bytes(self.screen, data)
         return bytes_read
 
@@ -439,7 +468,9 @@ class PTY:
             msg = 'The condition was not met'
             if timeout_msg is not None:
                 msg = timeout_msg()
-            raise TimeoutError(f'Timed out after {timeout} seconds: {msg}. {self.screen_contents_for_error()}')
+            if not msg.endswith('\n'):
+                msg += '. '
+            raise TimeoutError(f'Timed out after {timeout} seconds: {msg}{self.screen_contents_for_error()}')
 
     def wait_till_child_exits(self, timeout=30 if BaseTest.is_ci else 10, require_exit_code=None):
         end_time = time.monotonic() + timeout

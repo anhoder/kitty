@@ -332,9 +332,12 @@ draw_rounded_rect(
 
 // Cell {{{
 
+enum { CELL_RENDER_DATA_BINDING_POINT = 0, COLOR_TABLE_BINDING_POINT = 1 };
+
 typedef struct {
     UniformBlock render_data;
-    ArrayInformation color_table;
+    UniformBlock color_table;
+    GLint color_table_stride;
     CellUniforms uniforms;
 } CellProgramLayout;
 static CellProgramLayout cell_program_layouts[NUM_PROGRAMS];
@@ -374,9 +377,11 @@ init_cell_program(void) {
     for (int i = CELL_PROGRAM; i < CELL_PROGRAM_SENTINEL; i++) {
         cell_program_layouts[i].render_data.index = block_index(i, "CellRenderData");
         cell_program_layouts[i].render_data.size = block_size(i, cell_program_layouts[i].render_data.index);
-        cell_program_layouts[i].color_table.size = get_uniform_information(i, "color_table[0]", GL_UNIFORM_SIZE);
-        cell_program_layouts[i].color_table.offset = get_uniform_information(i, "color_table[0]", GL_UNIFORM_OFFSET);
-        cell_program_layouts[i].color_table.stride = get_uniform_information(i, "color_table[0]", GL_UNIFORM_ARRAY_STRIDE);
+        cell_program_layouts[i].color_table.index = block_index(i, "ColorTable");
+        cell_program_layouts[i].color_table.size = block_size(i, cell_program_layouts[i].color_table.index);
+        cell_program_layouts[i].color_table_stride = get_uniform_information(i, "color_table[0]", GL_UNIFORM_ARRAY_STRIDE);
+        glUniformBlockBinding(program_id(i), cell_program_layouts[i].render_data.index, CELL_RENDER_DATA_BINDING_POINT);
+        glUniformBlockBinding(program_id(i), cell_program_layouts[i].color_table.index, COLOR_TABLE_BINDING_POINT);
         get_uniform_locations_cell(i, &cell_program_layouts[i].uniforms);
         bind_program(i);
         glUniform1fv(cell_program_layouts[i].uniforms.gamma_lut, arraysz(srgb_lut), srgb_lut);
@@ -399,7 +404,7 @@ init_cell_program(void) {
     get_uniform_locations_rounded_rect(ROUNDED_RECT_PROGRAM, &rounded_rect_program_layout.uniforms);
 }
 
-#define CELL_BUFFERS enum { cell_data_buffer, selection_buffer, uniform_buffer };
+#define CELL_BUFFERS enum { cell_data_buffer, selection_buffer, uniform_buffer, color_table_buffer };
 
 ssize_t
 create_cell_vao(void) {
@@ -418,6 +423,9 @@ create_cell_vao(void) {
 
     size_t bufnum = add_buffer_to_vao(vao_idx, GL_UNIFORM_BUFFER);
     alloc_vao_buffer(vao_idx, cell_program_layouts[CELL_PROGRAM].render_data.size, bufnum, GL_STREAM_DRAW);
+
+    size_t ctbufnum = add_buffer_to_vao(vao_idx, GL_UNIFORM_BUFFER);
+    alloc_vao_buffer(vao_idx, cell_program_layouts[CELL_PROGRAM].color_table.size, ctbufnum, GL_STATIC_DRAW);
 
     return vao_idx;
 #undef A
@@ -450,11 +458,11 @@ pick_cursor_color(color_type cell_fg, color_type cell_bg, color_type *cursor_fg,
 
 static bool
 has_bgimage(OSWindow *w) {
-    return w->bgimage && w->bgimage->texture_id > 0;
+    return background_image_for_os_window(w) != NULL;
 }
 
 static color_type
-cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, const CursorRenderInfo *cursor, OSWindow *os_window, float inactive_text_alpha, float bg_alpha) {
+cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, int color_table_buf, const CursorRenderInfo *cursor, OSWindow *os_window, float inactive_text_alpha, float bg_alpha) {
     struct GPUCellRenderData {
         GLfloat use_cell_bg_for_selection_fg, use_cell_fg_for_selection_color, use_cell_for_selection_bg;
 
@@ -469,12 +477,12 @@ cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, c
     };
     // Send the uniform data
     ColorProfile *cp = screen->paused_rendering.expires_at ? &screen->paused_rendering.color_profile : screen->color_profile;
-    const bool color_table_needs_upload = cp->dirty || screen->reload_all_gpu_data;
-    const unsigned sz = color_table_needs_upload ? cell_program_layouts[CELL_PROGRAM].render_data.size : cell_program_layouts[CELL_PROGRAM].color_table.offset;
-    struct GPUCellRenderData *rd = (struct GPUCellRenderData*)map_vao_buffer_for_write_only(vao_idx, uniform_buffer, 0, sz);
-    if (color_table_needs_upload) {
-        copy_color_table_to_buffer(cp, (GLuint*)rd, cell_program_layouts[CELL_PROGRAM].color_table.offset / sizeof(GLuint), cell_program_layouts[CELL_PROGRAM].color_table.stride / sizeof(GLuint));
+    if (cp->dirty || screen->reload_all_gpu_data) {
+        GLuint *ct_buf = (GLuint*)map_vao_buffer_for_write_only(vao_idx, color_table_buf, 0, cell_program_layouts[CELL_PROGRAM].color_table.size);
+        copy_color_table_to_buffer(cp, ct_buf, 0, cell_program_layouts[CELL_PROGRAM].color_table_stride / sizeof(GLuint));
+        unmap_vao_buffer(vao_idx, color_table_buf);
     }
+    struct GPUCellRenderData *rd = (struct GPUCellRenderData*)map_vao_buffer_for_write_only(vao_idx, uniform_buffer, 0, cell_program_layouts[CELL_PROGRAM].render_data.size);
 #define COLOR(name) colorprofile_to_color(cp, cp->overridden.name, cp->configured.name).rgb
     rd->default_fg = COLOR(default_fg);
     rd->highlight_fg = COLOR(highlight_fg); rd->highlight_bg = COLOR(highlight_bg);
@@ -733,12 +741,6 @@ set_cell_uniforms(bool force) {
 // UI Layer {{{
 static Animation *default_visual_bell_animation = NULL;
 
-static bool
-has_visual_bell(Screen *screen) {
-    return screen->start_visual_bell_at > 0;
-
-}
-
 static float
 get_visual_bell_intensity(Screen *screen) {
     if (screen->start_visual_bell_at > 0) {
@@ -775,16 +777,47 @@ draw_visual_bell_flash(GLfloat intensity, const color_type flash) {
     draw_quad(true, 0);
 }
 
+static color_type
+get_flash_color(const Screen *screen) {
+#define COLOR(name, fallback) colorprofile_to_color_with_fallback(screen->color_profile, screen->color_profile->overridden.name, screen->color_profile->configured.name, screen->color_profile->overridden.fallback, screen->color_profile->configured.fallback)
+      return !IS_SPECIAL_COLOR(highlight_bg) ? COLOR(visual_bell_color, highlight_bg) : COLOR(visual_bell_color, default_fg);
+#undef COLOR
+}
+
 static void
 draw_visual_bell(const UIRenderData *ui) {
-    if (!has_visual_bell(ui->screen)) return;
+    if (!ui->screen->start_visual_bell_at) return;
     Screen *screen = ui->screen;
     float intensity = get_visual_bell_intensity(screen);
     if (intensity <= 0) return;
-#define COLOR(name, fallback) colorprofile_to_color_with_fallback(screen->color_profile, screen->color_profile->overridden.name, screen->color_profile->configured.name, screen->color_profile->overridden.fallback, screen->color_profile->configured.fallback)
-    color_type flash = !IS_SPECIAL_COLOR(highlight_bg) ? COLOR(visual_bell_color, highlight_bg) : COLOR(visual_bell_color, default_fg);
-    draw_visual_bell_flash(intensity, flash);
-#undef COLOR
+    draw_visual_bell_flash(intensity, get_flash_color(screen));
+}
+
+static void
+draw_drag_preview_overlay(const UIRenderData *ui) {
+    const Screen *screen = ui->screen;
+    if (!screen->start_drag_overlay_at || !screen->drag_overlay_quadrant) return;
+    const monotonic_t elapsed = monotonic() - screen->start_drag_overlay_at;
+    const monotonic_t fade_ms = ms_to_monotonic_t(150ll);
+    float intensity = elapsed >= fade_ms ? 1.0f : (float)elapsed / (float)fade_ms;
+    GLfloat left = -1.f, top = 1.f, right = 1.f, bottom = -1.f;
+    switch (screen->drag_overlay_quadrant) {
+        case 1: right  =  0.f; break;  // left half
+        case 2: left   =  0.f; break;  // right half
+        case 3: bottom =  0.f; break;  // top half
+        case 4: top    =  0.f; break;  // bottom half
+        case 5: break;                 // full window + title bar highlight (title bar hover)
+        case 6: break;                 // full window, no title bar highlight (body hover)
+        default: return;
+    }
+    bind_program(TINT_PROGRAM);
+    float a = intensity * 0.25f;
+    color_type hint = get_flash_color(screen);
+#define C(shift) (srgb_color((hint >> shift) & 0xFF) * a)
+    glUniform4f(tint_program_layout.uniforms.tint_color, C(16), C(8), C(0), a);
+#undef C
+    glUniform4f(tint_program_layout.uniforms.edges, left, top, right, bottom);
+    draw_quad(true, 0);
 }
 
 static bool
@@ -820,7 +853,7 @@ render_a_bar(const UIRenderData *ui, WindowBarData *bar, PyObject *title, bool a
         static char titlebuf[2048] = {0};
         if (!title) return 0;
         snprintf(titlebuf, arraysz(titlebuf), " %s", PyUnicode_AsUTF8(title));
-        if (!draw_window_title(ui->os_window->fonts_data->font_sz_in_pts, ui->os_window->fonts_data->logical_dpi_y, titlebuf, fg, bg, bar->buf, bar_width, bar_height)) return 0;
+        if (!draw_window_title(ui->os_window->fonts_data->font_sz_in_pts, ui->os_window->fonts_data->logical_dpi_y, titlebuf, fg, bg, bar->buf, bar_width, bar_height, NULL)) return 0;
         Py_CLEAR(bar->last_drawn_title_object_id);
         bar->last_drawn_title_object_id = Py_NewRef(title);
     }
@@ -855,19 +888,35 @@ render_a_bar(const UIRenderData *ui, WindowBarData *bar, PyObject *title, bool a
 }
 
 static bool
+show_hyperlink_targets_with_modifiers(int mods) {
+    switch (OPT(show_hyperlink_targets)) {
+        case SHOW_HYPERLINK_TARGETS_ALWAYS: return true;
+        case SHOW_HYPERLINK_TARGETS_CTRL: return (mods & GLFW_MOD_CONTROL) != 0;
+        case SHOW_HYPERLINK_TARGETS_SHIFT: return (mods & GLFW_MOD_SHIFT) != 0;
+        case SHOW_HYPERLINK_TARGETS_SUPER: return (mods & GLFW_MOD_SUPER) != 0;
+        case SHOW_HYPERLINK_TARGETS_ALT: return (mods & GLFW_MOD_ALT) != 0;
+        default: return false;
+    }
+}
+
+static bool
 has_hyperlink_target(OSWindow *os_window, Window *w, Screen *screen) {
-    return OPT(show_hyperlink_targets) && screen->current_hyperlink_under_mouse.id && w && !is_mouse_hidden(os_window) && global_state.mouse_hover_in_window == w->id;
+    return show_hyperlink_targets_with_modifiers(global_state.mods_at_last_key_or_button_event) &&
+        screen->current_hyperlink_under_mouse.id &&
+        w && !is_mouse_hidden(os_window) &&
+        global_state.mouse_hover_in_window == w->id;
 }
 
 static void
 draw_hyperlink_target(const UIRenderData *ui) {
     if (!has_hyperlink_target(ui->os_window, ui->window, ui->screen)) return;
     Screen *screen = ui->screen;
-    const bool along_bottom = screen->current_hyperlink_under_mouse.y < 3;
     Window *window = ui->window;
+    const bool along_bottom = screen->current_hyperlink_under_mouse.y < 3;
     WindowBarData *bd = &window->url_target_bar_data;
-    if (bd->hyperlink_id_for_title_object != screen->current_hyperlink_under_mouse.id) {
-        bd->hyperlink_id_for_title_object = screen->current_hyperlink_under_mouse.id;
+    hyperlink_id_type hid = screen->current_hyperlink_under_mouse.id;
+    if (bd->hyperlink_id_for_title_object != hid) {
+        bd->hyperlink_id_for_title_object = hid;
         Py_CLEAR(bd->last_drawn_title_object_id);
         const char *url = get_hyperlink_for_id(screen->hyperlink_pool, bd->hyperlink_id_for_title_object, true);
         if (url == NULL) url = "";
@@ -1036,6 +1085,190 @@ draw_scrollbar(const UIRenderData *ui) {
     }
 }
 
+static bool
+has_progress_bar(Screen *screen) {
+    if (OPT(progress_bar) == PROGRESS_BAR_HIDDEN) return false;
+    return screen && screen->progress_state != PROGRESS_STATE_UNSET;
+}
+
+static void
+draw_progress_handle(const UIRenderData *ui, color_type bar_color, float opacity, unsigned bar_radius,
+                     GLsizei track_left, GLsizei track_top, GLsizei track_width, GLsizei track_height,
+                     float handle_start, float handle_size, bool is_horizontal) {
+    // handle_start and handle_size are fractions of the track length (0..1)
+    // For horizontal: handle moves left-to-right; For vertical: handle moves top-to-bottom
+    // Use lroundf to avoid sub-pixel jitter at the leading edge
+    GLsizei handle_left, handle_top;
+    GLsizei handle_w, handle_h;
+    if (is_horizontal) {
+        GLsizei handle_start_px = (GLsizei)lroundf(handle_start * track_width);
+        GLsizei handle_end_px = (GLsizei)lroundf((handle_start + handle_size) * track_width);
+        GLsizei handle_w_px = handle_end_px - handle_start_px;
+        if (handle_w_px < 1) handle_w_px = 1;
+        handle_left = track_left + handle_start_px;
+        handle_top = track_top;
+        handle_w = handle_w_px;
+        handle_h = track_height;
+    } else {
+        GLsizei handle_start_px = (GLsizei)lroundf(handle_start * track_height);
+        GLsizei handle_end_px = (GLsizei)lroundf((handle_start + handle_size) * track_height);
+        GLsizei handle_h_px = handle_end_px - handle_start_px;
+        if (handle_h_px < 1) handle_h_px = 1;
+        handle_left = track_left;
+        handle_top = track_top + handle_start_px;
+        handle_w = track_width;
+        handle_h = handle_h_px;
+    }
+
+    if (bar_radius > 0) {
+        bind_program(ROUNDED_RECT_PROGRAM);
+        color_vec4(rounded_rect_program_layout.uniforms.color, bar_color, opacity);
+        color_vec4(rounded_rect_program_layout.uniforms.background_color, 0, 0.0f);
+
+        float y = (float)ui->full_framebuffer_height - (float)(handle_top + handle_h);
+        glUniform4f(rounded_rect_program_layout.uniforms.rect,
+                    (float)handle_left, y,
+                    (float)handle_w, (float)handle_h);
+
+        float thickness = (float)(is_horizontal ? handle_h : handle_w);
+        glUniform2f(rounded_rect_program_layout.uniforms.params, thickness, (float)bar_radius);
+
+        save_viewport_using_top_left_origin(handle_left, handle_top, handle_w, handle_h, ui->full_framebuffer_height);
+        draw_quad(true, 0);
+        restore_viewport();
+    } else {
+        // Use GL coordinates within the track viewport, snapped to pixel boundaries
+        GLsizei track_len = is_horizontal ? track_width : track_height;
+        float start_snapped = (float)lroundf(handle_start * track_len) / (float)track_len;
+        float end_snapped = (float)lroundf((handle_start + handle_size) * track_len) / (float)track_len;
+        float start_gl = -1.0f + 2.0f * start_snapped;
+        float end_gl = -1.0f + 2.0f * end_snapped;
+        bind_program(TINT_PROGRAM);
+        set_color_uniform_with_opacity(bar_color, opacity);
+        if (is_horizontal) {
+            // edges: left, top, right, bottom
+            save_viewport_using_top_left_origin(track_left, track_top, track_width, track_height, ui->full_framebuffer_height);
+            glUniform4f(tint_program_layout.uniforms.edges, start_gl, 1.f, end_gl, -1.f);
+        } else {
+            save_viewport_using_top_left_origin(track_left, track_top, track_width, track_height, ui->full_framebuffer_height);
+            // For vertical: start_gl is top in GL coords (inverted y), so bottom_gl = -end_gl, top_gl = -start_gl
+            glUniform4f(tint_program_layout.uniforms.edges, -1.f, -start_gl, 1.f, -end_gl);
+        }
+        draw_quad(true, 0);
+        restore_viewport();
+    }
+}
+
+static void
+draw_progress_bar(const UIRenderData *ui) {
+    Screen *screen = ui->screen;
+    Window *window = ui->window;
+    if (!window || !has_progress_bar(screen)) return;
+
+    const ProgressBarPosition pos = OPT(progress_bar);
+    const bool is_horizontal = (pos == PROGRESS_BAR_TOP || pos == PROGRESS_BAR_BOTTOM);
+    color_type bar_color = scrollbar_color(screen, OPT(scrollbar_handle_color));
+    color_type track_color = scrollbar_color(screen, OPT(scrollbar_track_color));
+    float opacity = OPT(scrollbar_handle_opacity);
+    float track_opacity = OPT(scrollbar_track_hover_opacity);
+    GLsizei bar_thickness_px = (GLsizei)(OPT(scrollbar_width) * ui->cell_width);
+    GLsizei gap_px = (GLsizei)(OPT(scrollbar_gap) * ui->cell_width);
+    unsigned bar_radius = (unsigned)(OPT(scrollbar_radius) * ui->cell_width);
+    if (bar_thickness_px < 1) return;
+
+    // Calculate window boundaries including padding
+    GLsizei window_left_edge = ui->screen_left - (GLsizei)window->render_data.geometry.spaces.left;
+    GLsizei window_top_edge = ui->screen_top - (GLsizei)window->render_data.geometry.spaces.top;
+    GLsizei window_width = ui->screen_width + (GLsizei)(window->render_data.geometry.spaces.left + window->render_data.geometry.spaces.right);
+    GLsizei window_height = ui->screen_height + (GLsizei)(window->render_data.geometry.spaces.top + window->render_data.geometry.spaces.bottom);
+
+    // Position the track depending on the chosen edge
+    GLsizei track_left, track_top, track_width, track_height;
+    switch (pos) {
+        case PROGRESS_BAR_BOTTOM:
+            track_left = window_left_edge + gap_px;
+            track_width = window_width - 2 * gap_px;
+            track_height = bar_thickness_px;
+            track_top = window_top_edge + window_height - bar_thickness_px - gap_px;
+            break;
+        case PROGRESS_BAR_TOP:
+            track_left = window_left_edge + gap_px;
+            track_width = window_width - 2 * gap_px;
+            track_height = bar_thickness_px;
+            track_top = window_top_edge + gap_px;
+            break;
+        case PROGRESS_BAR_LEFT:
+            track_left = window_left_edge + gap_px;
+            track_width = bar_thickness_px;
+            track_top = window_top_edge + gap_px;
+            track_height = window_height - 2 * gap_px;
+            break;
+        case PROGRESS_BAR_RIGHT:
+            track_left = window_left_edge + window_width - bar_thickness_px - gap_px;
+            track_width = bar_thickness_px;
+            track_top = window_top_edge + gap_px;
+            track_height = window_height - 2 * gap_px;
+            break;
+        default:
+            return;
+    }
+    if (track_width <= 0 || track_height <= 0) return;
+
+    // Calculate fill fraction and indeterminate animation
+    float fill_fraction = 0.0f;
+    bool is_indeterminate = false;
+    switch (screen->progress_state) {
+        case PROGRESS_STATE_SET:
+        case PROGRESS_STATE_PAUSED:
+            fill_fraction = screen->progress_percent / 100.0f;
+            break;
+        case PROGRESS_STATE_ERROR:
+            fill_fraction = 1.0f;
+            break;
+        case PROGRESS_STATE_INDETERMINATE:
+            is_indeterminate = true;
+            break;
+        default:
+            return;
+    }
+
+    // Draw track (background)
+    save_viewport_using_top_left_origin(track_left, track_top, track_width, track_height, ui->full_framebuffer_height);
+    if (track_opacity > 0) {
+        bind_program(TINT_PROGRAM);
+        set_color_uniform_with_opacity(track_color, track_opacity);
+        glUniform4f(tint_program_layout.uniforms.edges, -1.f, 1.f, 1.f, -1.f);
+        draw_quad(true, 0);
+    }
+    restore_viewport();
+
+    // Draw fill or indeterminate handle
+    // For vertical bars, progress grows from bottom to top, so invert the fraction
+    if (is_indeterminate) {
+        // Animate a handle bouncing back and forth like a scrollbar thumb
+        const float handle_size = 0.15f;  // 15% of track length
+        const monotonic_t cycle = s_double_to_monotonic_t(2.0);  // 2 second full cycle (forth and back)
+        monotonic_t elapsed = screen->progress_indeterminate_anim_at > 0 ? monotonic() - screen->progress_indeterminate_anim_at : 0;
+        double t = (double)(elapsed % cycle) / (double)cycle;  // 0..1 over one cycle
+        // Triangle wave: goes 0→1→0 over one cycle
+        float pos_frac = (float)(t < 0.5 ? t * 2.0 : 2.0 - t * 2.0);
+        if (!is_horizontal) pos_frac = 1.0f - pos_frac;  // vertical: bounce bottom-to-top first
+        float handle_start = pos_frac * (1.0f - handle_size);
+        if (opacity > 0.0f) {
+            draw_progress_handle(ui, bar_color, opacity, bar_radius,
+                                 track_left, track_top, track_width, track_height,
+                                 handle_start, handle_size, is_horizontal);
+        }
+    } else if (fill_fraction > 0.0f && opacity > 0.0f) {
+        float handle_start = is_horizontal ? 0.0f : 1.0f - fill_fraction;
+        draw_progress_handle(ui, bar_color, opacity, bar_radius,
+                             track_left, track_top, track_width, track_height,
+                             handle_start, fill_fraction, is_horizontal);
+    }
+}
+
+
+
 static void
 draw_window_logo(const UIRenderData *ui) {
     struct { unsigned width, height; int left, top; } w;
@@ -1081,7 +1314,7 @@ draw_window_logo(const UIRenderData *ui) {
 
 bool
 screen_needs_rendering_in_layers(OSWindow *os_window, Window *w, Screen *screen) {
-    const bool has_ui = w && (has_visual_bell(screen) || has_scrollbar(w, screen) || has_hyperlink_target(os_window, w, screen) || has_window_number(w, screen) || w->window_logo.id);
+    const bool has_ui = w && ((screen->start_visual_bell_at | screen->start_drag_overlay_at) || has_scrollbar(w, screen) || has_progress_bar(screen) || has_hyperlink_target(os_window, w, screen) || has_window_number(w, screen) || w->window_logo.id);
     GraphicsManager *grman = screen->paused_rendering.expires_at && screen->paused_rendering.grman ? screen->paused_rendering.grman : screen->grman;
     return has_ui || grman_has_images(grman);
 }
@@ -1099,7 +1332,8 @@ static void
 call_cell_program(int program, const UIRenderData *ui, ssize_t vao_idx, bool for_final_output, unsigned draw_bg_bitfield) {
     bind_program(program);
     CELL_BUFFERS;
-    bind_vao_uniform_buffer(vao_idx, uniform_buffer, cell_program_layouts[program].render_data.index);
+    bind_vao_uniform_buffer(vao_idx, uniform_buffer, CELL_RENDER_DATA_BINDING_POINT);
+    bind_vao_uniform_buffer(vao_idx, color_table_buffer, COLOR_TABLE_BINDING_POINT);
     glUniform1ui(cell_program_layouts[program].uniforms.draw_bg_bitfield, draw_bg_bitfield);
     glUniform1f(cell_program_layouts[program].uniforms.row_offset, row_offset_for_screen(ui->screen));
     if (for_final_output) glEnable(GL_FRAMEBUFFER_SRGB);
@@ -1141,6 +1375,8 @@ draw_cells_with_layers(const UIRenderData *ui, ssize_t vao_idx) {
             ui->grd.num_of_positive_refs, ui->inactive_text_alpha);
 
     draw_visual_bell(ui);
+    draw_drag_preview_overlay(ui);
+    draw_progress_bar(ui);
     draw_scrollbar(ui);
     draw_hyperlink_target(ui);
     draw_window_number(ui);
@@ -1176,15 +1412,17 @@ draw_cells(const WindowRenderData *srd, OSWindow *os_window, bool is_active_wind
     Screen *screen = srd->screen;
     CELL_BUFFERS;
     bind_vertex_array(srd->vao_idx);
-    // We draw with inactive text alpha if:
-    // - We're not drawing the tab bar
-    // - There's only a single window and the os window is not focused
-    // - There are multiple windows and the current window is not active
-    float current_inactive_text_alpha = is_tab_bar || (!is_single_window && is_active_window) || (is_single_window && screen->cursor_render_info.is_focused) ? 1.0f : (float)OPT(inactive_text_alpha);
+    // When inactive_text_alpha is negative, its absolute value is used as the
+    // opacity and fading is based only on whether the current window is active.
+    const float inactive_text_alpha = fabsf(OPT(inactive_text_alpha));
+    const bool use_active_window_only = OPT(inactive_text_alpha) < 0.f;
+    float current_inactive_text_alpha = use_active_window_only ?
+        (is_tab_bar || is_active_window ? 1.0f : inactive_text_alpha) :
+        (is_tab_bar || (!is_single_window && is_active_window) || (is_single_window && screen->cursor_render_info.is_focused) ? 1.0f : inactive_text_alpha);
     float bg_alpha = effective_os_window_alpha(os_window);
 
     color_type default_bg = cell_update_uniform_block(
-            srd->vao_idx, screen, uniform_buffer, &screen->cursor_render_info, os_window, current_inactive_text_alpha, bg_alpha);
+            srd->vao_idx, screen, uniform_buffer, color_table_buffer, &screen->cursor_render_info, os_window, current_inactive_text_alpha, bg_alpha);
     set_cell_uniforms(screen->reload_all_gpu_data);
     WindowLogoRenderData *wl;
     if (window && (wl = &window->window_logo) && wl->id && (wl->instance = find_window_logo(global_state.all_window_logos, wl->id)) && wl->instance->load_from_disk_ok) {
@@ -1297,15 +1535,17 @@ draw_cursor_trail(CursorTrail *trail, Window *active_window) {
 // OSWindow {{{
 static void
 draw_bg_image(OSWindow *os_window, Tab *tab) {
-    if (!has_bgimage(os_window)) return;
+    BackgroundImage *bg = background_image_for_os_window(os_window);
+    if (!bg) return;
+    BackgroundImageLayout layout = os_window->background_image.has_layout ? os_window->background_image.layout : OPT(background_image_layout);
     BackgroundImageRenderSettings s = {
         .os_window.width = os_window->viewport_width, .os_window.height = os_window->viewport_height,
-        .instance_id = os_window->bgimage->id, .layout=OPT(background_image_layout),
+        .instance_id = bg->id, .layout=layout,
         .linear=OPT(background_image_linear), .bgcolor=OPT(background), .opacity=effective_os_window_alpha(os_window),
     };
-    GLfloat iwidth = os_window->bgimage->width, iheight = os_window->bgimage->height;
+    GLfloat iwidth = bg->width, iheight = bg->height;
     GLfloat vwidth = s.os_window.width, vheight = s.os_window.height;
-    if (CENTER_SCALED == OPT(background_image_layout)) {
+    if (CENTER_SCALED == layout) {
         GLfloat ifrac = iwidth / iheight;
         if (ifrac > (vwidth / vheight)) {
             iheight = vheight;
@@ -1317,7 +1557,7 @@ draw_bg_image(OSWindow *os_window, Tab *tab) {
     }
     GLfloat tiled = 0.f;;
     GLfloat left = -1.0, top = 1.0, right = 1.0, bottom = -1.0;
-    switch (OPT(background_image_layout)) {
+    switch (layout) {
         case TILING: case MIRRORED: case CLAMPED:
             tiled = 1.f; break;
         case SCALED:
@@ -1341,7 +1581,7 @@ draw_bg_image(OSWindow *os_window, Tab *tab) {
     glUniform1i(bgimage_program_layout.uniforms.image, GRAPHICS_UNIT);
     color_vec4(bgimage_program_layout.uniforms.background, s.bgcolor, s.opacity);
     glActiveTexture(GL_TEXTURE0 + GRAPHICS_UNIT);
-    glBindTexture(GL_TEXTURE_2D, os_window->bgimage->texture_id);
+    glBindTexture(GL_TEXTURE_2D, bg->texture_id);
     draw_quad(false, 0);
     unbind_program();
 }

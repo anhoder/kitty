@@ -2,7 +2,6 @@ package notify
 
 import (
 	"bytes"
-	"encoding/base64"
 	"fmt"
 	"image"
 	"io"
@@ -11,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/emmansun/base64"
 
 	"github.com/kovidgoyal/kitty/tools/cli"
 	"github.com/kovidgoyal/kitty/tools/tty"
@@ -112,7 +113,7 @@ func (p *parsed_data) generate_chunks(callback func(string)) {
 }
 
 func (p *parsed_data) run_loop() (err error) {
-	lp, err := loop.New(loop.NoAlternateScreen, loop.NoRestoreColors, loop.NoMouseTracking, loop.NoInBandResizeNotifications)
+	lp, err := loop.NewForSimpleInteraction()
 	if err != nil {
 		return err
 	}

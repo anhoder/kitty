@@ -71,6 +71,20 @@ scrollbar(PyObject *src) {
     return SCROLLBAR_ON_SCROLLED;
 }
 
+static inline ProgressBarPosition
+progress_bar(PyObject *src) {
+    const char *q = PyUnicode_AsUTF8(src);
+    if (!q) return PROGRESS_BAR_BOTTOM;
+    switch (q[0]) {
+        case 'l': return PROGRESS_BAR_LEFT;
+        case 'r': return PROGRESS_BAR_RIGHT;
+        case 't': return PROGRESS_BAR_TOP;
+        case 'b': return PROGRESS_BAR_BOTTOM;
+        case 'h': return PROGRESS_BAR_HIDDEN;
+    }
+    return PROGRESS_BAR_BOTTOM;
+}
+
 static inline unsigned
 undercurl_style(PyObject *x) {
     RAII_PyObject(thick, PyUnicode_FromString("thick"));
@@ -95,6 +109,19 @@ underline_hyperlinks(PyObject *x) {
         case 'a': return UNDERLINE_ALWAYS;
         case 'n': return UNDERLINE_NEVER;
         default : return UNDERLINE_ON_HOVER;
+    }
+}
+
+static inline ShowHyperlinkTargets
+show_hyperlink_targets(PyObject *x) {
+    const char *in = PyUnicode_AsUTF8(x);
+    if (!in) return SHOW_HYPERLINK_TARGETS_NEVER;
+    switch(in[0]) {
+        case 'a': return SHOW_HYPERLINK_TARGETS_ALWAYS;
+        case 'A': return SHOW_HYPERLINK_TARGETS_ALT;
+        case 'C': return SHOW_HYPERLINK_TARGETS_CTRL;
+        case 'S': return in[1] == 'u' ? SHOW_HYPERLINK_TARGETS_SUPER : SHOW_HYPERLINK_TARGETS_SHIFT;
+        default: return SHOW_HYPERLINK_TARGETS_NEVER;
     }
 }
 
@@ -140,13 +167,47 @@ bganchor(PyObject *anchor_name) {
 }
 
 static inline void
-background_image(PyObject *src, Options *opts) { STR_SETTER(background_image); }
+free_background_images(Options *opts) {
+    if (opts->background_images.paths) {
+        for (size_t i = 0; i < opts->background_images.count; i++) free(opts->background_images.paths[i]);
+        free(opts->background_images.paths);
+    }
+    opts->background_images.paths = NULL;
+    opts->background_images.count = 0;
+}
+
+static inline void
+background_images(PyObject *src, Options *opts) {
+    static unsigned generation = 0;
+    size_t new_count = (PyTuple_Check(src) && PyTuple_GET_SIZE(src) > 0) ? (size_t)PyTuple_GET_SIZE(src) : 0;
+    if (new_count == opts->background_images.count && opts->background_images.paths) {
+        bool changed = false;
+        for (size_t i = 0; i < new_count; i++) {
+            const char *p = PyUnicode_AsUTF8(PyTuple_GET_ITEM(src, i));
+            if (!p || !opts->background_images.paths[i] || strcmp(p, opts->background_images.paths[i]) != 0) { changed = true; break; }
+        }
+        if (!changed) return;
+    }
+    free_background_images(opts);
+    opts->background_images.generation = ++generation;
+    if (!new_count) return;
+    opts->background_images.paths = calloc(new_count, sizeof(opts->background_images.paths[0]));
+    if (opts->background_images.paths) {
+        opts->background_images.count = new_count;
+        for (size_t i = 0; i < opts->background_images.count; i++) {
+            opts->background_images.paths[i] = strdup(PyUnicode_AsUTF8(PyTuple_GET_ITEM(src, i)));
+        }
+    }
+}
 
 static inline void
 bell_path(PyObject *src, Options *opts) { STR_SETTER(bell_path); }
 
 static inline void
 bell_theme(PyObject *src, Options *opts) { STR_SETTER(bell_theme); }
+
+static inline void
+macos_ns_window_layer(PyObject *src, Options *opts) { STR_SETTER(macos_ns_window_layer); }
 
 static inline void
 window_logo_path(PyObject *src, Options *opts) { STR_SETTER(default_window_logo); }
@@ -226,6 +287,12 @@ static inline void
 cursor_trail_decay(PyObject *src, Options *opts) {
     opts->cursor_trail_decay_fast = PyFloat_AsFloat(PyTuple_GET_ITEM(src, 0));
     opts->cursor_trail_decay_slow = PyFloat_AsFloat(PyTuple_GET_ITEM(src, 1));
+}
+
+static inline void
+cursor_trail_start_threshold(PyObject *src, Options *opts) {
+    opts->cursor_trail_start_threshold_x = (int)PyLong_AsLong(PyTuple_GET_ITEM(src, 0));
+    opts->cursor_trail_start_threshold_y = (int)PyLong_AsLong(PyTuple_GET_ITEM(src, 1));
 }
 
 static inline void
@@ -501,6 +568,22 @@ tab_bar_style(PyObject *val, Options *opts) {
 }
 
 static inline void
+focus_follows_mouse(PyObject *val, Options *opts) {
+    zero_at_ptr(&opts->focus_follows_mouse);
+    const char *q = PyUnicode_AsUTF8(val);
+    switch(q[0]) {
+        case 'y': case 't':
+            opts->focus_follows_mouse.on_cross = true;
+            opts->focus_follows_mouse.on_drop = true;
+            break;
+        case 'd':
+            opts->focus_follows_mouse.on_drop = true;
+            break;
+    }
+}
+
+
+static inline void
 tab_bar_margin_height(PyObject *val, Options *opts) {
     if (!PyTuple_Check(val) || PyTuple_GET_SIZE(val) != 2) {
         PyErr_SetString(PyExc_TypeError, "tab_bar_margin_height is not a 2-item tuple");
@@ -527,8 +610,9 @@ free_allocs_in_options(Options *opts) {
     free_menu_map(opts);
     free_url_prefixes(opts);
     free_font_features(opts);
+    free_background_images(opts);
 #define F(x) free(opts->x); opts->x = NULL;
     F(select_by_word_characters); F(url_excluded_characters); F(select_by_word_characters_forward);
-    F(background_image); F(bell_path); F(bell_theme); F(default_window_logo);
+    F(bell_path); F(bell_theme); F(macos_ns_window_layer); F(default_window_logo);
 #undef F
 }

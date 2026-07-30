@@ -1373,7 +1373,8 @@ typedef struct GLFWLayerShellConfig {
     void (*size_callback)(GLFWwindow *window, float xscale, float yscale, unsigned *cell_width, unsigned *cell_height, double *left_edge_spacing, double *top_edge_spacing, double *right_edge_spacing, double *bottom_edge_spacing);
     struct { float xscale, yscale; } expected;
     struct {
-        float background_opacity; int background_blur, color_space;
+        float background_opacity; int background_blur, color_space, use_physical_screen_frame;
+        char ns_window_layer[128];
     } related;
 } GLFWLayerShellConfig;
 
@@ -1407,6 +1408,7 @@ typedef struct GLFWDropEvent {
     // Positions are only valid for GLFW_DROP_ENTER and GLFW_DROP_MOVE.
     // They are in window co-ordinates same as for mouse events
     double xpos, ypos;
+    struct { GLFWDragOperationType preferred; int allowed, source_actions; } operation;
     bool from_self;  // Only valid upto GLFW_DROP_DROP
     ssize_t (*read_data)(GLFWwindow *w, struct GLFWDropEvent* ev, char *buffer, size_t sz);  // Only valid for GLFW_DROP_DATA_AVAILABLE
     void (*finish_drop)(GLFWwindow *w, GLFWDragOperationType op); // Only valid for GLFW_DROP_DROP and GLFW_DROP_DATA_AVAILABLE
@@ -1826,6 +1828,8 @@ typedef struct GLFWDragSourceItem {
     // Can be on null to provide data when the drag is started should be used only when the data is relatively small
     const char *optional_data;
     size_t data_size;
+    bool is_remote_client;
+    int type;  // used for file promises type of entry 0 = regular, 1 = symlink, 2 = directory
 } GLFWDragSourceItem;
 
 typedef struct GLFWDragEvent {
@@ -1839,6 +1843,7 @@ typedef struct GLFWDragEvent {
     const char *data; size_t data_sz;
     int err_num;  // POSIX error code indicating failure fetching data
     GLFWDragOperationType action;  // can be 0 indicating no action
+    bool drop_maybe_a_cancel;  // Happens on wayland compositors that dont implement top-level drag
 } GLFWDragEvent;
 
 typedef void (* GLFWdragsourcefun)(GLFWwindow* window, GLFWDragEvent *ev);
@@ -1928,6 +1933,7 @@ typedef void (* GLFWjoystickfun)(int,int);
 typedef void (* GLFWuserdatafun)(unsigned long long, void*);
 typedef void (* GLFWtickcallback)(void*);
 typedef void (* GLFWactivationcallback)(GLFWwindow *window, const char *token, void *data);
+typedef void (* GLFWwaylandinitialsizefun)(GLFWwindow *window, float xscale, float yscale, int *width, int *height);
 typedef bool (* GLFWdrawtextfun)(GLFWwindow *window, const char *text, uint32_t fg, uint32_t bg, uint8_t *output_buf, size_t width, size_t height, float x_offset, float y_offset, size_t right_margin, bool is_single_glyph);
 typedef char* (* GLFWcurrentselectionfun)(void);
 typedef bool (* GLFWhascurrentselectionfun)(void);
@@ -4370,6 +4376,7 @@ GLFWAPI void glfwPostEmptyEvent(void);
 GLFWAPI bool glfwGetIgnoreOSKeyboardProcessing(void);
 GLFWAPI void glfwSetIgnoreOSKeyboardProcessing(bool enabled);
 GLFWAPI bool glfwGrabKeyboard(int grab);
+GLFWAPI void glfwGetKeyboardRepeatDelay(monotonic_t *delay, monotonic_t *interval);
 
 /*! @brief Returns the value of an input option for the specified window.
  *
@@ -4976,14 +4983,15 @@ GLFWAPI GLFWscrollfun glfwSetScrollCallback(GLFWwindow* window, GLFWscrollfun ca
 GLFWAPI GLFWliveresizefun glfwSetLiveResizeCallback(GLFWwindow* window, GLFWliveresizefun callback);
 
 GLFWAPI GLFWdropeventfun glfwSetDropEventCallback(GLFWwindow *window, GLFWdropeventfun callback);
-GLFWAPI void glfwRequestDropUpdate(GLFWwindow *window);  // ask for update before GLFW_DROP_DROP happens
+// ask for update before GLFW_DROP_DROP happens
+GLFWAPI void glfwRequestDropUpdate(GLFWwindow *window);
 GLFWAPI int glfwRequestDropData(GLFWwindow *window, const char *mime);
 GLFWAPI void glfwEndDrop(GLFWwindow *window, GLFWDragOperationType op);
 GLFWAPI GLFWdragsourcefun glfwSetDragSourceCallback(GLFWwindow* window, GLFWdragsourcefun callback);
 
 // Start a drag. If called with operations == -1 indicates that previously
 // requested data via GLFW_DRAG_DATA_REQUEST is ready. operations == -2 means
-// that the drag image is changed.
+// that the drag image is changed. operations == -3 cancels any existing drag.
 GLFWAPI int glfwStartDrag(GLFWwindow* window, const GLFWDragSourceItem *items, size_t mime_count, const GLFWimage* thumbnail, int operations, bool needs_toplevel_on_wayland);
 
 /*! @brief Returns whether the specified joystick is present.

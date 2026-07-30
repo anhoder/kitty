@@ -114,6 +114,7 @@ def generate(
     payload_is_base64: bool = True,
     start_parsing_at: int = 1,
     field_sep: str = ',',
+    post_init: str = '',
 ) -> str:
     type_map = resolve_keys(keymap)
     keys_enum = enum(keymap)
@@ -121,6 +122,7 @@ def generate(
     flag_keys = parse_flag(keymap, type_map, command_class)
     int_keys, uint_keys = parse_number(keymap)
     report_cmd = cmd_for_report(report_name, keymap, type_map, payload_allowed, payload_is_base64)
+    post_init_line = f'\n    {post_init}' if post_init else ''
     extra_init = ''
     if payload_allowed:
         payload_after_value = "case ';': state = PAYLOAD; break;"
@@ -163,7 +165,7 @@ static inline void
     {extra_init}
     enum PARSER_STATES {{ KEY, EQUAL, UINT, INT, FLAG, AFTER_VALUE {payload} }};
     enum PARSER_STATES state = KEY, value_state = FLAG;
-    {command_class} g = {{0}};
+    {command_class} g = {{0}};{post_init_line}
     unsigned int i, code;
     uint64_t lcode; int64_t accumulator;
     bool is_negative; (void)is_negative;
@@ -311,11 +313,13 @@ def parsers() -> None:
         'U': ('unicode_placement', 'uint'),
         'P': ('parent_id', 'uint'),
         'Q': ('parent_placement_id', 'uint'),
+        'N': ('usage_hints', 'uint'),
         'H': ('offset_from_parent_x', 'int'),
         'V': ('offset_from_parent_y', 'int'),
     }
     text = generate('parse_graphics_code', 'screen_handle_graphics_command', 'graphics_command', keymap, 'GraphicsCommand')
     write_header(text, 'kitty/parse-graphics-command.h')
+
     keymap = {
         'w': ('width', 'uint'),
         's': ('scale', 'uint'),
@@ -328,6 +332,21 @@ def parsers() -> None:
         'parse_multicell_code', 'screen_handle_multicell_command', 'multicell_command', keymap, 'MultiCellCommand',
         payload_is_base64=False, start_parsing_at=0, field_sep=':')
     write_header(text, 'kitty/parse-multicell-command.h')
+
+    keymap = {
+        't': ('type', flag('aAmMrRopPqeEk')),
+        'm': ('more', 'uint'),
+        'i': ('client_id', 'uint'),
+        'o': ('operation', 'uint'),
+        'x': ('cell_x', 'int'),
+        'y': ('cell_y', 'int'),
+        'X': ('pixel_x', 'int'),
+        'Y': ('pixel_y', 'int'),
+    }
+    text = generate(
+        'parse_dnd_code', 'screen_handle_dnd_command', 'dnd_command', keymap, 'DnDCommand',
+        payload_is_base64=False, start_parsing_at=0, field_sep=':')
+    write_header(text, 'kitty/parse-dnd-command.h')
 
 
 def main(args: list[str]=sys.argv) -> None:

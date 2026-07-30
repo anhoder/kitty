@@ -1,9 +1,8 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
-from kitty.config import defaults
 from kitty.fast_data_types import DECAWM, DECCOLM, DECOM, IRM, VT_PARSER_BUFFER_SIZE, Color, ColorProfile, Cursor
-from kitty.marks import marker_from_function, marker_from_regex
+from kitty.marks import marker_from_function, marker_from_regex, marker_from_text
 from kitty.window import pagerhist
 
 from . import BaseTest, draw_multicell, parse_bytes
@@ -405,6 +404,24 @@ class TestScreen(BaseTest):
         parse_bytes(s, b'\x1b[?2048h')  # ]
         self.ae(c.num_of_resize_events, 2)
 
+    def test_visibility_reports(self):
+        s = self.create_screen()
+        c = s.callbacks
+        parse_bytes(s, b'\x1b[?2033$p')  # ]
+        self.ae(c.wtcbuf, b'\x1b[?2033;2$y')  # ]
+        c.clear()
+        parse_bytes(s, b'\x1b[?998n')  # ]
+        self.ae(c.wtcbuf, b'\x1b[?999;1n')  # ]
+        c.clear()
+        parse_bytes(s, b'\x1b[?2033h\x1b[?2033$p')  # ]]
+        self.ae(c.wtcbuf, b'\x1b[?999;1n\x1b[?2033;1$y')  # ]]
+        c.clear()
+        parse_bytes(s, b'\x1b[?2033h')  # ]
+        self.ae(c.wtcbuf, b'\x1b[?999;1n')  # ]
+        c.clear()
+        parse_bytes(s, b'\x1b[?2033l\x1b[?2033$p')  # ]]
+        self.ae(c.wtcbuf, b'\x1b[?2033;2$y')  # ]
+
     def test_da1(self):
         s = self.create_screen()
         parse_bytes(s, b'\x1b[c\x1b[0c')  # ]]
@@ -531,6 +548,56 @@ class TestScreen(BaseTest):
         s = self.create_screen(cols=4, lines=2)
         s.draw('aaaX\tbbbb')
         self.ae(str(s.line(0)) + str(s.line(1)), 'aaaXbbbb')
+        # DECST8C: reset tab stops to every 8 columns
+        s = self.create_screen(cols=20, lines=2)
+        s.clear_tab_stop(3)
+        s.reset_tab_stops()
+        s.cursor_position(1, 1)
+        s.tab()
+        self.ae(s.cursor.x, 8)
+        s.tab()
+        self.ae(s.cursor.x, 16)
+        # Verify the DECST8C escape sequence
+        s = self.create_screen(cols=20, lines=2)
+        s.clear_tab_stop(3)
+        parse_bytes(s, b'\x1b[?5W')
+        s.cursor_position(1, 1)
+        s.tab()
+        self.ae(s.cursor.x, 8)
+
+        # Custom tab stops survive a window resize
+        s = self.create_screen(cols=20, lines=2)
+        s.clear_tab_stop(3)  # clear all
+        s.cursor_position(1, 5)
+        s.set_tab_stop()  # stop at column index 4
+        s.cursor_position(1, 13)
+        s.set_tab_stop()  # stop at column index 12
+        # Grow: existing stops preserved, new columns get default every-8 stops
+        s.resize(s.lines, 30)
+        s.cursor_position(1, 1)
+        s.tab()
+        self.ae(s.cursor.x, 4)
+        s.tab()
+        self.ae(s.cursor.x, 12)
+        s.tab()
+        self.ae(s.cursor.x, 24)  # default stop in newly added columns
+        # Shrink: stops within new width are preserved
+        s.resize(s.lines, 15)
+        s.cursor_position(1, 1)
+        s.tab()
+        self.ae(s.cursor.x, 4)
+        s.tab()
+        self.ae(s.cursor.x, 12)
+        # Resize on alt screen also preserves alt-screen tab stops
+        s = self.create_screen(cols=20, lines=2)
+        parse_bytes(s, b'\x1b[?1049h')  # switch to alt screen ]
+        s.clear_tab_stop(3)
+        s.cursor_position(1, 5)
+        s.set_tab_stop()
+        s.resize(s.lines, 30)
+        s.cursor_position(1, 1)
+        s.tab()
+        self.ae(s.cursor.x, 4)
 
     def test_backspace(self):
         s = self.create_screen()
@@ -703,13 +770,15 @@ class TestScreen(BaseTest):
         s.start_selection(0, 0)
         s.update_selection(1, 3)
         self.ae(ts(), ''.join(('ab   ', 'cd')))
-        self.ae(ts(False, True), ''.join(('ab', 'cd')))
+        # soft-wrapped lines preserve trailing spaces (issue #9834)
+        self.ae(ts(False, True), 'ab   cd')
         s.reset()
         s.draw('ab        cd')
         s.start_selection(0, 0)
         s.update_selection(3, 4)
         self.ae(s.text_for_selection(), ('ab   ', '     ', 'cd'))
-        self.ae(s.text_for_selection(False, True), ('ab', '\n', 'cd'))
+        # soft-wrapped lines preserve trailing spaces (issue #9834)
+        self.ae(s.text_for_selection(False, True), ('ab   ', '     ', 'cd'))
         s.reset()
         s.draw('a')
         s.select_graphic_rendition(32)
@@ -720,7 +789,8 @@ class TestScreen(BaseTest):
         s.update_selection(1, 3)
         self.ae(s.text_for_selection(), ('abc  ', 'xy'))
         self.ae(s.text_for_selection(True), ('a\x1b[32mb\x1b[39mc  ', 'xy', '\x1b[m'))
-        self.ae(s.text_for_selection(True, True), ('a\x1b[32mb\x1b[39mc', 'xy', '\x1b[m'))
+        # soft-wrapped lines preserve trailing spaces in ANSI mode too (issue #9834)
+        self.ae(s.text_for_selection(True, True), ('a\x1b[32mb\x1b[39mc  ', 'xy', '\x1b[m'))
         # ]]]]]]]]]]]]]]]]]]]]
         s.reset()
         s.draw('a'), s.carriage_return(), s.linefeed(), s.linefeed(), s.draw('b')
@@ -728,6 +798,45 @@ class TestScreen(BaseTest):
         s.update_selection(4, 4)
         self.ae(''.join(s.text_for_selection()), 'a\n\nb')
         self.ae(''.join(s.text_for_selection(True)), 'a\n\nb')
+        # Trailing spaces on soft-wrapped lines must be preserved when strip_trailing_whitespace
+        # is set: a space at the line-wrap boundary is word-separator content, not padding
+        # (regression test for issue #9834)
+        s.reset()
+        s.draw('1234 5')  # "1234 " soft-wraps at col 4; space must survive stripping
+        s.start_selection(0, 0)
+        s.update_selection(4, 4)
+        self.ae(s.text_for_selection(), ('1234 ', '5'))
+        self.ae(s.text_for_selection(False, True), ('1234 ', '5'))
+        self.ae(s.text_for_selection(True, True), ('1234 ', '5', ''))
+
+    def test_apply_selection_with_paused_rendering_and_scrollback(self):
+        # Regression test: in 0.46.2 the paused-rendering branch of
+        # apply_selection passed the (possibly negative) loop variable y
+        # directly to linebuf_init_line, which interprets it as an unsigned
+        # index_type and reads ~4GB out of bounds in line_attrs[idx]. The fix
+        # translates to paused_y = y + scrolled_by and guards paused_y < 0.
+        # Real-world trigger: a TUI sending DCS =1s (DEC synchronized output)
+        # while the user has scrolled back and has an active scrollback
+        # selection.
+        s = self.create_screen(cols=10, lines=3, scrollback=50)
+        for i in range(40):
+            s.draw(f"row{i:03d}")
+            s.carriage_return()
+            s.linefeed()
+        s.scroll(20, True)
+        self.assertGreater(s.scrolled_by, 0)
+        # Selection that crosses the top of the visible area into scrollback,
+        # so the inner loop iterates with negative y.
+        s.start_selection(0, 0)
+        s.update_selection(2, 1)
+        self.assertTrue(s.has_selection())
+        self.assertTrue(s.pause_rendering(True, 5000))
+        # Must not crash and must return the visible-area buffer.
+        result = s.current_selections()
+        self.ae(len(result), s.lines * s.columns)
+        # The visible portion of the selection must have at least one byte
+        # marked (set_mask = 1 for plain selections).
+        self.assertIn(1, result)
 
     def test_soft_hyphen(self):
         s = self.create_screen()
@@ -999,6 +1108,21 @@ class TestScreen(BaseTest):
         s.draw('x')
         s.set_marker(marker_from_function(mark_x))
         self.ae(s.marked_cells(), [(2, 0, 1), (4, 0, 2)])
+        # Test CJK/wide characters not at position 0 (issue #9705)
+        s = self.create_screen(cols=20)
+        s.draw('テスト世界')
+        s.set_marker(marker_from_regex('テ', 3))
+        self.ae(s.marked_cells(), cells(0, 1))
+        s.set_marker(marker_from_regex('世', 3))
+        self.ae(s.marked_cells(), cells(6, 7))
+        s.set_marker(marker_from_text('世界', 3))
+        self.ae(s.marked_cells(), cells(6, 7, 8, 9))
+        s = self.create_screen(cols=20)
+        s.draw('ABテCD世EF')
+        s.set_marker(marker_from_regex('テ', 3))
+        self.ae(s.marked_cells(), cells(2, 3))
+        s.set_marker(marker_from_regex('世', 3))
+        self.ae(s.marked_cells(), cells(6, 7))
 
     def test_hyperlinks(self):
         s = self.create_screen()
@@ -1097,6 +1221,43 @@ class TestScreen(BaseTest):
         self.ae(s.current_url_text(), '123abcxyz')
         self.ae('2', s.hyperlink_at(1, 3))
         self.ae(s.current_url_text(), 'Z Z')
+
+    def test_text_cache_garbage_collection(self):
+        # unique multi-codepoint cell texts, single width base + combining mark
+        def unique_text(i):
+            return chr(0x100 + i // 0x70) + chr(0x300 + i % 0x70)
+
+        s = self.create_screen()
+        base = s.text_cache_count()
+        for i in range(10):
+            s.draw(unique_text(i))
+        self.ae(s.text_cache_count(), base + 10)
+        before = tuple(str(s.line(y)) for y in range(s.lines))
+        s.garbage_collect_text_cache()
+        # all entries are still referenced by cells, so all survive
+        self.ae(s.text_cache_count(), base + 10)
+        self.ae(before, tuple(str(s.line(y)) for y in range(s.lines)))
+
+        # scroll all multi-codepoint cells out of the screen and the history
+        # buffer, then intern one more entry, which gets a high index
+        for i in range(s.lines * 3):
+            s.linefeed()
+        s.carriage_return()
+        s.draw(unique_text(10))
+        s.garbage_collect_text_cache()
+        # only the surviving entry remains and its index was remapped
+        # without changing the cell's text
+        self.ae(s.text_cache_count(), base + 1)
+        self.ae(str(s.line(s.cursor.y)).rstrip(), unique_text(10))
+
+        # the periodic GC keeps the cache bounded when unique cell texts
+        # are continuously created and scrolled out, as in the DoS scenario
+        s = self.create_screen()
+        num = 3 * 8192 + 100
+        for i in range(num):
+            s.draw(unique_text(i))
+        self.assertLess(s.text_cache_count(), 8192 + 2 * s.lines * s.columns)
+        self.ae(str(s.line(s.cursor.y)).rstrip()[-2:], unique_text(num - 1))
 
     def test_bottom_margin(self):
         s = self.create_screen(cols=80, lines=6, scrollback=4)
@@ -1521,8 +1682,8 @@ class TestScreen(BaseTest):
         s.draw('before\r\n')
         draw_prompt('p1'), draw_output(2), mark_prompt(), s.draw('partial')
         x = s.cursor.x
-        s.erase_last_command(False)
-        self.ae('before\n$ p1\npartial', at().rstrip())
+        s.erase_last_command()
+        self.ae('before\npartial', at().rstrip())
         for scroll in (8, 9, 10):
             s.reset()
             s.draw('before'), s.carriage_return(), s.linefeed()
@@ -1534,6 +1695,33 @@ class TestScreen(BaseTest):
         draw_prompt('p1'), draw_output(9), mark_prompt(), s.draw('partial')
         s.erase_last_command()
         self.ae(at().rstrip(), '  a  b\npartial')
+
+        # the most recent command is erased even when it produced no output (an
+        # empty Enter, a comment, cd, ...): such commands emit no OSC 133;C and
+        # must not be skipped in favour of an older command-with-output.
+        s = self.create_screen(cols=10, lines=12, scrollback=30)
+        s.draw('before\r\n')
+        draw_prompt('p1'), draw_output(2), draw_prompt('# note'), mark_prompt(), s.draw('partial')
+        s.erase_last_command()
+        self.ae('before\n$ p1\n0\n1\npartial', at().rstrip())  # the output-less command goes first
+        s.erase_last_command()
+        self.ae('before\npartial', at().rstrip())              # then the command with output
+        # consecutive output-less commands are removed newest-first, one per call
+        s.reset()
+        s.draw('before\r\n')
+        draw_prompt('p1'), draw_output(1), draw_prompt('e1'), draw_prompt('e2'), mark_prompt(), s.draw('partial')
+        s.erase_last_command()
+        self.ae('before\n$ p1\n0\n$ e1\npartial', at().rstrip())
+        s.erase_last_command()
+        self.ae('before\n$ p1\n0\npartial', at().rstrip())
+        s.erase_last_command()
+        self.ae('before\npartial', at().rstrip())
+        # multi-line live prompt: the command region is erased with no residual
+        s.reset()
+        s.draw('before\r\n')
+        draw_prompt('p1'), draw_output(9), mark_prompt(), s.draw('l1'), s.carriage_return(), s.index(), s.draw('partial')
+        s.erase_last_command()
+        self.ae('before\nl1\npartial', at().rstrip())
 
     def test_pointer_shapes(self):
         from kitty.window import set_pointer_shape
@@ -1579,32 +1767,53 @@ class TestScreen(BaseTest):
         t('=fleur', 'move')
 
     def test_color_profile(self):
-        c = ColorProfile(defaults)
+        from kitty.fast_data_types import patch_color_profiles
+        opts = self.set_options({'palette_generate': 'fixed'})
+        c = ColorProfile(opts)
         for i in range(8):
-            col = getattr(defaults, f'color{i}')
+            col = getattr(opts, f'color{i}')
             self.ae(c.as_color(i << 8 | 1), col)
+        for i in range(16, 256):
+            self.assertIsNone(getattr(opts, f'color{i}'))
         self.ae(c.as_color(255 << 8 | 1), Color(0xee, 0xee, 0xee))
         s = self.create_screen()
-        s.color_profile.reload_from_opts(defaults)
+        s.color_profile.reload_from_opts(opts)
         def q(send, expected=None):
             s.callbacks.clear()
             parse_bytes(s, b'\x1b]21;' + ';'.join(f'{k}={v}' for k, v in send.items()).encode() + b'\a')
             self.ae(s.callbacks.color_control_responses, [expected] if expected else [])
         q({k: '?' for k in 'background foreground 213 unknown'.split()}, {
-            'background': defaults.background, 'foreground': defaults.foreground, '213': defaults.color213, 'unknown': '?'})
+            'background': opts.background, 'foreground': opts.foreground,
+            '213': Color(255, 135, 255), 'unknown': '?'})
         q({'background':'aquamarine'})
         q({'background':'?', 'selection_background': '?'}, {
             'background': Color.parse_color('Aquamarine'), 'selection_background': s.color_profile.highlight_bg})
         q({'selection_background': ''})
         self.assertIsNone(s.color_profile.highlight_bg)
         q({'selection_background': '?'}, {'selection_background': ''})
-        s.color_profile.reload_from_opts(defaults)
+        self.assertTrue(s.color_profile.palette_color_is_generated(213))
+        opts = self.set_options({'palette_generate': 'semantic'})
+        q({'213': ''})
+        q({'213': '?'}, {'213': Color(216, 125, 215)})
+        self.assertTrue(s.color_profile.palette_color_is_generated(213))
+        s.color_profile.reload_from_opts(opts)
         q({'transparent_background_color9': '?'}, {'transparent_background_color9': '?'})
         q({'transparent_background_color2': '?'}, {'transparent_background_color2': ''})
         q({'transparent_background_color2': 'red@0.5'})
         q({'transparent_background_color2': '?'}, {'transparent_background_color2': (Color(255, 0, 0), 126)})
         q({'transparent_background_color2': '#ffffff@-1'})
         q({'transparent_background_color2': '?'}, {'transparent_background_color2': (Color(255, 255, 255), 255)})
+        opts.color114 = Color(1, 1, 4)
+        s.color_profile.reload_from_opts(opts)
+        self.assertTrue(s.color_profile.palette_color_is_generated(213))
+        self.assertFalse(s.color_profile.palette_color_is_generated(114))
+        q({'213': '?'}, {'213': Color(216, 125, 215)})
+        patch_color_profiles(
+            {'background': Color(255, 255, 255), 'foreground': Color(0, 0, 0)}, (), (s.color_profile,), True)
+        self.assertTrue(s.color_profile.palette_color_is_generated(213))
+        self.assertFalse(s.color_profile.palette_color_is_generated(114))
+        q({'213': '?'}, {'213': Color(216, 125, 215)})
+
 
     def test_multi_cursors(self):
         s = self.create_screen()
@@ -1672,6 +1881,57 @@ class TestScreen(BaseTest):
             sc(1, slot=slot)
             sc(2, 1, 2, 3, slot=slot)
             sc(5, 13, slot=slot)
+
+    def test_soft_reset(self):
+        SOFT_RESET = b'\x1b[!p'  # DECSTR sequence
+
+        # Screen content is preserved (unlike hard reset)
+        s = self.create_screen()
+        s.draw('hello')
+        parse_bytes(s, SOFT_RESET)
+        self.ae(str(s.line(0)), 'hello')
+
+        # Hard reset clears screen content; soft reset does not
+        s = self.create_screen()
+        s.draw('hello')
+        s.reset()
+        self.ae(str(s.line(0)), '')
+
+        # Cursor SGR attributes are cleared
+        s = self.create_screen()
+        s.select_graphic_rendition(1)   # bold
+        s.select_graphic_rendition(31)  # red fg
+        self.assertTrue(s.cursor.bold)
+        self.assertNotEqual(s.cursor.fg, 0)
+        parse_bytes(s, SOFT_RESET)
+        self.assertFalse(s.cursor.bold)
+        self.ae(s.cursor.fg, 0)
+
+        # Cursor position is preserved
+        s = self.create_screen()
+        s.cursor_position(3, 4)
+        self.ae((s.cursor.y, s.cursor.x), (2, 3))
+        parse_bytes(s, SOFT_RESET)
+        self.ae((s.cursor.y, s.cursor.x), (2, 3))
+
+        # Insert mode (IRM) is cleared
+        s = self.create_screen()
+        s.draw('abcde')
+        s.set_mode(IRM)
+        parse_bytes(s, SOFT_RESET)
+        # without IRM, drawing overwrites
+        s.cursor.x = 0
+        s.draw('X')
+        self.ae(str(s.line(0)), 'Xbcde')
+
+        # Alternate screen is NOT exited on soft reset
+        s = self.create_screen()
+        parse_bytes(s, b'\x1b[?1049h')  # enter alternate screen
+        self.assertFalse(s.is_main_linebuf())
+        parse_bytes(s, SOFT_RESET)
+        self.assertFalse(s.is_main_linebuf())
+        s.reset()
+        self.assertTrue(s.is_main_linebuf())
 
 
 def detect_url(self, scale=1):

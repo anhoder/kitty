@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+import types
 
 from kitty.conf.generate import write_output
 
@@ -45,7 +46,7 @@ def main(args: list[str]=sys.argv) -> None:
     all_colors = []
     special_colors = []
     for opt in definition.iter_all_options():
-        if callable(opt.parser_func):
+        if isinstance(opt.parser_func, types.FunctionType):
             match opt.parser_func.__name__:
                 case 'to_color':
                     all_colors.append(opt.name)
@@ -60,9 +61,11 @@ def main(args: list[str]=sys.argv) -> None:
     patch_color_list('tools/themes/collection.go', all_colors, 'ALL')
     nc = ',\n    '.join(f'{x!r}' for x in nullable_colors)
     sc = ',\n    '.join(f'{x!r}' for x in special_colors)
+    ac = ',\n    '.join(f'{x!r}' for x in all_colors)
     write_output('kitty', definition,
                  f'\nnullable_colors = frozenset({{\n    {nc}\n}})\n'
                  f'\nspecial_colors = frozenset({{\n    {sc}\n}})\n'
+                 f'\nall_colors = frozenset({{\n    {ac}\n}})\n'
     )
 
 

@@ -65,6 +65,10 @@ Can be specified multiple times to use multiple patterns. For example::
 ''',
     )
 
+opt('mark_moved_lines', 'yes', option_type='to_bool', long_text='''
+Highlight lines that are moved, that is removed from the left and added to the right
+differently, using the :opt:`moved_bg` color.''')
+
 opt('word_diff_mode', 'words', choices=('words', 'central'),
     long_text='''
 The algorithm to use for highlighting which parts of changed lines differ.
@@ -84,6 +88,11 @@ non-punctuation characters. The expression must be a valid Go regular expression
 If an invalid expression is provided, diff will fail with an error.
 '''
     )
+
+opt('sticky_header', 'yes', option_type='to_bool', long_text='''
+When scrolled past the header of a file, keep the file's name and separator
+pinned to the top of the screen.
+''')
 
 egr()  # }}}
 
@@ -152,6 +161,12 @@ opt('dark_highlight_added_bg', '#31503d', option_type='to_color')
 opt('added_margin_bg', '#cdffd8', option_type='to_color')
 opt('dark_added_margin_bg', '#31503d', option_type='to_color')
 
+opt('moved_bg', '#fffde7', option_type='to_color', long_text='Moved text backgrounds (same text that was removed in one place and added in another)')
+opt('dark_moved_bg', '#003333', option_type='to_color')
+
+opt('moved_margin_bg', '#fff3b0', option_type='to_color')
+opt('dark_moved_margin_bg', '#00495b', option_type='to_color')
+
 opt('filler_bg', '#fafbfc', option_type='to_color', long_text='Filler (empty) line background')
 opt('dark_filler_bg', '#262c36', option_type='to_color')
 
@@ -182,21 +197,21 @@ egr()  # }}}
 agr('shortcuts', 'Keyboard shortcuts')
 
 map('Quit',
-    'quit q quit',
+    'quit --allow-fallback=shifted,ascii q quit',
     )
 map('Quit',
     'quit esc quit',
     )
 
 map('Scroll down',
-    'scroll_down j scroll_by 1',
+    'scroll_down --allow-fallback=shifted,ascii j scroll_by 1',
     )
 map('Scroll down',
     'scroll_down down scroll_by 1',
     )
 
 map('Scroll up',
-    'scroll_up k scroll_by -1',
+    'scroll_up --allow-fallback=shifted,ascii k scroll_by -1',
     )
 map('Scroll up',
     'scroll_up up scroll_by -1',
@@ -217,41 +232,41 @@ map('Scroll to next page',
     'scroll_page_down space scroll_to next-page',
     )
 map('Scroll to next page',
-    'scroll_page_down ctrl+f scroll_to next-page',
+    'scroll_page_down --allow-fallback=shifted,ascii ctrl+f scroll_to next-page',
     )
 
 map('Scroll to previous page',
     'scroll_page_up page_up scroll_to prev-page',
     )
 map('Scroll to previous page',
-    'scroll_page_up ctrl+b scroll_to prev-page',
+    'scroll_page_up --allow-fallback=shifted,ascii ctrl+b scroll_to prev-page',
     )
 
 map('Scroll down half page',
-    'scroll_half_page_down ctrl+d scroll_to next-half-page',
+    'scroll_half_page_down --allow-fallback=shifted,ascii ctrl+d scroll_to next-half-page',
     )
 map('Scroll up half page',
-    'scroll_half_page_up ctrl+u scroll_to prev-half-page',
+    'scroll_half_page_up --allow-fallback=shifted,ascii ctrl+u scroll_to prev-half-page',
     )
 
 map('Scroll to next change',
-    'next_change n scroll_to next-change',
+    'next_change --allow-fallback=shifted,ascii n scroll_to next-change',
     )
 
 map('Scroll to previous change',
-    'prev_change p scroll_to prev-change',
+    'prev_change --allow-fallback=shifted,ascii p scroll_to prev-change',
     )
 
 map('Scroll to next file',
-    'next_file shift+j scroll_to next-file',
+    'next_file --allow-fallback=shifted,ascii shift+j scroll_to next-file',
     )
 
 map('Scroll to previous file',
-    'prev_file shift+k scroll_to prev-file',
+    'prev_file --allow-fallback=shifted,ascii shift+k scroll_to prev-file',
     )
 
 map('Show all context',
-    'all_context a change_context all',
+    'all_context --allow-fallback=shifted,ascii a change_context all',
     )
 
 map('Show default context',
@@ -289,15 +304,17 @@ map('Scroll to previous search match',
     )
 
 map('Search forward (no regex)',
-    'search_forward_simple f start_search substring forward',
+    'search_forward_simple --allow-fallback=shifted,ascii f start_search substring forward',
     )
 
 map('Search backward (no regex)',
-    'search_backward_simple b start_search substring backward',
+    'search_backward_simple --allow-fallback=shifted,ascii b start_search substring backward',
     )
 
-map('Copy selection to clipboard', 'copy_to_clipboard y copy_to_clipboard')
-map('Copy selection to clipboard or exit if no selection is present', 'copy_to_clipboard_or_exit ctrl+c copy_to_clipboard_or_exit')
+map('Copy selection to clipboard', 'copy_to_clipboard --allow-fallback=shifted,ascii y copy_to_clipboard')
+map('Copy selection to clipboard or exit if no selection is present',
+    'copy_to_clipboard_or_exit --allow-fallback=shifted,ascii ctrl+c copy_to_clipboard_or_exit',
+    )
 
 egr()  # }}}
 

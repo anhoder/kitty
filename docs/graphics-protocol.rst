@@ -29,12 +29,15 @@ Some applications that use the kitty graphics protocol:
 
 * `awrit <https://github.com/chase/awrit>`_ - Chromium-based web browser rendered in Kitty with mouse and keyboard support
 * `blackcat <https://github.com/j-c-m/blackcat>`_ - a modern compatible cat with image support
+* `bicat <https://github.com/stevenxxiu/bicat>`_ - a terminal image viewer that also works in the Vifm file manager, with nested Tmux support
 * `broot <https://dystroy.org/broot/>`_ - a terminal file explorer and manager, with preview of images, SVG, PDF, etc.
 * `chafa <https://github.com/hpjansson/chafa>`_  - a terminal image viewer
+* `desktui <https://github.com/mishushakov/desktui>`_ - a VNC client that draws a remote desktop in the terminal, one remote pixel per terminal pixel
 * :doc:`kitty-diff <kittens/diff>` - a side-by-side terminal diff program with support for images
 * `fzf <https://github.com/junegunn/fzf/commit/d8188fce7b7bea982e7f9050c35e488e49fb8fd0>`_ - A command line fuzzy finder
 * `mpv <https://github.com/mpv-player/mpv/commit/874e28f4a41a916bb567a882063dd2589e9234e1>`_ - A video player that can play videos in the terminal
 * `neofetch <https://github.com/dylanaraps/neofetch>`_ - A command line system information tool
+* `nvim <https://github.com/neovim/neovim/issues/30889>`__ - A TUI editor that can display images in the terminal
 * `pixcat <https://github.com/mirukana/pixcat>`_ - a third party CLI and python library that wraps the graphics protocol
 * `ranger <https://github.com/ranger/ranger>`_ - a terminal file manager, with image previews
 * `termpdf.py <https://github.com/dsanson/termpdf.py>`_ - a terminal PDF/DJVU/CBR viewer
@@ -832,6 +835,27 @@ use the ``i`` key with the image id for all future communication.
    The ability to use image numbers (see :doc:`kittens/query_terminal` to query kitty version)
 
 
+.. _image_usage_hints:
+
+Usage hints
+-----------------------------
+
+Clients can specify *usage hints* when creating images using the ``N`` key.
+These hints allow the terminal to optimise resource consumption such as caching
+strategies. The value of ``N`` is a bitmask.
+
+Currently the only usage hint defined is ``transient (N == 1)``.
+The terminal is free to assume that an image with this hint
+will be used for only a short time, and so may, for example, evict its
+data before other images when the image is soft deleted, has no visible
+placements and the terminal is under storage pressure, or skip writing
+its data to disk. The terminal is also free to ignore the hint. If an
+animation frame with the *transient* hint is composited onto another
+frame, and any of the involved frames have the hint, the resulting
+composited frame also has the hint. This hint must be specified when the
+image or frame data is transmitted. It has no effect on placement commands.
+
+
 .. _animation_protocol:
 
 Animation
@@ -1049,7 +1073,8 @@ Key      Value                 Default    Description
 ``o``    Single character.     ``null``   The type of data compression.
          ``only z``
 ``m``    zero or one           ``0``      Whether there is more chunked data available.
-
+``N``    bitmask               ``0``      Usage hints from the client to the terminal about the intended use of
+                                          the image.
 **Keys for image display**
 -----------------------------------------------------------
 ``x``    Positive integer      ``0``      The left edge (in pixels) of the image area to display

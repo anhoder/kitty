@@ -14,9 +14,9 @@ Image and document viewers
 Powered by kitty's :doc:`graphics-protocol` there exist many tools for viewing
 images and other types of documents directly in your terminal, even over SSH.
 
-.. _tool_bookorat:
+.. _tool_bookokrat:
 
-`bookorat <https://github.com/bugzmanov/bookokrat>`
+`bookokrat <https://github.com/bugzmanov/bookokrat>`_
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 A terminal PDF/EPUB viewer
 
@@ -66,6 +66,11 @@ kitty graphics protocol.
 .. _tool_mdfried:
 
 `mdfried <https://github.com/benjajaja/mdfried>`_
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Markdown viewer that can render big headers with the text-sizing-protocol, and
+also render images with the kitty graphics protocol.
+
+`kmv <https://github.com/parf/Kitty-Markdown-Viewer>`__
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 Markdown viewer that can render big headers with the text-sizing-protocol, and
 also render images with the kitty graphics protocol.
@@ -134,6 +139,7 @@ A video player that can play videos in the terminal.
 A terminal image and video viewer, that displays static and animated images or
 plays videos. Fast multi-threaded loading, JPEG exif rotation, grid view and
 connecting to the webcam make it a versatile terminal utility.
+
 
 
 File managers
@@ -281,6 +287,14 @@ features such a split windows, previews, REPLs etc.
 Integrates with kitty to use native kitty windows for its windows/panels and
 REPLs.
 
+.. _tool_orbiton:
+
+`orbiton <https://github.com/xyproto/orbiton/>`_
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+A terminal text editor that uses kitty's graphics protocol to render Markdown
+documents with fonts and images inline (use the ``-B`` flag for a word
+processor-like book mode), and to preview images in its built-in file browser.
+
 .. tool_vim_slime:
 
 `vim-slime <https://github.com/jpalardy/vim-slime#kitty>`_
@@ -312,6 +326,13 @@ Various image viewing plugins for editors
 
 Scrollback manipulation
 -------------------------
+
+.. tool_kitty_search_incremental:
+
+`kitty-search-incremental <https://github.com/Mobinshahidi/kitty-search>`_
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Incremental scrollback search with live results, regex and literal modes,
+case-sensitivity toggle, match counter, and auto-scroll to the matching line.
 
 .. tool_kitty_scrollback_nvim:
 

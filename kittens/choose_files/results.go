@@ -112,12 +112,10 @@ func (h *Handler) render_match_with_positions(text string, add_ellipsis bool, po
 	for chunk := range split_up_text(text, add_ellipsis, positions) {
 		if chunk.text != "" {
 			if chunk.emphasize {
-				h.lp.QueueWriteString(prefix)
-				defer func() {
-					h.lp.QueueWriteString(suffix)
-				}()
+				h.lp.QueueWriteString(prefix + chunk.text + suffix)
+			} else {
+				h.lp.QueueWriteString(chunk.text)
 			}
-			h.lp.QueueWriteString(chunk.text)
 		}
 	}
 }
@@ -294,13 +292,13 @@ func (h *Handler) draw_num_of_matches(num_shown, y int, in_progress bool) {
 	st := loop.SizedText{Subscale_denominator: 2, Subscale_numerator: 1, Vertical_alignment: 2, Width: 1}
 	graphemes := wcswidth.SplitIntoGraphemes(m)
 	for len(graphemes) > 0 {
-		s := ""
+		var s strings.Builder
 		for w := 0; w < 2 && len(graphemes) > 0; {
 			w += wcswidth.Stringwidth(graphemes[0])
-			s += graphemes[0]
+			s.WriteString(graphemes[0])
 			graphemes = graphemes[1:]
 		}
-		h.lp.DrawSizedText(s, st)
+		h.lp.DrawSizedText(s.String(), st)
 	}
 	if spinner != "" {
 		h.lp.QueueWriteString(spinner)

@@ -16,6 +16,9 @@ layout(std140) uniform CellRenderData {
     // must have unique entries with 0 being default_bg and unset being UINT32_MAX
     uint bg_colors0, bg_colors1, bg_colors2, bg_colors3, bg_colors4, bg_colors5, bg_colors6, bg_colors7;
     float bg_opacities0, bg_opacities1, bg_opacities2, bg_opacities3, bg_opacities4, bg_opacities5, bg_opacities6, bg_opacities7;
+};
+
+layout(std140) uniform ColorTable {
     uint color_table[NUM_COLORS + MARK_MASK + MARK_MASK + 2];
 };
 uniform float gamma_lut[256];
@@ -284,7 +287,7 @@ vec3 fg_override(float under_luminance, float over_luminance, vec3 under, vec3 o
     float result_a_ratio = contrast_ratio(under_luminance, dot(result_a, Y));
     float result_b_ratio = contrast_ratio(under_luminance, dot(result_b, Y));
     vec3 result = mix(result_a, result_b, step(result_a_ratio, result_b_ratio));
-    return mix(result, over, max(step(diff.r + diff.g + diff.g, 0.001f), step(min_contrast_ratio, ratio)));
+    return mix(result, over, max(step(diff.r + diff.g + diff.b, 0.001f), step(min_contrast_ratio, ratio)));
 }
 #endif
 

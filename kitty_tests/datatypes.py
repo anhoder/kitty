@@ -66,6 +66,7 @@ class TestDataTypes(BaseTest):
         def c(spec, r=0, g=0, b=0, a=0):
             c = to_color(spec)
             self.ae(Color(r, g, b, a), c, spec)
+            self.ae(Color(r, green=g, alpha=a, blue=b), c, spec)
 
         c('#eee # comment', 0xee, 0xee, 0xee)
         c('#234567', 0x23, 0x45, 0x67)
@@ -278,6 +279,8 @@ class TestDataTypes(BaseTest):
         l2 = lb.create_line_copy(2)
         lb.copy_line_to(1, l2)
         self.ae(l2, lb2.line(2))
+        with self.assertRaises(IndexError):
+            lb.copy_line_to(lb.ynum, l2)
         lb.clear_line(0)
         self.ae(lb.line(0), LineBuf(1, lb.xnum).create_line_copy(0))
         lb = filled_line_buf(5, 5, filled_cursor())
@@ -649,19 +652,26 @@ class TestDataTypes(BaseTest):
                 shutil.rmtree(dot_config)
             with tempfile.TemporaryDirectory() as tdir:
                 with open(tdir + '/macos-launch-services-cmdline', 'w') as f:
-                    print('kitty +runpy "import sys; print(sys.argv[-1])"', file=f)
-                    print('next-line', file=f)
-                    print()
+                    print('kitty --title from-file', file=f)
                 if is_macos:
                     env = os.environ.copy()
                     env['KITTY_CONFIG_DIRECTORY'] = tdir
                     env['KITTY_LAUNCHED_BY_LAUNCH_SERVICES'] = '1'
-                    cp = subprocess.run([kitty_exe(), '+runpy', 'import json, sys; print(json.dumps(sys.argv))'], env=env, stdout=subprocess.PIPE)
-                    actual = cp.stdout.strip().decode()
+                    # Test 1: file args are loaded when no extra user args are present
+                    cp = subprocess.run([kitty_exe(), '+testing-launcher-code'], env=env, stdout=subprocess.PIPE)
+                    actual = cp.stdout.decode()
                     if cp.returncode != 0:
                         print(actual)
-                        raise AssertionError(f'kitty +runpy failed with return code: {cp.returncode}')
-                    self.ae('next-line', actual)
+                        raise AssertionError(f'kitty +testing-launcher-code failed with return code: {cp.returncode}')
+                    self.assertIn('from-file', actual)
+                    # Test 2: extra args passed via open --args are appended after file args
+                    cp = subprocess.run([kitty_exe(), '+testing-launcher-code', '--title', 'from-args'], env=env, stdout=subprocess.PIPE)
+                    actual = cp.stdout.decode()
+                    if cp.returncode != 0:
+                        print(actual)
+                        raise AssertionError(f'kitty +testing-launcher-code failed with return code: {cp.returncode}')
+                    # from-args overrides from-file because user args are appended after file args
+                    self.assertIn('from-args', actual)
                 os.makedirs(tdir + '/good/kitty')
                 open(tdir + '/good/kitty/kitty.conf', 'w').close()
                 data = os.urandom(32879)
@@ -930,3 +940,50 @@ class TestDataTypes(BaseTest):
         s.reset()
         s.draw('\0')
         self.ae(str(s.line(0)), '')
+
+    def test_set_uint_at_address(self):
+        import platform
+
+        from kitty.fast_data_types import set_uint_at_address
+        from kitty.marks import marker_from_function, marker_from_multiple_regex, marker_from_regex, marker_from_text
+
+        # Test set_uint_at_address directly (skip on intel macs due to ctypes issues)
+        if not (is_macos and platform.machine() == 'x86_64'):
+            from ctypes import addressof, c_uint
+            val = c_uint(0)
+            addr = addressof(val)
+            set_uint_at_address(addr, 42)
+            self.ae(val.value, 42)
+            set_uint_at_address(addr, 0)
+            self.ae(val.value, 0)
+            set_uint_at_address(addr, 0xFFFF)
+            self.ae(val.value, 0xFFFF)
+
+        # Test marker functions using set_uint_at_address via Screen
+        s = self.create_screen()
+        s.draw('abaa')
+        s.set_marker(marker_from_regex('a', 3))
+        self.ae(s.marked_cells(), [(0, 0, 3), (2, 0, 3), (3, 0, 3)])
+        s.set_marker()
+        self.ae(s.marked_cells(), [])
+
+        s = self.create_screen()
+        s.draw('aXbX')
+        s.set_marker(marker_from_multiple_regex([(1, 'a'), (2, 'X')]))
+        self.ae(s.marked_cells(), [(0, 0, 1), (1, 0, 2), (3, 0, 2)])
+
+        s = self.create_screen(cols=20)
+        s.draw('hello world')
+        s.set_marker(marker_from_text('world', 2))
+        self.ae(s.marked_cells(), [(6, 0, 2), (7, 0, 2), (8, 0, 2), (9, 0, 2), (10, 0, 2)])
+
+        def mark_func(text):
+            for i, ch in enumerate(text):
+                if ch == 'x':
+                    yield i, i, 1
+
+        s = self.create_screen()
+        s.draw('axbxc')
+        s.set_marker(marker_from_function(mark_func))
+        self.ae(s.marked_cells(), [(1, 0, 1), (3, 0, 1)])
+

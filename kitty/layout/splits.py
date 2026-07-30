@@ -5,12 +5,19 @@ from collections.abc import Collection, Generator, Iterator, Sequence
 from typing import Any, Optional, TypedDict, Union
 
 from kitty.borders import BorderColor
+from kitty.conf.utils import to_bool
 from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, RIGHT_EDGE, TOP_EDGE
 from kitty.types import Edges, NeighborsMap, WindowGeometry, WindowMapper, WindowResizeDragData
 from kitty.typing_compat import EdgeLiteral, WindowType
 from kitty.window_list import WindowGroup, WindowList
 
-from .base import BorderLine, Layout, LayoutOpts, blank_rects_for_window, lgd, window_geometry_from_layouts
+from .base import BorderLine, DragOverlayMode, Layout, LayoutOpts, blank_rects_for_window, lgd, window_geometry_from_layouts
+
+
+def child_axis_units(child: 'Pair | int | None', horizontal: bool) -> int:
+    if isinstance(child, Pair):
+        return child.count_axis_units(horizontal)
+    return 1 if child is not None else 0
 
 
 class SerializedPair(TypedDict, total=False):
@@ -81,6 +88,11 @@ class Pair:
             yield from self.one.self_and_descendants()
         if isinstance(self.two, Pair):
             yield from self.two.self_and_descendants()
+
+    def count_axis_units(self, horizontal: bool) -> int:
+        if self.horizontal != horizontal:
+            return 1
+        return child_axis_units(self.one, horizontal) + child_axis_units(self.two, horizontal)
 
     def pair_for_window(self, window_id: int) -> Optional['Pair']:
         if self.one == window_id or self.two == window_id:
@@ -498,9 +510,9 @@ class Pair:
             return False
         if self.two == gid:
             return True
-        if not isinstance(self.two, Pair):
-            return False
-        return self.two.is_group_on_second(gid)
+        if isinstance(self.two, Pair):
+            return self.two.pair_for_window(gid) is not None
+        return False
 
     def find_window_in_tree(self, window_id: int) -> 'list[tuple[Pair, bool]] | None':
         # Returns list of (pair, is_in_one) from self down to the pair containing window_id.
@@ -544,6 +556,7 @@ class Pair:
 class SplitsLayoutOpts(LayoutOpts):
 
     default_axis_is_horizontal: bool | None = True
+    equalize_on_close: bool = False
 
     def __init__(self, data: dict[str, str]):
         q = data.get('split_axis', 'horizontal')
@@ -551,16 +564,21 @@ class SplitsLayoutOpts(LayoutOpts):
             self.default_axis_is_horizontal = None
         else:
             self.default_axis_is_horizontal = q == 'horizontal'
+        self.equalize_on_close = to_bool(data.get('equalize_on_window_close', 'n'))
 
-    def serialized(self) -> dict[str, Any]:
-        return {'default_axis_is_horizontal': self.default_axis_is_horizontal}
+    def serialized(self) -> dict[str, str]:
+        return {
+            'split_axis': 'auto' if self.default_axis_is_horizontal is None else ('horizontal' if self.default_axis_is_horizontal else 'vertical'),
+            'equalize_on_window_close': 'y' if self.equalize_on_close else 'n',
+        }
 
 
 class Splits(Layout):
     name = 'splits'
     needs_all_windows = True
-    layout_opts = SplitsLayoutOpts({})
+    layout_opts: SplitsLayoutOpts = SplitsLayoutOpts({})
     no_minimal_window_borders = True
+    drag_overlay_mode = DragOverlayMode.free
 
     @property
     def default_axis_is_horizontal(self) -> bool | None:
@@ -590,8 +608,8 @@ class Splits(Layout):
             if isinstance(q, Pair):
                 self.pairs_root = q
 
-    def do_layout(self, all_windows: WindowList) -> None:
-        groups = tuple(all_windows.iter_all_layoutable_groups())
+    def do_layout(self, windows: WindowList) -> None:
+        groups = tuple(windows.iter_all_layoutable_groups())
         root = self.pairs_root
         all_present_group_ids = {g.id for g in groups}
         already_placed_group_ids = frozenset(root.all_window_ids())
@@ -668,19 +686,33 @@ class Splits(Layout):
             pair.bias = 0.5
         return True
 
-    def minimal_borders(self, all_windows: WindowList) -> Iterator[BorderLine]:
-        groups = tuple(all_windows.iter_all_layoutable_groups())
+    def equalize_biases(self) -> bool:
+        for pair in self.pairs_root.self_and_descendants():
+            left = child_axis_units(pair.one, pair.horizontal)
+            right = child_axis_units(pair.two, pair.horizontal)
+            total = left + right
+            if total > 0:
+                pair.bias = left / total
+        return True
+
+    def on_window_removed(self, all_windows: WindowList) -> bool:
+        if self.layout_opts.equalize_on_close:
+            return self.equalize_biases()
+        return False
+
+    def minimal_borders(self, windows: WindowList) -> Iterator[BorderLine]:
+        groups = tuple(windows.iter_all_layoutable_groups())
         window_count = len(groups)
         if not lgd.draw_minimal_borders or window_count < 2:
             return
-        needs_borders_map = all_windows.compute_needs_borders_map(lgd.draw_active_borders)
-        ag = all_windows.active_group
+        needs_borders_map = windows.compute_needs_borders_map(lgd.draw_active_borders)
+        ag = windows.active_group
         active_group_id = -1 if ag is None else ag.id
 
         border_color_map = {}
         for grp_id, needs_borders in needs_borders_map.items():
             if needs_borders:
-                wid = g.active_window_id if (g := all_windows.group_for_id(grp_id)) else 0
+                wid = g.active_window_id if (g := windows.group_for_id(grp_id)) else 0
                 if wid:
                     color = BorderColor.active if grp_id is active_group_id else BorderColor.bell
                     border_color_map[wid] = color
@@ -691,13 +723,13 @@ class Splits(Layout):
                     for bb in which:
                         yield bb._replace(color=border_color_map.get(abs(bb.window_id), BorderColor.inactive))
 
-    def neighbors_for_window(self, window: WindowType, all_windows: WindowList) -> NeighborsMap:
-        wg = all_windows.group_for_window(window)
+    def neighbors_for_window(self, window: WindowType, windows: WindowList) -> NeighborsMap:
+        wg = windows.group_for_window(window)
         assert wg is not None
         pair = self.pairs_root.pair_for_window(wg.id)
         ans: NeighborsMap = {}
         if pair is not None:
-            pair.neighbors_for_window(wg.id, ans, self, all_windows)
+            pair.neighbors_for_window(wg.id, ans, self, windows)
         return ans
 
     def move_window(self, all_windows: WindowList, delta: int = 1) -> bool:
@@ -721,6 +753,28 @@ class Splits(Layout):
         if moved and before.id != after.id:
             self.pairs_root.swap_windows(before.id, after.id)
         return moved
+
+    def insert_window_next_to(
+        self,
+        all_windows: WindowList,
+        window: 'WindowType',
+        next_to: 'WindowType',
+        horizontal: bool,
+        after: bool
+    ) -> None:
+        ''' Reposition an existing window as a split adjacent to next_to '''
+        src_wg = all_windows.group_for_window(window)
+        dest_wg = all_windows.group_for_window(next_to)
+        if src_wg is None or dest_wg is None or src_wg.id == dest_wg.id:
+            return
+        # Remove from current position in pairs_root
+        self.remove_windows(src_wg.id)
+        # Re-insert next to dest
+        pair = self.pairs_root.pair_for_window(dest_wg.id)
+        if pair is not None:
+            pair.split_and_add(dest_wg.id, src_wg.id, horizontal, after)
+        else:
+            self.pairs_root.balanced_add(src_wg.id)
 
     def layout_action(self, action_name: str, args: Sequence[str], all_windows: WindowList) -> bool | None:
         if action_name == 'rotate':
@@ -827,12 +881,14 @@ class Splits(Layout):
                             maximized_biases[key] = saved_biases
                             self._maximized_biases = maximized_biases
                     return True
+        elif action_name == 'equalize':
+            return self.equalize_biases()
 
         return None
 
-    def drag_resize_window(self, all_windows: WindowList, pair_id: int, increment: float, is_horizontal: bool = True) -> bool:
+    def drag_resize_window(self, all_windows: WindowList, window_id: int, increment: float, is_horizontal: bool = True) -> bool:
         for pair in self.pairs_root.self_and_descendants():
-            if id(pair) == pair_id:
+            if id(pair) == window_id:
                 new_bias = max(0, min(pair.bias + increment, 1))
                 if new_bias != pair.bias:
                     pair.bias = new_bias
@@ -857,12 +913,7 @@ class Splits(Layout):
         p = pair
         def size_increases_forwards(p: Pair) -> bool:
             in_leading_half = not p.is_group_on_second(wg.id)
-            if p is pair:
-                return is_leading_edge != in_leading_half
-            parent = pair_parent_map.get(p) or Pair()
-            if parent.horizontal != p.horizontal and is_leading_edge:
-                return True
-            return not in_leading_half
+            return is_leading_edge != in_leading_half
 
         def ancestor_with_neighboring_border_of_same_orientation(p: Pair) -> Pair | None:
             horizontal = bool(edges & (LEFT_EDGE | RIGHT_EDGE))
@@ -885,11 +936,21 @@ class Splits(Layout):
             if p.is_redundant:
                 continue
             if ans.horizontal_id is None and p.horizontal:
-                p, fwd = pair_or_parent(p)
-                ans = ans._replace(horizontal_id=id(p), width_increases_rightwards=fwd)
+                new_p, fwd = pair_or_parent(p)
+                p = new_p
+                if not p.horizontal and ans.vertical_id is None:
+                    # pair_or_parent redirected to a vertical pair; use it for vertical resize
+                    ans = ans._replace(vertical_id=id(p), height_increases_downwards=fwd)
+                else:
+                    ans = ans._replace(horizontal_id=id(p), width_increases_rightwards=fwd)
             if ans.vertical_id is None and not p.horizontal:
-                p, fwd = pair_or_parent(p)
-                ans = ans._replace(vertical_id=id(p), height_increases_downwards=fwd)
+                new_p, fwd = pair_or_parent(p)
+                p = new_p
+                if p.horizontal and ans.horizontal_id is None:
+                    # pair_or_parent redirected to a horizontal pair; use it for horizontal resize
+                    ans = ans._replace(horizontal_id=id(p), width_increases_rightwards=fwd)
+                else:
+                    ans = ans._replace(vertical_id=id(p), height_increases_downwards=fwd)
             if (parent := pair_parent_map.get(p)) is None:
                 break
             p = parent

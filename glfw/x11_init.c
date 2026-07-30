@@ -156,8 +156,11 @@ read_xi_scroll_devices(void) {
     if (!xi.available || xi.major < 2 || (xi.major == 2 && xi.minor < 1) || !xi.LIBINPUT_SCROLL_METHOD_ENABLED) return;
 #undef xi
     int deviceCount;
+    // Grab the error handler to prevent XI_BadDevice errors from killing kitty
+    // when a device is removed between XIQueryDevice and XIGetProperty calls.
+    _glfwGrabErrorHandlerX11();
     XIDeviceInfo* devices = XIQueryDevice(_glfw.x11.display, XIAllDevices, &deviceCount);
-    if (!devices) return;
+    if (!devices) { _glfwReleaseErrorHandlerX11(); return; }
     for (int i = 0; i < deviceCount; i++) {
         XIDeviceInfo* device = &devices[i];
         if (device->use == XIMasterPointer) _glfw.x11.xi.master_pointer_id = device->deviceid;
@@ -216,8 +219,12 @@ read_xi_scroll_devices(void) {
                 if (_glfw.x11.xi.num_scroll_devices >= arraysz(_glfw.x11.xi.scroll_devices)) continue;
                 d = &_glfw.x11.xi.scroll_devices[_glfw.x11.xi.num_scroll_devices++];
                 *d = (XIScrollDevice){
-                    .is_highres=is_highres, .is_finger_based=is_finger_based, .deviceid=device->deviceid, .sourceid=scroll->sourceid,
+                    .is_finger_based=is_finger_based, .deviceid=device->deviceid, .sourceid=scroll->sourceid,
                 };
+                if (is_highres) {
+                    d->type_detected = true;
+                    d->offset_type = GLFW_SCROLL_OFFEST_HIGHRES;
+                }
                 memcpy(d->name, device->name, MIN(sizeof(d->name)-1, strlen(device->name)));
             }
             if (d->num_valuators >= arraysz(d->valuators)) continue;
@@ -243,10 +250,11 @@ read_xi_scroll_devices(void) {
             }
             if (!v) continue;
             v->value = vi->value; v->mode = vi->mode; v->resolution = vi->resolution;
-            v->min = vi->min; v->max = vi->max;
+            v->min = vi->min; v->max = vi->max; v->initialized = true;
         }
     }
     XIFreeDeviceInfo(devices);
+    _glfwReleaseErrorHandlerX11();
 }
 
 // Look for and initialize supported X11 extensions
@@ -512,6 +520,8 @@ static bool initExtensions(void)
     _glfw.x11.XdndFinished = XInternAtom(_glfw.x11.display, "XdndFinished", False);
     _glfw.x11.XdndSelection = XInternAtom(_glfw.x11.display, "XdndSelection", False);
     _glfw.x11.XdndTypeList = XInternAtom(_glfw.x11.display, "XdndTypeList", False);
+    _glfw.x11.XdndActionList = XInternAtom(_glfw.x11.display, "XdndActionList", False);
+    _glfw.x11.XdndActionAsk = XInternAtom(_glfw.x11.display, "XdndActionAsk", False);
     _glfw.x11.XdndLeave = XInternAtom(_glfw.x11.display, "XdndLeave", False);
     _glfw.x11.XdndProxy = XInternAtom(_glfw.x11.display, "XdndProxy", False);
 

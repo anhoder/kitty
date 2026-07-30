@@ -96,8 +96,8 @@ func get_dependencies(path string) (ans []dependency) {
 	for _, line := range lines("otool", "-L", path) {
 		line = strings.TrimSpace(line)
 		if strings.Contains(line, "compatibility") && !strings.HasSuffix(line, ":") {
-			idx := strings.IndexByte(line, '(')
-			dep := strings.TrimSpace(line[:idx])
+			before, _, _ := strings.Cut(line, "(")
+			dep := strings.TrimSpace(before)
 			ans = append(ans, dependency{path: dep, is_id: dep == install_name})
 		}
 	}
@@ -279,8 +279,12 @@ func dependencies(args []string) {
 		which = "macos"
 	case "linux":
 		which = "linux"
-		if runtime.GOARCH != "amd64" {
-			exit("Pre-built dependencies are only available for the amd64 CPU architecture")
+		switch runtime.GOARCH {
+		case "amd64":
+		case "arm64", "arm64be":
+			url = strings.Replace(url, "-64.", "-arm64.", 1)
+		default:
+			exit(fmt.Sprintf("Pre-built binaries are not available for the %s architecture", runtime.GOARCH))
 		}
 	}
 	if which == "" {

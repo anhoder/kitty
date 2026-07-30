@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
-import ctypes
 import os
 import sys
 from collections.abc import Callable, Generator
@@ -26,7 +25,6 @@ from kitty.fast_data_types import (
 )
 from kitty.options.types import Options, defaults
 from kitty.options.utils import parse_font_spec
-from kitty.types import _T
 from kitty.typing_compat import CoreTextFont, FontConfigPattern
 from kitty.utils import log_error
 
@@ -54,7 +52,7 @@ def font_for_family(family: str) -> tuple[FontObject, bool, bool]:
     return font_for_family_fontconfig(family)
 
 
-def merge_ranges(
+def merge_ranges[_T](
     a: tuple[tuple[int, int], _T], b: tuple[tuple[int, int], _T], priority_map: dict[tuple[int, int], int]
 ) -> Generator[tuple[tuple[int, int], _T], None, None]:
     a_start, a_end = a[0]
@@ -120,7 +118,7 @@ def merge_ranges(
     yield from ranges
 
 
-def coalesce_symbol_maps(maps: dict[tuple[int, int], _T]) -> dict[tuple[int, int], _T]:
+def coalesce_symbol_maps[_T](maps: dict[tuple[int, int], _T]) -> dict[tuple[int, int], _T]:
     if not maps:
         return maps
     priority_map = {r: i for i, r in enumerate(maps.keys())}
@@ -188,6 +186,16 @@ def dump_font_debug() -> None:
             log_error('  ' + s.identify_for_debug())
 
 
+def clear_font_caches() -> None:
+    from .common import clear_caches as clear_common_caches
+    clear_common_caches()
+    if is_macos:
+        from .core_text import clear_caches as clear_platform_caches
+    else:
+        from .fontconfig import clear_caches as clear_platform_caches
+    clear_platform_caches()
+
+
 def set_font_family(opts: Options | None = None, override_font_size: float | None = None, add_builtin_nerd_font: bool = False) -> None:
     global current_faces, builtin_nerd_font_descriptor
     opts = opts or defaults
@@ -218,6 +226,7 @@ def set_font_family(opts: Options | None = None, override_font_size: float | Non
 
 
 if TYPE_CHECKING:
+    import ctypes
     CBufType = ctypes.Array[ctypes.c_ubyte]
 else:
     CBufType = None

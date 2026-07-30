@@ -7,6 +7,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/kovidgoyal/kitty"
 )
@@ -285,18 +286,54 @@ func ParseShortcut(spec string) *ParsedShortcut {
 	return &ans
 }
 
-func (self *KeyEvent) MatchesParsedShortcut(ps *ParsedShortcut, event_type KeyEventType) bool {
+func isNonASCIIKey(key string) bool {
+	r, size := utf8.DecodeRuneInString(key)
+	return size > 0 && size == len(key) && r > 127 && r < 0xE000 && r != utf8.RuneError
+}
+
+func (self *KeyEvent) MatchesParsedShortcutWithFallback(ps *ParsedShortcut, event_type KeyEventType, allowFallback string) bool {
+	return self.MatchesParsedShortcutPriorityWithFallback(ps, event_type, allowFallback) >= 0
+}
+
+// MatchesParsedShortcutPriorityWithFallback returns the match priority for the given shortcut:
+//   - returns -1 if the event does not match
+//   - returns 0 for a direct match (no fallback needed)
+//   - returns the 1-based position of the matching fallback type in allowFallback for a fallback match
+//     (e.g., "shifted" at position 0 in "shifted,ascii" returns 1; "ascii" at position 1 returns 2)
+//
+// Lower values indicate higher priority, so callers should prefer matches with smaller return values.
+func (self *KeyEvent) MatchesParsedShortcutPriorityWithFallback(ps *ParsedShortcut, event_type KeyEventType, allowFallback string) int {
 	if self.Type&event_type == 0 {
-		return false
+		return -1
 	}
 	mods := self.Mods.WithoutLocks()
 	if mods == ps.Mods && self.Key == ps.KeyName {
-		return true
+		return 0
 	}
-	if self.ShiftedKey != "" && mods&SHIFT != 0 && (mods & ^SHIFT) == ps.Mods && self.ShiftedKey == ps.KeyName {
-		return true
+	canShifted := self.ShiftedKey != "" && mods&SHIFT != 0 && (mods & ^SHIFT) == ps.Mods && self.ShiftedKey == ps.KeyName
+	canASCII := self.AlternateKey != "" && isNonASCIIKey(self.Key) && mods == ps.Mods && self.AlternateKey == ps.KeyName
+	for i, part := range strings.Split(allowFallback, ",") {
+		switch strings.TrimSpace(part) {
+		case "shifted":
+			if canShifted {
+				return i + 1
+			}
+		case "ascii":
+			if canASCII {
+				return i + 1
+			}
+		}
 	}
-	return false
+	return -1
+}
+
+// MatchesPressOrRepeatPriorityWithFallback returns the match priority (see MatchesParsedShortcutPriorityWithFallback).
+func (self *KeyEvent) MatchesPressOrRepeatPriorityWithFallback(spec string, allowFallback string) int {
+	return self.MatchesParsedShortcutPriorityWithFallback(ParseShortcut(spec), PRESS|REPEAT, allowFallback)
+}
+
+func (self *KeyEvent) MatchesParsedShortcut(ps *ParsedShortcut, event_type KeyEventType) bool {
+	return self.MatchesParsedShortcutWithFallback(ps, event_type, "shifted,ascii")
 }
 
 func (self *KeyEvent) Matches(spec string, event_type KeyEventType) bool {
@@ -305,6 +342,10 @@ func (self *KeyEvent) Matches(spec string, event_type KeyEventType) bool {
 
 func (self *KeyEvent) MatchesPressOrRepeat(spec string) bool {
 	return self.MatchesParsedShortcut(ParseShortcut(spec), PRESS|REPEAT)
+}
+
+func (self *KeyEvent) MatchesPressOrRepeatWithFallback(spec string, allowFallback string) bool {
+	return self.MatchesParsedShortcutWithFallback(ParseShortcut(spec), PRESS|REPEAT, allowFallback)
 }
 
 func (self *KeyEvent) MatchesCaseSensitiveTextOrKey(spec string) bool {
@@ -343,15 +384,15 @@ func (self *KeyEvent) AsCSI() string {
 	ans.Grow(32)
 	ans.WriteString("\033[")
 	if key != 1 || self.Mods != 0 || shifted_key != 0 || alternate_key != 0 || self.Text != "" {
-		ans.WriteString(fmt.Sprint(key))
+		fmt.Fprint(&ans, key)
 	}
 	if shifted_key != 0 || alternate_key != 0 {
 		ans.WriteString(":")
 		if shifted_key != 0 {
-			ans.WriteString(fmt.Sprint(shifted_key))
+			fmt.Fprint(&ans, shifted_key)
 		}
 		if alternate_key != 0 {
-			ans.WriteString(fmt.Sprint(":", alternate_key))
+			fmt.Fprint(&ans, ":", alternate_key)
 		}
 	}
 	action := 1
@@ -364,9 +405,9 @@ func (self *KeyEvent) AsCSI() string {
 	if self.Mods != 0 || action > 1 || self.Text != "" {
 		m := uint(self.Mods)
 		if action > 1 || m != 0 {
-			ans.WriteString(fmt.Sprintf(";%d", m+1))
+			fmt.Fprintf(&ans, ";%d", m+1)
 			if action > 1 {
-				ans.WriteString(fmt.Sprintf(":%d", action))
+				fmt.Fprintf(&ans, ":%d", action)
 			}
 		} else if self.Text != "" {
 			ans.WriteString(";")

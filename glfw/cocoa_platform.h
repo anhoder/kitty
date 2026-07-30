@@ -62,8 +62,6 @@ typedef void* id;
  #define NSOpenGLContextParameterSurfaceOpacity NSOpenGLCPSurfaceOpacity
 #endif
 
-#define debug_key(...) if (_glfw.hints.init.debugKeyboard) { fprintf(stderr, __VA_ARGS__); fflush(stderr); }
-
 typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int, unsigned long);
 typedef bool (* GLFWapplicationshouldhandlereopenfun)(int);
 typedef bool (* GLFWhandleurlopen)(const char*);
@@ -117,11 +115,19 @@ typedef UInt8 (*PFN_LMGetKbdType)(void);
 #define LMGetKbdType _glfw.ns.tis.GetKbdType
 
 typedef struct _GLFWDropData {
-    const char **mimes;
+    const char **mimes;          // Original MIME list; strings are owned here, never reordered
     size_t mimes_count;
-    id pasteboard;
-    id data_mapping;
-    id file_promise_mapping;
+    const char **copy_mimes;     // Working copy passed to callbacks; pointers into mimes[]
+    size_t copy_mimes_count;     // Accepted count after last callback
+    bool drag_accepted;
+    struct {
+        unsigned long long request_id;
+        id temp_dir;
+        id data_map;  // map MIME to NSError or NSInputStream
+        id path_map;  // map MIME to NSError or NSInputStream or NSUrl
+        id pending_requests;
+        bool promises_loaded;
+    } in_progress_drop;
 } _GLFWDropData;
 
 // Cocoa-specific per-window data
@@ -138,6 +144,9 @@ typedef struct _GLFWwindowNS
     bool            in_traditional_fullscreen;
     bool            in_fullscreen_transition;
     bool            suppress_frame_constraints;
+    id              notch_cover_window;
+    unsigned int    notch_cover_color;
+    float           notch_cover_opacity;
     bool            titlebar_hidden;
     unsigned long   pre_full_screen_style_mask;
     CGRect          pre_traditional_fullscreen_frame;
@@ -179,6 +188,7 @@ typedef struct _GLFWwindowNS
 
     // Cached MIME types from drag enter (for move events)
     _GLFWDropData drop_data;
+    unsigned long long drop_request_counter;
 
 } _GLFWwindowNS;
 

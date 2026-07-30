@@ -228,7 +228,7 @@ convert_from_opts_cursor_trail_decay(PyObject *py_opts, Options *opts) {
 
 static void
 convert_from_python_cursor_trail_start_threshold(PyObject *val, Options *opts) {
-    opts->cursor_trail_start_threshold = PyLong_AsLong(val);
+    cursor_trail_start_threshold(val, opts);
 }
 
 static void
@@ -435,6 +435,19 @@ convert_from_opts_scrollbar_track_color(PyObject *py_opts, Options *opts) {
 }
 
 static void
+convert_from_python_progress_bar(PyObject *val, Options *opts) {
+    opts->progress_bar = progress_bar(val);
+}
+
+static void
+convert_from_opts_progress_bar(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "progress_bar");
+    if (ret == NULL) return;
+    convert_from_python_progress_bar(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
 convert_from_python_scrollback_pager_history_size(PyObject *val, Options *opts) {
     opts->scrollback_pager_history_size = PyLong_AsUnsignedLong(val);
 }
@@ -605,7 +618,7 @@ convert_from_opts_url_excluded_characters(PyObject *py_opts, Options *opts) {
 
 static void
 convert_from_python_show_hyperlink_targets(PyObject *val, Options *opts) {
-    opts->show_hyperlink_targets = PyObject_IsTrue(val);
+    opts->show_hyperlink_targets = show_hyperlink_targets(val);
 }
 
 static void
@@ -670,7 +683,7 @@ convert_from_opts_click_interval(PyObject *py_opts, Options *opts) {
 
 static void
 convert_from_python_focus_follows_mouse(PyObject *val, Options *opts) {
-    opts->focus_follows_mouse = PyObject_IsTrue(val);
+    focus_follows_mouse(val, opts);
 }
 
 static void
@@ -717,6 +730,19 @@ convert_from_opts_pointer_shape_when_dragging(PyObject *py_opts, Options *opts) 
     PyObject *ret = PyObject_GetAttrString(py_opts, "pointer_shape_when_dragging");
     if (ret == NULL) return;
     convert_from_python_pointer_shape_when_dragging(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
+convert_from_python_drag_threshold(PyObject *val, Options *opts) {
+    opts->drag_threshold = PyLong_AsLong(val);
+}
+
+static void
+convert_from_opts_drag_threshold(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "drag_threshold");
+    if (ret == NULL) return;
+    convert_from_python_drag_threshold(ret, opts);
     Py_DECREF(ret);
 }
 
@@ -1085,6 +1111,19 @@ convert_from_opts_tab_bar_style(PyObject *py_opts, Options *opts) {
 }
 
 static void
+convert_from_python_tab_title_max_length(PyObject *val, Options *opts) {
+    opts->tab_title_max_length = PyLong_AsLong(val);
+}
+
+static void
+convert_from_opts_tab_title_max_length(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "tab_title_max_length");
+    if (ret == NULL) return;
+    convert_from_python_tab_title_max_length(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
 convert_from_python_tab_bar_background(PyObject *val, Options *opts) {
     opts->tab_bar_background = color_or_none_as_int(val);
 }
@@ -1177,7 +1216,7 @@ convert_from_opts_dynamic_background_opacity(PyObject *py_opts, Options *opts) {
 
 static void
 convert_from_python_background_image(PyObject *val, Options *opts) {
-    background_image(val, opts);
+    background_images(val, opts);
 }
 
 static void
@@ -1397,6 +1436,45 @@ convert_from_opts_macos_traditional_fullscreen(PyObject *py_opts, Options *opts)
 }
 
 static void
+convert_from_python_macos_fullscreen_ignore_safe_area_insets(PyObject *val, Options *opts) {
+    opts->macos_fullscreen_ignore_safe_area_insets = PyObject_IsTrue(val);
+}
+
+static void
+convert_from_opts_macos_fullscreen_ignore_safe_area_insets(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "macos_fullscreen_ignore_safe_area_insets");
+    if (ret == NULL) return;
+    convert_from_python_macos_fullscreen_ignore_safe_area_insets(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
+convert_from_python_macos_use_physical_screen_frame(PyObject *val, Options *opts) {
+    opts->macos_use_physical_screen_frame = PyObject_IsTrue(val);
+}
+
+static void
+convert_from_opts_macos_use_physical_screen_frame(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "macos_use_physical_screen_frame");
+    if (ret == NULL) return;
+    convert_from_python_macos_use_physical_screen_frame(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
+convert_from_python_macos_ns_window_layer(PyObject *val, Options *opts) {
+    macos_ns_window_layer(val, opts);
+}
+
+static void
+convert_from_opts_macos_ns_window_layer(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "macos_ns_window_layer");
+    if (ret == NULL) return;
+    convert_from_python_macos_ns_window_layer(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
 convert_from_python_macos_show_window_title_in(PyObject *val, Options *opts) {
     opts->macos_show_window_title_in = window_title_in(val);
 }
@@ -1516,6 +1594,8 @@ convert_opts_from_python_opts(PyObject *py_opts, Options *opts) {
     if (PyErr_Occurred()) return false;
     convert_from_opts_scrollbar_track_color(py_opts, opts);
     if (PyErr_Occurred()) return false;
+    convert_from_opts_progress_bar(py_opts, opts);
+    if (PyErr_Occurred()) return false;
     convert_from_opts_scrollback_pager_history_size(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_scrollback_fill_enlarged_window(py_opts, opts);
@@ -1559,6 +1639,8 @@ convert_opts_from_python_opts(PyObject *py_opts, Options *opts) {
     convert_from_opts_default_pointer_shape(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_pointer_shape_when_dragging(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_drag_threshold(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_repaint_delay(py_opts, opts);
     if (PyErr_Occurred()) return false;
@@ -1616,6 +1698,8 @@ convert_opts_from_python_opts(PyObject *py_opts, Options *opts) {
     if (PyErr_Occurred()) return false;
     convert_from_opts_tab_bar_style(py_opts, opts);
     if (PyErr_Occurred()) return false;
+    convert_from_opts_tab_title_max_length(py_opts, opts);
+    if (PyErr_Occurred()) return false;
     convert_from_opts_tab_bar_background(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_tab_bar_margin_color(py_opts, opts);
@@ -1663,6 +1747,12 @@ convert_opts_from_python_opts(PyObject *py_opts, Options *opts) {
     convert_from_opts_macos_thicken_font(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_macos_traditional_fullscreen(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_macos_fullscreen_ignore_safe_area_insets(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_macos_use_physical_screen_frame(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_macos_ns_window_layer(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_macos_show_window_title_in(py_opts, opts);
     if (PyErr_Occurred()) return false;

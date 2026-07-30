@@ -9,11 +9,13 @@
 #include <structmember.h>
 #include "colors.h"
 #include "color-names.h"
-#ifdef __APPLE__
-// Needed for strod_l
+#if defined(__APPLE__) || defined(__FreeBSD__)
+// Needed for strtod_l
 #include <xlocale.h>
 #endif
 
+static const color_type NULL_COLOR_VALUE = 0xffffffff;
+static const color_type GENERATED_COLOR_MASK = 0xff000000;
 
 static uint32_t FG_BG_256[256] = {
     0x000000,  // 0
@@ -121,12 +123,178 @@ set_mark_colors(ColorProfile *self, PyObject *opts) {
     return true;
 }
 
+// Generating 256 color palette {{{
+// For more information, see
+// https://gist.github.com/jake-stewart/0a8ea46159a7da2c808e5be2177e1783
+
+static void
+color_type_to_lab(color_type color, float *lab) {
+    float r = ((color >> 16) & 0xff) / 255.0f;
+    float g = ((color >> 8) & 0xff) / 255.0f;
+    float b = (color & 0xff) / 255.0f;
+
+    r = r > 0.04045f ? powf((r + 0.055f) / 1.055f, 2.4f) : r / 12.92f;
+    g = g > 0.04045f ? powf((g + 0.055f) / 1.055f, 2.4f) : g / 12.92f;
+    b = b > 0.04045f ? powf((b + 0.055f) / 1.055f, 2.4f) : b / 12.92f;
+
+    float x = (r * 0.4124564f + g * 0.3575761f + b * 0.1804375f) / 0.95047f;
+    float y = (r * 0.2126729f + g * 0.7151522f + b * 0.0721750f);
+    float z = (r * 0.0193339f + g * 0.1191920f + b * 0.9503041f) / 1.08883f;
+
+    x = x > 0.008856f ? cbrtf(x) : 7.787f * x + 16.0f / 116.0f;
+    y = y > 0.008856f ? cbrtf(y) : 7.787f * y + 16.0f / 116.0f;
+    z = z > 0.008856f ? cbrtf(z) : 7.787f * z + 16.0f / 116.0f;
+
+    lab[0] = 116.0f * y - 16.0f;
+    lab[1] = 500.0f * (x - y);
+    lab[2] = 200.0f * (y - z);
+}
+
+static color_type
+lab_to_color_type(float *lab) {
+    float y = (lab[0] + 16.0f) / 116.0f;
+    float x = lab[1] / 500.0f + y;
+    float z = y - lab[2] / 200.0f;
+
+    float x3 = x * x * x, y3 = y * y * y, z3 = z * z * z;
+    x = (x3 > 0.008856f ? x3 : (x - 16.0f / 116.0f) / 7.787f) * 0.95047f;
+    y = y3 > 0.008856f ? y3 : (y - 16.0f / 116.0f) / 7.787f;
+    z = (z3 > 0.008856f ? z3 : (z - 16.0f / 116.0f) / 7.787f) * 1.08883f;
+
+    float r = x * 3.2404542f - y * 1.5371385f - z * 0.4985314f;
+    float g = -x * 0.9692660f + y * 1.8760108f + z * 0.0415560f;
+    float b = x * 0.0556434f - y * 0.2040259f + z * 1.0572252f;
+
+    r = r > 0.0031308f ? 1.055f * powf(r, 1.0f / 2.4f) - 0.055f : 12.92f * r;
+    g = g > 0.0031308f ? 1.055f * powf(g, 1.0f / 2.4f) - 0.055f : 12.92f * g;
+    b = b > 0.0031308f ? 1.055f * powf(b, 1.0f / 2.4f) - 0.055f : 12.92f * b;
+
+    uint8_t rb = (uint8_t)(fminf(fmaxf(r, 0.0f), 1.0f) * 255.0f + 0.5f);
+    uint8_t gb = (uint8_t)(fminf(fmaxf(g, 0.0f), 1.0f) * 255.0f + 0.5f);
+    uint8_t bb = (uint8_t)(fminf(fmaxf(b, 0.0f), 1.0f) * 255.0f + 0.5f);
+
+    return GENERATED_COLOR_MASK | (rb << 16) | (gb << 8) | bb;
+}
+
+static void
+lerp_lab(float t, float *a, float *b, float *out) {
+    out[0] = a[0] + t * (b[0] - a[0]);
+    out[1] = a[1] + t * (b[1] - a[1]);
+    out[2] = a[2] + t * (b[2] - a[2]);
+}
+
+static void
+setup_256_palette_lab(ColorProfile *self, color_type *color_table, bool semantic, float base8_lab[8][3]) {
+    const color_type bg = colorprofile_to_color(self, self->overridden.default_bg, self->configured.default_bg).rgb;
+    const color_type fg = colorprofile_to_color(self, self->overridden.default_fg, self->configured.default_fg).rgb;
+    color_type_to_lab(bg, base8_lab[0]);
+    color_type_to_lab(fg, base8_lab[7]);
+    for (int i = 1; i < 7; i++) color_type_to_lab(color_table[i], base8_lab[i]);
+
+    bool is_light_theme = base8_lab[7][0] < base8_lab[0][0];
+    bool invert = is_light_theme && !semantic;
+    if (invert) {
+        float tmp[3];
+        memcpy(tmp, base8_lab[0], sizeof(tmp));
+        memcpy(base8_lab[0], base8_lab[7], sizeof(tmp));
+        memcpy(base8_lab[7], tmp, sizeof(tmp));
+    }
+}
+
+static bool
+is_generated_color(const color_type c) { return (c & GENERATED_COLOR_MASK) == GENERATED_COLOR_MASK; }
+
+static void
+generate_256_palette(ColorProfile *self, color_type *color_table, bool semantic) {
+    float base8_lab[8][3];
+    setup_256_palette_lab(self, color_table, semantic, base8_lab);
+
+    int idx = 16;
+    for (int r = 0; r < 6; r++) {
+        float c0[3], c1[3], c2[3], c3[3];
+        float tr = r / 5.0f;
+        lerp_lab(tr, base8_lab[0], base8_lab[1], c0);
+        lerp_lab(tr, base8_lab[2], base8_lab[3], c1);
+        lerp_lab(tr, base8_lab[4], base8_lab[5], c2);
+        lerp_lab(tr, base8_lab[6], base8_lab[7], c3);
+        for (int g = 0; g < 6; g++) {
+            float c4[3], c5[3];
+            float tg = g / 5.0f;
+            lerp_lab(tg, c0, c1, c4);
+            lerp_lab(tg, c2, c3, c5);
+            for (int b = 0; b < 6; b++) {
+                if (is_generated_color(color_table[idx])) {
+                    float c6[3];
+                    lerp_lab(b / 5.0f, c4, c5, c6);
+                    color_table[idx] = lab_to_color_type(c6);
+                }
+                idx++;
+            }
+        }
+    }
+
+    for (int i = 0; i < 24; i++) {
+        float t = (i + 1) / 25.0f;
+        float lab[3];
+        lerp_lab(t, base8_lab[0], base8_lab[7], lab);
+        if (is_generated_color(color_table[idx])) color_table[idx] = lab_to_color_type(lab);
+        idx++;
+    }
+}
+
+static color_type
+generate_256_palette_color(ColorProfile *self, color_type *color_table, unsigned int idx, bool semantic) {
+    float base8_lab[8][3];
+    setup_256_palette_lab(self, color_table, semantic, base8_lab);
+
+    if (idx < 232) {
+        unsigned int i = idx - 16;
+        int r = i / 36, g = (i % 36) / 6, b = i % 6;
+        float c0[3], c1[3], c2[3], c3[3], c4[3], c5[3], c6[3];
+        lerp_lab(r / 5.0f, base8_lab[0], base8_lab[1], c0);
+        lerp_lab(r / 5.0f, base8_lab[2], base8_lab[3], c1);
+        lerp_lab(r / 5.0f, base8_lab[4], base8_lab[5], c2);
+        lerp_lab(r / 5.0f, base8_lab[6], base8_lab[7], c3);
+        lerp_lab(g / 5.0f, c0, c1, c4);
+        lerp_lab(g / 5.0f, c2, c3, c5);
+        lerp_lab(b / 5.0f, c4, c5, c6);
+        return lab_to_color_type(c6);
+    } else {
+        int i = idx - 232;
+        float lab[3];
+        lerp_lab((i + 1) / 25.0f, base8_lab[0], base8_lab[7], lab);
+        return lab_to_color_type(lab);
+    }
+}
+
+static void
+fixed_color_palette(color_type *color_table) {
+    init_FG_BG_table();
+    for (unsigned i = 16; i < arraysz(FG_BG_256); i++) {
+        if (is_generated_color(color_table[i])) color_table[i] = GENERATED_COLOR_MASK | FG_BG_256[i];
+    }
+}
+
+static bool
+palette_generation_is_dynamic(PyObject *opts, bool *semantic) {
+    bool ans = false; *semantic = false;
+    if (opts) {
+        RAII_PyObject(policy, PyObject_GetAttrString(opts, "palette_generate")); if (!policy) return ans;
+        switch(PyUnicode_AsUTF8(policy)[0]) {
+            case 'f': break;
+            case 's': *semantic = true; /* fallthrough */
+            default: ans = true;
+        }
+    }
+    return ans;
+}
+// }}}
+
 static bool
 set_colortable(ColorProfile *self, PyObject *opts) {
-    RAII_PyObject(ct, PyObject_GetAttrString(opts, "color_table"));
-    if (!ct) return false;
-    RAII_PyObject(ret, PyObject_CallMethod(ct, "buffer_info", NULL));
-    if (!ret) return false;
+    RAII_PyObject(ct, PyObject_GetAttrString(opts, "color_table")); if (!ct) return false;
+    RAII_PyObject(ret, PyObject_CallMethod(ct, "buffer_info", NULL)); if (!ret) return false;
+    bool semantic_generation, dynamic_palette = palette_generation_is_dynamic(opts, &semantic_generation);
     unsigned long *color_table = PyLong_AsVoidPtr(PyTuple_GET_ITEM(ret, 0));
     size_t count = PyLong_AsSize_t(PyTuple_GET_ITEM(ret, 1));
     if (!color_table || count != arraysz(FG_BG_256)) { PyErr_SetString(PyExc_TypeError, "color_table has incorrect length"); return false; }
@@ -134,7 +302,9 @@ set_colortable(ColorProfile *self, PyObject *opts) {
     size_t itemsize = PyLong_AsSize_t(r2);
     if (itemsize != sizeof(unsigned long)) { PyErr_Format(PyExc_TypeError, "color_table has incorrect itemsize: %zu", itemsize); return false; }
     for (size_t i = 0; i < arraysz(FG_BG_256); i++) self->color_table[i] = color_table[i];
-    memcpy(self->orig_color_table, self->color_table, arraysz(self->color_table) * sizeof(self->color_table[0]));
+    if (dynamic_palette) generate_256_palette(self, self->color_table, semantic_generation);
+    else fixed_color_palette(self->color_table);
+    memcpy(self->orig_color_table, self->color_table, sizeof(self->color_table));
     return true;
 }
 
@@ -155,7 +325,7 @@ new_cp(PyTypeObject *type, PyObject *args, PyObject *kwds) {
             if (!set_colortable(self, opts)) return NULL;
         } else {
             memcpy(self->color_table, FG_BG_256, sizeof(FG_BG_256));
-            memcpy(self->orig_color_table, FG_BG_256, sizeof(FG_BG_256));
+            memcpy(self->orig_color_table, self->color_table, sizeof(FG_BG_256));
         }
         self->dirty = true;
         Py_INCREF(ans);
@@ -187,10 +357,12 @@ copy_color_profile(ColorProfile *dest, ColorProfile *src) {
 }
 
 static void
-patch_color_table(const char *key, PyObject *profiles, PyObject *spec, size_t which, int change_configured) {
+patch_color_table(const char *key, PyObject *profiles, PyObject *spec, size_t which, int change_configured, bool *has_null_values) {
     PyObject *v = PyDict_GetItemString(spec, key);
-    if (v && PyLong_Check(v)) {
-        color_type color = PyLong_AsUnsignedLong(v);
+    if (v) {
+        color_type color = NULL_COLOR_VALUE;
+        if (PyLong_Check(v)) color = PyLong_AsUnsignedLong(v);
+        else *has_null_values = true;
         for (Py_ssize_t j = 0; j < PyTuple_GET_SIZE(profiles); j++) {
             ColorProfile *self = (ColorProfile*)PyTuple_GET_ITEM(profiles, j);
             self->color_table[which] = color;
@@ -217,9 +389,10 @@ patch_color_profiles(PyObject *module UNUSED, PyObject *args) {
     PyObject *spec, *transparent_background_colors, *profiles, *v; ColorProfile *self; int change_configured;
     if (!PyArg_ParseTuple(args, "O!O!O!p", &PyDict_Type, &spec, &PyTuple_Type, &transparent_background_colors, &PyTuple_Type, &profiles, &change_configured)) return NULL;
     char key[32] = {0};
+    bool has_null_values = false;
     for (size_t i = 0; i < arraysz(FG_BG_256); i++) {
         snprintf(key, sizeof(key) - 1, "color%zu", i);
-        patch_color_table(key, profiles, spec, i, change_configured);
+        patch_color_table(key, profiles, spec, i, change_configured, &has_null_values);
     }
     for (size_t i = 1; i <= MARK_MASK; i++) {
 #define S(which, i) snprintf(key, sizeof(key) - 1, "mark%zu_" #which, i); patch_mark_color(key, profiles, spec, mark_##which##s, i)
@@ -254,6 +427,20 @@ patch_color_profiles(PyObject *module UNUSED, PyObject *args) {
         set_transparent_background_colors(self->overriden_transparent_colors, transparent_background_colors);
         if (change_configured) set_transparent_background_colors(self->configured_transparent_colors, transparent_background_colors);
     }
+
+    if (has_null_values) {
+        bool semantic, dynamic = palette_generation_is_dynamic(global_state.options_object, &semantic);
+        for (Py_ssize_t j = 0; j < PyTuple_GET_SIZE(profiles); j++) {
+            ColorProfile *self = (ColorProfile*)PyTuple_GET_ITEM(profiles, j);
+            if (dynamic) {
+                generate_256_palette(self, self->color_table, semantic);
+                if (change_configured) generate_256_palette(self, self->orig_color_table, semantic);
+            } else {
+                fixed_color_palette(self->color_table);
+                if (change_configured) fixed_color_palette(self->orig_color_table);
+            }
+        }
+    }
     if (PyErr_Occurred()) return NULL;
     Py_RETURN_NONE;
 }
@@ -283,7 +470,7 @@ colorprofile_to_color(const ColorProfile *self, DynamicColor entry, DynamicColor
             return defval;
         case COLOR_IS_INDEX: {
             DynamicColor ans;
-            ans.rgb = self->color_table[entry.rgb & 0xff] & 0xffffff;
+            ans.rgb = self->color_table[entry.rgb & 0xff] & (~GENERATED_COLOR_MASK);
             ans.type = COLOR_IS_RGB;
             return ans;
         }
@@ -304,7 +491,7 @@ colorprofile_to_color_with_fallback(ColorProfile *self, DynamicColor entry, Dyna
         case COLOR_IS_RGB:
             return entry.rgb;
         case COLOR_IS_INDEX:
-            return self->color_table[entry.rgb & 0xff] & 0xffffff;
+            return self->color_table[entry.rgb & 0xff] & (~GENERATED_COLOR_MASK);
     }
     return entry.rgb;
 }
@@ -315,7 +502,7 @@ colortable_colors_into_dict(ColorProfile *self, unsigned start, unsigned limit, 
     static char buf[32] = {'c', 'o', 'l', 'o', 'r', 0};
     for (unsigned i = start; i < limit; i++) {
         snprintf(buf + 5, sizeof(buf) - 6, "%u", i);
-        PyObject *val = PyLong_FromUnsignedLong(self->color_table[i]);
+        PyObject *val = PyLong_FromUnsignedLong(self->color_table[i] &(~GENERATED_COLOR_MASK));
         if (!val) return false;
         int ret = PyDict_SetItemString(ans, buf, val);
         Py_DECREF(val);
@@ -396,7 +583,7 @@ as_color(ColorProfile *self, PyObject *val) {
     switch(t) {
         case 1:
             r = (entry >> 8) & 0xff;
-            col = self->color_table[r];
+            col = self->color_table[r] & (~GENERATED_COLOR_MASK);
             break;
         case 2:
             col = entry >> 8;
@@ -435,8 +622,11 @@ set_color(ColorProfile *self, PyObject *args) {
     unsigned char i;
     unsigned long val;
     if (!PyArg_ParseTuple(args, "Bk", &i, &val)) return NULL;
-    self->color_table[i] = val;
     self->dirty = true;
+    if (val == NULL_COLOR_VALUE && i >= 16) {
+        bool semantic, dynamic = palette_generation_is_dynamic(global_state.options_object, &semantic);
+        self->color_table[i] = dynamic ? generate_256_palette_color(self, self->color_table, i, semantic) : GENERATED_COLOR_MASK | FG_BG_256[i];
+    } else self->color_table[i] = val;
     Py_RETURN_NONE;
 }
 
@@ -444,7 +634,7 @@ void
 copy_color_table_to_buffer(ColorProfile *self, color_type *buf, int offset, size_t stride) {
     size_t i;
     stride = MAX(1u, stride);
-    for (i = 0, buf = buf + offset; i < arraysz(self->color_table); i++, buf += stride) *buf = self->color_table[i];
+    for (i = 0, buf = buf + offset; i < arraysz(self->color_table); i++, buf += stride) *buf = self->color_table[i] & (~GENERATED_COLOR_MASK);
     // Copy the mark colors
     for (i = 0; i < arraysz(self->mark_backgrounds); i++) {
         *buf = self->mark_backgrounds[i]; buf += stride;
@@ -596,11 +786,26 @@ static PyMemberDef cp_members[] = {
 };
 
 static PyObject*
-reload_from_opts(ColorProfile *self, PyObject *args UNUSED) {
-    PyObject *opts = global_state.options_object;
-    if (!PyArg_ParseTuple(args, "|O", &opts)) return NULL;
+palette_color_is_generated(ColorProfile *self, PyObject *x) {
+    if (!PyLong_Check(x)) { PyErr_SetString(PyExc_TypeError, "idx must be an integer"); return NULL; }
+    size_t idx = PyLong_AsUnsignedLong(x);
+    if (idx >= arraysz(FG_BG_256)) { PyErr_SetString(PyExc_IndexError, "idx out of bounds"); return NULL; }
+    return Py_NewRef(is_generated_color(self->color_table[idx]) ? Py_True : Py_False);
+}
+
+static PyObject*
+reload_from_opts(ColorProfile *self, PyObject *args, PyObject *kw) {
+    PyObject *opts = NULL;
+    int reset_overriden_colors = 1;
+    static const char* kwlist[] = {"opts", "reset_overriden_colors", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "|Op", (char**)kwlist, &opts, &reset_overriden_colors)) return NULL;
+    if (opts == NULL) opts = global_state.options_object;
     self->dirty = true;
     if (!set_configured_colors(self, opts)) return NULL;
+    if (reset_overriden_colors) {
+        zero_at_ptr(&self->overridden);
+        memset(self->overriden_transparent_colors, 0, sizeof(self->overriden_transparent_colors));
+    }
     if (!set_mark_colors(self, opts)) return NULL;
     if (!set_colortable(self, opts)) return NULL;
     Py_RETURN_NONE;
@@ -644,8 +849,9 @@ static PyMethodDef cp_methods[] = {
     METHOD(as_color, METH_O)
     METHOD(reset_color, METH_O)
     METHOD(set_color, METH_VARARGS)
+    METHODB(palette_color_is_generated, METH_O),
     METHODB(get_transparent_background_color, METH_O),
-    METHODB(reload_from_opts, METH_VARARGS),
+    {"reload_from_opts", (PyCFunction)(void (*) (void))(reload_from_opts), METH_VARARGS | METH_KEYWORDS, NULL},
     {"set_transparent_background_color", (PyCFunction)(void(*)(void))set_transparent_background_color, METH_FASTCALL, ""},
     {NULL}  /* Sentinel */
 };
@@ -680,6 +886,45 @@ new_color(PyTypeObject *type UNUSED, PyObject *args, PyObject *kwds) {
     unsigned char r = 0, g = 0, b = 0, a = 0;
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "|BBBB", (char**)kwlist, &r, &g, &b, &a)) return NULL;
     return (PyObject*) alloc_color(r, g, b, a);
+}
+
+static PyObject *
+color_vectorcall(PyObject *type UNUSED, PyObject *const *args, size_t nargsf, PyObject *kwnames) {
+    const Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
+    if (nargs > 4) {
+        PyErr_SetString(PyExc_TypeError, "Color() takes at most 4 arguments");
+        return NULL;
+    }
+    unsigned char rgba[4] = {0, 0, 0, 0};
+    for (Py_ssize_t i = 0; i < nargs; i++) {
+        unsigned long val = PyLong_AsUnsignedLongMask(args[i]);
+        if (val == (unsigned long)-1 && PyErr_Occurred()) return NULL;
+        rgba[i] = (unsigned char)val;
+    }
+    if (kwnames) {
+        const unsigned num = PyTuple_GET_SIZE(kwnames);
+        for (unsigned i = 0; i < num; i++) {
+            const char *name = PyUnicode_AsUTF8(PyTuple_GET_ITEM(kwnames, i));
+            if (!name) return NULL;
+            int idx;
+#define C(ch, i, expected) case ch: idx = i; if (strcmp(name, expected) != 0) { \
+            PyErr_Format(PyExc_TypeError, "Color() got an unexpected keyword argument '%s'", name); return NULL; }; break;
+            switch(name[0]) {
+                C('r', 0, "red"); C('g', 1, "green"); C('b', 2, "blue"); C('a', 3, "alpha");
+                default:
+                PyErr_Format(PyExc_TypeError, "Color() got an unexpected keyword argument '%s'", name); return NULL;
+            }
+#undef C
+            if (idx < nargs) {
+                PyErr_Format(PyExc_TypeError, "Color() got multiple values for argument '%s'", name);
+                return NULL;
+            }
+            unsigned long val = PyLong_AsUnsignedLongMask(args[nargs + i]);
+            if (val == (unsigned long)-1 && PyErr_Occurred()) return NULL;
+            rgba[idx] = (unsigned char)val;
+        }
+    }
+    return (PyObject*)alloc_color(rgba[0], rgba[1], rgba[2], rgba[3]);
 }
 
 static PyObject*
@@ -1143,6 +1388,7 @@ PyTypeObject Color_Type = {
     .tp_flags = Py_TPFLAGS_DEFAULT,
     .tp_doc = "Color",
     .tp_new = new_color,
+    .tp_vectorcall = color_vectorcall,
     .tp_getset = color_getsetters,
     .tp_as_number = &color_number_methods,
     .tp_methods = color_methods,
@@ -1186,6 +1432,7 @@ int init_ColorProfile(PyObject *module) {\
     Py_INCREF(&Color_Type);
 
     if (PyModule_AddFunctions(module, module_methods) != 0) return false;
+    PyModule_AddIntMacro(module, NULL_COLOR_VALUE);
     return 1;
 }
 

@@ -23,6 +23,7 @@ from typing import (
 )
 
 from .constants import (
+    cache_dir,
     clear_handled_signals,
     config_dir,
     is_macos,
@@ -32,7 +33,19 @@ from .constants import (
     shell_path,
     ssh_control_master_template,
 )
-from .fast_data_types import WINDOW_FULLSCREEN, WINDOW_HIDDEN, WINDOW_MAXIMIZED, WINDOW_MINIMIZED, WINDOW_NORMAL, Color, Shlex, get_options, monotonic, open_tty
+from .fast_data_types import (
+    WINDOW_FULLSCREEN,
+    WINDOW_HIDDEN,
+    WINDOW_MAXIMIZED,
+    WINDOW_MINIMIZED,
+    WINDOW_NORMAL,
+    Color,
+    Shlex,
+    get_boss,
+    get_options,
+    monotonic,
+    open_tty,
+)
 from .fast_data_types import timed_debug_print as _timed_debug_print
 from .types import run_once
 from .typing_compat import AddressFamily, PopenType, StartupCtx
@@ -575,6 +588,8 @@ def get_editor(opts: Options | None = None, path_to_edit: str = '', line_number:
             if eq in ('code', 'code.exe'):
                 path_to_edit += f':{line_number}'
                 ans.append('--goto')
+            elif eq in ('subl', 'subl.exe', 'sublime_text', 'sublime_text.exe', 'zed', 'zed.exe', 'zeditor'):
+                path_to_edit += f':{line_number}'
             else:
                 ans.append(f'+{line_number}')
         ans.append(path_to_edit)
@@ -1150,3 +1165,42 @@ def unlock_file(f: BinaryIO) -> None:
     if not f.writable():
         raise ValueError('Cannot unlock files not opened in writable mode')
     fcntl.lockf(f, fcntl.LOCK_UN)
+
+
+def rmtree_best_effort(relpath: str, dir_fd: int) -> None:
+    import shutil
+    shutil.rmtree(relpath, ignore_errors=True, dir_fd=dir_fd)
+
+
+def mktempdir_in_cache(prefix: str, delete_on_kitty_exit: bool) -> tuple[str, int]:
+    import tempfile
+    ans = os.path.abspath(tempfile.mkdtemp(prefix, dir=cache_dir()))
+    try:
+        retval = ans, os.open(ans, os.O_DIRECTORY | os.O_RDONLY)
+    except OSError as e:
+        import errno
+        import shutil
+        shutil.rmtree(ans, ignore_errors=True)
+        return "", -e.errno if e.errno is not None else -errno.EIO
+    if delete_on_kitty_exit:
+        get_boss().atexit.rmtree(retval[0])
+    return retval
+
+
+def sanitized_filename_from_url(url: str) -> str:
+    import posixpath
+    from urllib.parse import unquote, urlparse
+    try:
+        purl = urlparse(url)
+        fpath = purl.path.rstrip('/') or '/'
+        fname = posixpath.basename(unquote(fpath))
+        return fname.replace(os.sep, '_')
+    except Exception:
+        return ''
+
+
+def as_file_url(wd: str, *components: str) -> str:
+    path = os.path.abspath(os.path.join(wd, *components))
+    path = path.replace(os.sep, '/')
+    from urllib.parse import quote
+    return 'file://' + quote(path)

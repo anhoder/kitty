@@ -4,6 +4,7 @@
 import os
 import re
 import sys
+import types
 from collections.abc import Callable, Iterator, Sequence
 from re import Match
 from typing import Any, NoReturn, TypeVar, cast
@@ -134,6 +135,7 @@ role_map: dict[str, Callable[[str], str]] = {}
 
 
 def role(func: Callable[[str], str]) -> Callable[[str], str]:
+    assert isinstance(func, types.FunctionType)
     role_map[func.__name__] = func
     return func
 
@@ -517,7 +519,7 @@ def seq_as_rst(
         if (otype := opt.type).startswith('bool-'):
             val_name = f' [={help_defval_for_bool(otype)}]'
         else:
-            val_name = ' <{}>'.format(opt.dest.upper())
+            val_name = f' <{opt.dest.upper()}>'
         a(defn + ', '.join(o + val_name for o in sorted(opt.aliases)))
         if opt.help:
             defval = opt.default

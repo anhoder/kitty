@@ -3,10 +3,10 @@
 
 import weakref
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import suppress
 from itertools import count
-from typing import Any, Deque, Sequence, Union
+from typing import Any, Deque, Union
 
 from .fast_data_types import Color, get_options
 from .types import OverlayType, WindowGeometry
@@ -166,6 +166,8 @@ class WindowGroup:
 
 class WindowList:
 
+    force_show_title_bars: bool = False
+
     def __init__(self, tab: TabType) -> None:
         self.all_windows: list[WindowType] = []
         self.id_map: dict[int, WindowType] = {}
@@ -236,7 +238,7 @@ class WindowList:
         for wg in state['window_groups']:
             old_group_id = wg['id']
             if new_group_id := ans.get(old_group_id):
-                groups.append((g := gmap[new_group_id]))
+                groups.append(g := gmap[new_group_id])
                 new_window_ids = []
                 for old_window_id in wg['window_ids']:
                     if new_window_id := window_id_map.get(old_window_id):
@@ -516,6 +518,27 @@ class WindowList:
             self.set_active_group_idx(target)
             return True
         return False
+
+    def insert_window_group_next_to(self, target_group_id: int, after: bool) -> bool:
+        """Move the active window group immediately before or after target_group_id.
+
+        Unlike move_window_group (which swaps), this is a positional insert that
+        preserves the relative order of all other groups.
+        """
+        src_idx = self.active_group_idx
+        if src_idx < 0 or not self.groups:
+            return False
+        target_idx = next((i for i, g in enumerate(self.groups) if g.id == target_group_id), -1)
+        if target_idx < 0 or src_idx == target_idx:
+            return False
+        group = self.groups.pop(src_idx)
+        # All indices above src shift down by one after the pop
+        if src_idx < target_idx:
+            target_idx -= 1
+        insert_pos = target_idx + (1 if after else 0)
+        self.groups.insert(insert_pos, group)
+        self.set_active_group_idx(insert_pos)
+        return True
 
     def compute_needs_borders_map(self, draw_active_borders: bool) -> dict[int, bool]:
         ag = self.active_group

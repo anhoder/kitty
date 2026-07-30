@@ -396,6 +396,7 @@ find_st_terminator(PS *self, size_t *end_pos) {
 // OSC {{{
 
 #include "parse-multicell-command.h"
+#include "parse-dnd-command.h"
 
 static bool
 is_osc_52(PS *self) {
@@ -574,6 +575,8 @@ dispatch_osc(PS *self, uint8_t *buf, size_t limit, bool is_extended_osc) {
         case TEXT_SIZE_CODE:
             parse_multicell_code(self, buf + i, limit - i);
             break;
+        case DND_CODE:
+            parse_dnd_code(self, buf + i, limit - i); break;
         case 133:
 #ifdef DUMP_COMMANDS
             START_DISPATCH
@@ -1243,6 +1246,14 @@ dispatch_csi(PS *self) {
             }
             REPORT_ERROR("Unknown CSI R sequence with start and end modifiers: '%c' '%c' and %u parameters", start_modifier, end_modifier, num_params);
             break;
+        case 'W':
+            if (start_modifier == '?' && !end_modifier && num_params == 1 && params[0] == 5) {
+                REPORT_COMMAND(screen_reset_tab_stops);
+                screen_reset_tab_stops(self->screen);
+                break;
+            }
+            REPORT_ERROR("Unknown CSI W sequence with start and end modifiers: '%c' '%c' and %u parameters", start_modifier, end_modifier, num_params);
+            break;
         case ECH:
             CALL_CSI_HANDLER1(screen_erase_characters, 1);
         case DA:
@@ -1369,11 +1380,19 @@ dispatch_csi(PS *self) {
             }
             break;
         case DECSTR:
-            if (end_modifier == '$') {
-                // DECRQM
-                CALL_CSI_HANDLER1P(report_mode_status, 0, '?');
-            } else {
-                REPORT_ERROR("Unknown DECSTR CSI sequence with start and end modifiers: '%c' '%c'", start_modifier, end_modifier);
+            switch (end_modifier) {
+                case '$': // DECRQM
+                    CALL_CSI_HANDLER1P(report_mode_status, 0, '?'); break;
+                case '!': // Soft reset
+                    if (num_params) {
+                        REPORT_ERROR("DECSTR escape code with parameters is invalid");
+                    } else {
+                        REPORT_COMMAND(screen_soft_reset);
+                        screen_soft_reset(self->screen);
+                    }
+                    break;
+                default:
+                    REPORT_ERROR("Unknown CSI p sequence with start and end modifiers: '%c' '%c'", start_modifier, end_modifier); break;
             }
             break;
         case 'm':

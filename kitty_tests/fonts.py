@@ -173,6 +173,41 @@ class Selection(BaseTest):
             self.ae(face_from_descriptor(ff['medium']).applied_features(), {'dlig': 'dlig', 'test': 'test=3'})
             self.ae(face_from_descriptor(ff['bold']).applied_features(), {'dlig': 'dlig', 'test': 'test=3'})
 
+    def test_synthetic_italic_matrix(self):
+        # A roman-only font that find_best_match finds (e.g. Fira Code, which ships
+        # no italic face) must get fontconfig's synthetic-italic FC_MATRIX
+        # (90-synthetic.conf) attached, so its italic renders slanted rather than
+        # upright; real-italic faces must not. The shear value is fontconfig's, not
+        # ours, so assert the invariant (a non-identity matrix is present), not the
+        # exact tuple, for cross-config stability.
+        if is_macos:
+            self.skipTest('synthetic-italic FC_MATRIX is a fontconfig feature')
+        from kitty.fonts.fontconfig import FC_MONO, fc_match
+        names = set(all_fonts_map(True)['family_map']) | set(all_fonts_map(True)['variable_map'])
+        if family_name_to_key('fira code') not in names:
+            self.skipTest('Fira Code not installed')
+        # Probe fc_match directly so we can tell "environment lacks the rule" (skip)
+        # from "code did not attach the matrix" (fail).
+        if fc_match('Fira Code', False, True, FC_MONO).get('matrix') is None:
+            self.skipTest('fontconfig 90-synthetic.conf not active; no synthetic-italic matrix')
+        opts = Options()
+        opts.font_family = parse_font_spec('Fira Code')
+        ff = get_font_files(opts)
+        self.assertIsNone(ff['medium'].get('matrix'))      # upright stays upright
+        mi = ff['italic'].get('matrix')
+        self.assertIsNotNone(mi)                            # roman, no italic -> sheared
+        self.assertNotEqual(mi[1], 0.0)                     # actually slanted, not identity
+        # Faces are built from a size-specialized descriptor at render time; the
+        # matrix must survive specialize_font_descriptor or the glyphs render
+        # upright despite the descriptor above being correct.
+        from kitty.fast_data_types import specialize_font_descriptor
+        sd = specialize_font_descriptor(dict(ff['italic']), 12.0, 96.0, 96.0)
+        self.ae(sd.get('matrix'), mi)
+        if family_name_to_key('liberation mono') in names:  # real-italic control
+            opts.font_family = parse_font_spec('Liberation Mono')
+            self.assertIsNone(get_font_files(opts)['italic'].get('matrix'))
+
+
 def block_helpers(s, sprites, cell_width, cell_height):
     mr = {}
     actual = b''
@@ -355,6 +390,30 @@ class Rendering(FontBaseTest):
             self.assertGreater(w, 64)
             self.assertGreater(h, 64)
 
+    def test_color_emoji_not_shrunk(self):
+        # Regression test for https://github.com/kovidgoyal/kitty/issues/10144.
+        # fontconfig gives fixed-size color faces (e.g. Noto Color Emoji) a
+        # pixel-size fixup encoded as FC_MATRIX. That scale must not reach the
+        # cairo font matrix used for color glyphs; applying it shrinks color emoji
+        # to a dot (ee937bdd1b). Render the same font two ways at the same size:
+        # from its fontconfig descriptor, which carries the fixup matrix, and from
+        # its file path, which does not. A correct build renders both at the same
+        # size; the bug shrinks the descriptor one. Comparing the two is
+        # environment-independent since only the matrix differs.
+        if is_macos:
+            self.skipTest('FC_MATRIX is a fontconfig feature, not used on macOS')
+        from kitty.fonts.fontconfig import fc_match
+        desc = dict(fc_match('emoji', False, False, 0))
+        if not (desc.get('color') and desc.get('matrix')):
+            self.skipTest('no fixed-size color emoji font with a fontconfig fixup matrix')
+        with_matrix = face_from_descriptor(desc)
+        with_matrix.set_size(64, 96, 96)
+        without_matrix = create_face(desc['path'])
+        without_matrix.set_size(64, 96, 96)
+        _, mw, mh = with_matrix.render_codepoint(0x1F40D)
+        _, rw, rh = without_matrix.render_codepoint(0x1F40D)
+        self.assertGreater(mh, 0.5 * rh, f'color emoji shrunk by FC_MATRIX: {mh}px vs {rh}px (#10144)')
+
     def test_shaping(self):
 
         def ss(text, font=None):
@@ -369,6 +428,14 @@ class Rendering(FontBaseTest):
             self.ae(g('abcd'), [(1, 1) for i in range(4)])
             self.ae(g('A===B!=C'), [(1, 1), (3, 3), (1, 1), (2, 2), (1, 1)])
             self.ae(g('A=>>B!=C'), [(1, 1), (3, 3), (1, 1), (2, 2), (1, 1)])
+            self.ae(g('->'), [(2, 2)])
+            self.ae(g('<-'), [(2, 2)])
+            self.ae(g('==>'), [(3, 3)])
+            self.ae(g('<=='), [(3, 3)])
+            self.ae(g('a->b'), [(1, 1), (2, 2), (1, 1)])
+            self.ae(g('a<-b'), [(1, 1), (2, 2), (1, 1)])
+            self.ae(g('a==>b'), [(1, 1), (3, 3), (1, 1)])
+            self.ae(g('a<==b'), [(1, 1), (3, 3), (1, 1)])
             if 'iosevka' in font:
                 self.ae(g('--->'), [(4, 4)])
                 self.ae(g('-' * 12 + '>'), [(13, 13)])
@@ -380,11 +447,33 @@ class Rendering(FontBaseTest):
                 self.ae(g('===--<>=='), [(3, 3), (2, 2), (2, 2), (2, 2)])
                 self.ae(g('==!=<>==<><><>'), [(4, 4), (2, 2), (2, 2), (2, 2), (2, 2), (2, 2)])
                 self.ae(g('-' * 18), [(18, 18)])
+                self.ae(g('<==>'), [(4, 4)])
+                self.ae(g('<!--'), [(4, 4)])
+                self.ae(g('a<==>b'), [(1, 1), (4, 4), (1, 1)])
+                self.ae(g('a<!--b'), [(1, 1), (4, 4), (1, 1)])
             self.ae(g('a>\u2060<b'), [(1, 1), (1, 2), (1, 1), (1, 1)])
+        comfy = partial(groups, font='ComfyCode-Regular.ttf')
+        comfy_cases = {
+            '->': ('a->b', 2),
+            '<-': ('a<-b', 2),
+            '==>': ('a==>b', 3),
+            '<==': ('a<==b', 3),
+        }
+        for text, (wrapped, ligature_width) in comfy_cases.items():
+            baseline = comfy(text)
+            self.assertIn(baseline, ([(ligature_width, ligature_width)], [(1, 1) for i in range(ligature_width)]))
+            if baseline == [(ligature_width, ligature_width)]:
+                self.ae(comfy(wrapped), [(1, 1), (ligature_width, ligature_width), (1, 1)])
+            else:
+                self.ae(comfy(wrapped), [(1, 1) for i in range(len(wrapped))])
         colon_glyph = ss('9:30', font='FiraCode-Medium.otf')[1][2]
         self.assertNotEqual(colon_glyph, ss(':', font='FiraCode-Medium.otf')[0][2])
         self.ae(colon_glyph, 1031)
         self.ae(groups('9:30', font='FiraCode-Medium.otf'), [(1, 1), (1, 1), (1, 1), (1, 1)])
+        self.ae(groups('#_(', font='FiraCode-Medium.otf'), [(3, 3)])
+        self.ae(groups('a#_(b', font='FiraCode-Medium.otf'), [(1, 1), (3, 3), (1, 1)])
+        self.ae(groups('<*>>', font='FiraCode-Medium.otf'), [(3, 3), (1, 1)])
+        self.ae(groups('a<*>>b', font='FiraCode-Medium.otf'), [(1, 1), (3, 3), (1, 1), (1, 1)])
 
         self.ae(groups('|\U0001F601|\U0001F64f|\U0001F63a|'), [(1, 1), (2, 1), (1, 1), (2, 1), (1, 1), (2, 1), (1, 1)])
         self.ae(groups('He\u0347\u0305llo\u0337,', font='LiberationMono-Regular.ttf'),
@@ -1215,4 +1304,12 @@ box_chars = {  # {{{
  '\U0001fbe6', '\U0001fbe7',
  }  # }}}
 for ch in range(0x1cd00, 0x1cde5+1):  # octants
+    box_chars.add(chr(ch))
+for ch in range(0x1fbce, 0x1fbf0):  # blocks, diagonals, circles (legacy computing)
+    box_chars.add(chr(ch))
+for ch in range(0x1cc1b, 0x1cc40):  # box drawing variants, separated quadrants, circle arcs (supplement)
+    box_chars.add(chr(ch))
+for ch in range(0x1ce16, 0x1ce1a):  # box drawings light vertical T-junctions (supplement)
+    box_chars.add(chr(ch))
+for ch in range(0x1ce51, 0x1ceb0):  # separated block sextants, sixteenth blocks, quarter parts (supplement)
     box_chars.add(chr(ch))

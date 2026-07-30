@@ -2,10 +2,12 @@
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 from functools import partial
+from types import SimpleNamespace
 
 import kitty.fast_data_types as defines
 from kitty.key_encoding import EventType, KeyEvent, decode_key_event, encode_key_event
 from kitty.keys import Mappings
+from kitty.options.utils import KeyFallbackType
 
 from . import BaseTest
 
@@ -654,3 +656,269 @@ class TestKeys(BaseTest):
         self.ae(tm('m', 'a'), [True, True])
         self.ae(tm.actions, ['push_keyboard_mode mw', 'new_window'])
         af(tm.ignore_os_keyboard_processing)
+
+    def test_copy_or_noop_passthrough(self):
+        from kitty.boss import Boss
+        from kitty.conf.utils import KeyAction
+
+        class Window:
+            def __init__(self, passthrough: bool):
+                self.passthrough = passthrough
+                self.calls = 0
+
+            def copy_or_noop(self) -> bool:
+                self.calls += 1
+                return self.passthrough
+
+        class TestBoss(Boss):
+            window: Window
+
+            @property
+            def active_window(self):
+                return self.window
+
+            @property
+            def active_tab(self):
+                return None
+
+        boss = TestBoss.__new__(TestBoss)
+        boss.args = SimpleNamespace(debug_keyboard=False)
+        boss.window_for_dispatch = None
+
+        boss.window = Window(True)
+        self.assertFalse(boss.dispatch_action(KeyAction('copy_or_noop')))
+        self.ae(boss.window.calls, 1)
+
+        boss.window = Window(False)
+        self.assertTrue(boss.dispatch_action(KeyAction('copy_or_noop')))
+        self.ae(boss.window.calls, 1)
+
+    def test_match_physical_keys_removed(self):
+        # match_physical_keys global option has been removed in favor of per-mapping --allow-fallback
+        # Verify that get_shortcut does NOT match via alternate_key without per-mapping allow_fallback='ascii'
+        from kitty.keys import get_shortcut
+        from kitty.options.utils import KeyDefinition
+
+        ctrl = defines.GLFW_MOD_CONTROL
+        cyrillic_s = 0x441  # Cyrillic 'с'
+        latin_c = ord('c')
+
+        kd = KeyDefinition(definition='copy_to_clipboard')  # default allow_fallback='shifted'
+        keymap = {defines.SingleKey(ctrl, False, latin_c): [kd]}
+
+        # alternate_key should NOT match since default allow_fallback='shifted' (no 'ascii')
+        ev = defines.KeyEvent(cyrillic_s, 0, latin_c, ctrl)
+        self.assertIsNone(get_shortcut(keymap, ev))
+
+        # direct key match still works
+        ev = defines.KeyEvent(latin_c, 0, latin_c, ctrl)
+        result = get_shortcut(keymap, ev)
+        self.assertIsNotNone(result)
+        self.assertIs(result[0], kd)
+
+    def test_get_shortcut_per_mapping_fallback(self):
+        from kitty.keys import get_shortcut
+        from kitty.options.utils import KeyDefinition, KeyMapOptions, _convert_allow_fallback
+
+        ctrl = defines.GLFW_MOD_CONTROL
+        shift = defines.GLFW_MOD_SHIFT
+        cyrillic_s = 0x441  # Cyrillic 'с' (on physical 'c' key in Russian layout)
+        latin_c = ord('c')
+
+        def make_kd(definition='test_action', allow_fallback='shifted'):
+            opts = KeyMapOptions(allow_fallback=_convert_allow_fallback(allow_fallback))
+            return KeyDefinition(definition=definition, options=opts)
+
+        # non-ASCII key + alternate_key + allow_fallback includes ascii → match
+        kd_ascii = make_kd('copy', allow_fallback='ascii,shifted')
+        keymap = {defines.SingleKey(ctrl, False, latin_c): [kd_ascii]}
+        ev = defines.KeyEvent(cyrillic_s, 0, latin_c, ctrl)
+        result = get_shortcut(keymap, ev)
+        self.assertIsNotNone(result)
+        self.assertIs(result[0], kd_ascii)
+
+        # sorting by fallback order
+        kd1 = make_kd('ascii', allow_fallback='ascii,shifted')
+        kd2 = make_kd('shifted', allow_fallback='shifted,ascii')
+        keymap = {defines.SingleKey(ctrl, False, latin_c): [kd1, kd2]}
+        ev = defines.KeyEvent(cyrillic_s, 0, latin_c, ctrl)
+        result = get_shortcut(keymap, ev)
+        self.assertEqual(result, [kd1, kd2])
+        keymap = {defines.SingleKey(0, False, latin_c): [kd1, kd2]}
+        ev = defines.KeyEvent(ord('C'), latin_c, 0, shift)
+        result = get_shortcut(keymap, ev)
+        self.assertEqual(result, [kd2, kd1])
+
+        # non-ASCII key + alternate_key + allow_fallback='shifted' (no ascii) → no ascii match
+        kd_shifted_only = make_kd('copy', allow_fallback='shifted')
+        keymap = {defines.SingleKey(ctrl, False, latin_c): [kd_shifted_only]}
+        ev = defines.KeyEvent(cyrillic_s, 0, latin_c, ctrl)
+        self.assertIsNone(get_shortcut(keymap, ev))
+
+        # shifted_key + allow_fallback='shifted' → match
+        # When Shift+key pressed: key='C'(67), shifted_key='c'(99), lookup SingleKey(0, False, 'c')
+        kd_shifted = make_kd('zoom', allow_fallback='shifted')
+        keymap = {defines.SingleKey(0, False, latin_c): [kd_shifted]}
+        ev = defines.KeyEvent(ord('C'), latin_c, 0, shift)
+        result = get_shortcut(keymap, ev)
+        self.assertIsNotNone(result)
+        self.assertIs(result[0], kd_shifted)
+
+        # shifted_key + allow_fallback='ascii' (no shifted) → no shifted match
+        kd_ascii_only = make_kd('zoom', allow_fallback='ascii')
+        keymap = {defines.SingleKey(0, False, latin_c): [kd_ascii_only]}
+        ev = defines.KeyEvent(ord('C'), latin_c, 0, shift)
+        self.assertIsNone(get_shortcut(keymap, ev))
+
+        # allow_fallback='' (empty) → no fallback at all
+        kd_none = make_kd('copy', allow_fallback='')
+        keymap = {defines.SingleKey(ctrl, False, latin_c): [kd_none]}
+        # ascii fallback blocked
+        ev = defines.KeyEvent(cyrillic_s, 0, latin_c, ctrl)
+        self.assertIsNone(get_shortcut(keymap, ev))
+        # shifted fallback blocked
+        ev = defines.KeyEvent(ord('C'), latin_c, 0, ctrl | shift)
+        self.assertIsNone(get_shortcut(keymap, ev))
+
+        # ASCII key (Dvorak) + alternate_key → no fallback (non-ASCII guard: key must be > 127)
+        kd_dvorak = make_kd('test', allow_fallback='ascii,shifted')
+        keymap = {defines.SingleKey(ctrl, False, latin_c): [kd_dvorak]}
+        ev = defines.KeyEvent(ord('k'), 0, latin_c, ctrl)  # key='k' is ASCII
+        self.assertIsNone(get_shortcut(keymap, ev))
+
+        # functional key (PUA range 0xE000+) + alternate_key → no fallback (functional keys excluded)
+        kd_functional = make_kd('escape_action', allow_fallback='ascii,shifted')
+        keymap = {defines.SingleKey(ctrl, False, latin_c): [kd_functional]}
+        ev = defines.KeyEvent(0xE000, 0, latin_c, ctrl)  # ESCAPE key (functional, PUA range)
+        self.assertIsNone(get_shortcut(keymap, ev))
+
+        # boundary: 0xDFFF (last codepoint before PUA) → should match via ascii fallback
+        kd_boundary = make_kd('boundary_action', allow_fallback='ascii,shifted')
+        keymap = {defines.SingleKey(ctrl, False, latin_c): [kd_boundary]}
+        ev = defines.KeyEvent(0xDFFF, 0, latin_c, ctrl)
+        self.assertIsNotNone(get_shortcut(keymap, ev))
+
+        # boundary: 128 (first non-ASCII codepoint) → should match via ascii fallback
+        ev = defines.KeyEvent(128, 0, latin_c, ctrl)
+        self.assertIsNotNone(get_shortcut(keymap, ev))
+
+        # direct key match takes priority over alternate_key fallback
+        kd_direct = make_kd('direct_action', allow_fallback='ascii,shifted')
+        kd_alt = make_kd('alt_action', allow_fallback='ascii,shifted')
+        keymap = {
+            defines.SingleKey(ctrl, False, cyrillic_s): [kd_direct],
+            defines.SingleKey(ctrl, False, latin_c): [kd_alt],
+        }
+        ev = defines.KeyEvent(cyrillic_s, 0, latin_c, ctrl)
+        result = get_shortcut(keymap, ev)
+        self.assertIs(result[0], kd_direct)  # direct match, not ascii fallback
+
+    def test_shortcut_matches_alternate_key(self):
+        from kitty.keys import shortcut_matches
+
+        ctrl = defines.GLFW_MOD_CONTROL
+        cyrillic_s = 0x441  # Cyrillic 'с'
+        latin_c = ord('c')
+
+        s = defines.SingleKey(ctrl, False, latin_c)
+
+        # non-ASCII key + alternate_key → match (unconditional with non-ASCII guard)
+        ev = defines.KeyEvent(cyrillic_s, 0, latin_c, ctrl)
+        self.assertTrue(shortcut_matches(s, ev))
+
+        # ASCII key + alternate_key → no match (non-ASCII guard blocks it)
+        ev = defines.KeyEvent(ord('k'), 0, latin_c, ctrl)
+        self.assertFalse(shortcut_matches(s, ev))
+
+        # direct key match still works
+        ev = defines.KeyEvent(latin_c, 0, 0, ctrl)
+        self.assertTrue(shortcut_matches(s, ev))
+
+        # no alternate_key → no match
+        ev = defines.KeyEvent(cyrillic_s, 0, 0, ctrl)
+        self.assertFalse(shortcut_matches(s, ev))
+
+        # mods mismatch → no match even with alternate_key
+        ev = defines.KeyEvent(cyrillic_s, 0, latin_c, defines.GLFW_MOD_ALT)
+        self.assertFalse(shortcut_matches(s, ev))
+
+        # functional key (PUA range 0xE000+) + alternate_key → no match
+        ev = defines.KeyEvent(0xE000, 0, latin_c, ctrl)  # ESCAPE key (functional)
+        self.assertFalse(shortcut_matches(s, ev))
+
+    def test_key_event_matches_alternate_key(self):
+        from kitty.key_encoding import EventType, KeyEvent
+
+        ctrl = 0x4  # CTRL modifier in kitty protocol encoding
+
+        # non-ASCII key + alternate_key → match via alternate_key fallback
+        ev = KeyEvent(type=EventType.PRESS, mods=ctrl, key='\u0441', alternate_key='c', ctrl=True)  # Cyrillic 'с'
+        self.assertTrue(ev.matches('ctrl+c'))
+
+        # direct key match still works
+        ev = KeyEvent(type=EventType.PRESS, mods=ctrl, key='c', ctrl=True)
+        self.assertTrue(ev.matches('ctrl+c'))
+
+        # ASCII key + alternate_key → no match (non-ASCII guard: key must be non-ASCII)
+        ev = KeyEvent(type=EventType.PRESS, mods=ctrl, key='k', alternate_key='c', ctrl=True)
+        self.assertFalse(ev.matches('ctrl+c'))
+
+        # no alternate_key → no match for non-ASCII key
+        ev = KeyEvent(type=EventType.PRESS, mods=ctrl, key='\u0441', ctrl=True)  # Cyrillic 'с', no alternate_key
+        self.assertFalse(ev.matches('ctrl+c'))
+
+        # mods mismatch → no match even with alternate_key
+        ev = KeyEvent(type=EventType.PRESS, mods=0x2, key='\u0441', alternate_key='c', alt=True)  # ALT, not CTRL
+        self.assertFalse(ev.matches('ctrl+c'))
+
+        # shifted_key still works alongside alternate_key
+        ev = KeyEvent(type=EventType.PRESS, mods=0x1, key='C', shifted_key='c', shift=True)
+        self.assertTrue(ev.matches('c'))
+
+        # functional key name (multi-char key like "ENTER") → no alternate_key fallback (guard blocks it)
+        ev = KeyEvent(type=EventType.PRESS, mods=ctrl, key='ENTER', alternate_key='c', ctrl=True)
+        self.assertFalse(ev.matches('ctrl+c'))
+
+        # functional key (single-char PUA 0xE000+) → no alternate_key fallback
+        ev = KeyEvent(type=EventType.PRESS, mods=ctrl, key='\ue000', alternate_key='c', ctrl=True)
+        self.assertFalse(ev.matches('ctrl+c'))
+
+    def test_allow_fallback_parsing(self):
+        from kitty.options.utils import parse_map
+
+        def first_kd(val):
+            return next(iter(parse_map(val)))
+
+        # default: no --allow-fallback → allow_fallback='shifted'
+        kd = first_kd('ctrl+c copy_to_clipboard')
+        self.ae(kd.options.allow_fallback, (KeyFallbackType.shifted,))
+
+        # --allow-fallback=shifted,ascii
+        kd = first_kd('--allow-fallback=shifted,ascii ctrl+c copy_to_clipboard')
+        self.assertIn(KeyFallbackType.shifted, kd.options.allow_fallback)
+        self.assertIn(KeyFallbackType.alternate, kd.options.allow_fallback)
+
+        # --allow-fallback=ascii (only ascii, no shifted)
+        kd = first_kd('--allow-fallback=ascii ctrl+c copy_to_clipboard')
+        self.ae(kd.options.allow_fallback, (KeyFallbackType.alternate,))
+        self.assertNotIn(KeyFallbackType.shifted, kd.options.allow_fallback)
+
+        # --allow-fallback=shifted (explicit, same as default)
+        kd = first_kd('--allow-fallback=shifted ctrl+c copy_to_clipboard')
+        self.ae(kd.options.allow_fallback, (KeyFallbackType.shifted,))
+
+        # invalid value raises
+        self.assertRaises(ValueError, first_kd, '--allow-fallback=bogus ctrl+c copy_to_clipboard')
+
+        # order normalization: ascii,shifted → sorted as ascii,shifted
+        kd = first_kd('--allow-fallback=ascii,shifted ctrl+c copy_to_clipboard')
+        self.ae(kd.options.allow_fallback, (KeyFallbackType.alternate, KeyFallbackType.shifted))
+
+        # --allow-fallback=none → empty string (no fallback)
+        kd = first_kd('--allow-fallback=none ctrl+c copy_to_clipboard')
+        self.ae(kd.options.allow_fallback, ())
+
+        # combined with other options
+        kd = first_kd('--when-focus-on 1 --allow-fallback=ascii ctrl+c copy_to_clipboard')
+        self.ae(kd.options.allow_fallback, (KeyFallbackType.alternate,))
+        self.ae(kd.options.when_focus_on, '1')

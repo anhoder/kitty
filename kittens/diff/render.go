@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -40,6 +41,7 @@ type HalfScreenLine struct {
 	marked_up_margin_text string
 	marked_up_text        string
 	is_filler             bool
+	is_moved              bool
 	cached_wcswidth       int
 }
 
@@ -81,6 +83,9 @@ func (self *LogicalLine) render_screen_line(n int, lp *loop.Loop, margin_size, c
 	if sl.left.is_filler {
 		left_margin = format_as_sgr.margin_filler + left_margin
 		left_text = format_as_sgr.filler + left_text
+	} else if sl.left.is_moved {
+		left_margin = format_as_sgr.moved_margin + left_margin
+		left_text = format_as_sgr.moved + left_text
 	} else {
 		switch self.line_type {
 		case CHANGE_LINE, IMAGE_LINE:
@@ -104,6 +109,9 @@ func (self *LogicalLine) render_screen_line(n int, lp *loop.Loop, margin_size, c
 	if sl.right.is_filler {
 		right_margin = format_as_sgr.margin_filler + right_margin
 		right_text = format_as_sgr.filler + right_text
+	} else if sl.right.is_moved {
+		right_margin = format_as_sgr.moved_margin + right_margin
+		right_text = format_as_sgr.moved + right_text
 	} else {
 		switch self.line_type {
 		case CHANGE_LINE, IMAGE_LINE:
@@ -156,7 +164,7 @@ func place_in(text string, sz int) string {
 }
 
 var format_as_sgr struct {
-	title, margin, added, removed, added_margin, removed_margin, filler, margin_filler, hunk_margin, hunk, selection, search string
+	title, margin, added, removed, added_margin, removed_margin, filler, margin_filler, hunk_margin, hunk, selection, search, moved, moved_margin string
 }
 
 var statusline_format, added_count_format, removed_count_format, message_format func(...any) string
@@ -175,6 +183,8 @@ type ResolvedColors struct {
 	Margin_bg            style.RGBA
 	Margin_fg            style.RGBA
 	Margin_filler_bg     style.NullableColor
+	Moved_bg             style.RGBA
+	Moved_margin_bg      style.RGBA
 	Removed_bg           style.RGBA
 	Removed_margin_bg    style.RGBA
 	Search_bg            style.RGBA
@@ -202,6 +212,8 @@ func create_formatters() {
 		rc.Margin_bg = conf.Dark_margin_bg
 		rc.Margin_fg = conf.Dark_margin_fg
 		rc.Margin_filler_bg = conf.Dark_margin_filler_bg
+		rc.Moved_bg = conf.Dark_moved_bg
+		rc.Moved_margin_bg = conf.Dark_moved_margin_bg
 		rc.Removed_bg = conf.Dark_removed_bg
 		rc.Removed_margin_bg = conf.Dark_removed_margin_bg
 		rc.Search_bg = conf.Dark_search_bg
@@ -223,6 +235,8 @@ func create_formatters() {
 		rc.Margin_bg = conf.Margin_bg
 		rc.Margin_fg = conf.Margin_fg
 		rc.Margin_filler_bg = conf.Margin_filler_bg
+		rc.Moved_bg = conf.Moved_bg
+		rc.Moved_margin_bg = conf.Moved_margin_bg
 		rc.Removed_bg = conf.Removed_bg
 		rc.Removed_margin_bg = conf.Removed_margin_bg
 		rc.Search_bg = conf.Search_bg
@@ -248,6 +262,8 @@ func create_formatters() {
 	format_as_sgr.added_margin = only_open(fmt.Sprintf("fg=%s bg=%s", rc.Margin_fg.AsRGBSharp(), rc.Added_margin_bg.AsRGBSharp()))
 	format_as_sgr.removed = only_open("bg=" + rc.Removed_bg.AsRGBSharp())
 	format_as_sgr.removed_margin = only_open(fmt.Sprintf("fg=%s bg=%s", rc.Margin_fg.AsRGBSharp(), rc.Removed_margin_bg.AsRGBSharp()))
+	format_as_sgr.moved = only_open("bg=" + rc.Moved_bg.AsRGBSharp())
+	format_as_sgr.moved_margin = only_open(fmt.Sprintf("fg=%s bg=%s", rc.Margin_fg.AsRGBSharp(), rc.Moved_margin_bg.AsRGBSharp()))
 	format_as_sgr.title = only_open(fmt.Sprintf("fg=%s bg=%s bold", rc.Title_fg.AsRGBSharp(), rc.Title_bg.AsRGBSharp()))
 	format_as_sgr.margin = only_open(fmt.Sprintf("fg=%s bg=%s", rc.Margin_fg.AsRGBSharp(), rc.Margin_bg.AsRGBSharp()))
 	format_as_sgr.hunk = only_open(fmt.Sprintf("fg=%s bg=%s", rc.Margin_fg.AsRGBSharp(), rc.Hunk_bg.AsRGBSharp()))
@@ -303,10 +319,23 @@ func title_lines(left_path, right_path string, columns, margin_size int, ans []*
 
 type LogicalLines struct {
 	lines                []*LogicalLine
+	title_line_indices   []int // sorted indices of TITLE_LINEs in lines -- used for sticky_header
 	margin_size, columns int
 }
 
 func (self *LogicalLines) At(i int) *LogicalLine { return self.lines[i] }
+
+func (self *LogicalLines) TitleLineIdxFor(line_idx int) int {
+	if len(self.title_line_indices) == 0 || line_idx < 0 {
+		return -1
+	}
+	// first title index > line_idx, so the one before it is our answer
+	i := sort.SearchInts(self.title_line_indices, line_idx+1)
+	if i == 0 {
+		return -1
+	}
+	return self.title_line_indices[i-1]
+}
 
 func (self *LogicalLines) ScreenLineAt(pos ScrollPos) *ScreenLine {
 	if pos.logical_line < len(self.lines) && pos.logical_line >= 0 {
@@ -533,6 +562,8 @@ type DiffData struct {
 	available_cols, margin_size int
 
 	left_lines, right_lines []string
+	left_moved_lines        *utils.Set[int]
+	right_moved_lines       *utils.Set[int]
 }
 
 func hunk_title(hunk *Hunk) string {
@@ -567,7 +598,7 @@ func splitlines(text string, width int) []string {
 	return style.WrapTextAsLines(text, width, style.WrapOptions{})
 }
 
-func render_half_line(line_number int, line, ltype string, available_cols int, center Center, ans []HalfScreenLine) []HalfScreenLine {
+func render_half_line(line_number int, line, ltype string, available_cols int, center Center, is_moved bool, ans []HalfScreenLine) []HalfScreenLine {
 	var regions []Region
 	if ltype == "remove" {
 		regions = center.left_regions
@@ -583,7 +614,7 @@ func render_half_line(line_number int, line, ltype string, available_cols int, c
 	}
 	lnum := strconv.Itoa(line_number + 1)
 	for _, sc := range splitlines(line, available_cols) {
-		ans = append(ans, HalfScreenLine{marked_up_margin_text: lnum, marked_up_text: sc})
+		ans = append(ans, HalfScreenLine{marked_up_margin_text: lnum, marked_up_text: sc, is_moved: is_moved})
 		lnum = ""
 	}
 	return ans
@@ -601,13 +632,15 @@ func lines_for_diff_chunk(data *DiffData, _ int, chunk *Chunk, _ int, ans []*Log
 		}
 		if i < chunk.left_count {
 			left_lnum = chunk.left_start + i
-			ll = render_half_line(left_lnum, data.left_lines[left_lnum], "remove", data.available_cols, center, ll)
+			left_is_moved := data.left_moved_lines != nil && data.left_moved_lines.Has(left_lnum)
+			ll = render_half_line(left_lnum, data.left_lines[left_lnum], "remove", data.available_cols, center, left_is_moved, ll)
 			left_lnum++
 		}
 
 		if i < chunk.right_count {
 			right_lnum = chunk.right_start + i
-			rl = render_half_line(right_lnum, data.right_lines[right_lnum], "add", data.available_cols, center, rl)
+			right_is_moved := data.right_moved_lines != nil && data.right_moved_lines.Has(right_lnum)
+			rl = render_half_line(right_lnum, data.right_lines[right_lnum], "add", data.available_cols, center, right_is_moved, rl)
 			right_lnum++
 		}
 
@@ -663,7 +696,10 @@ func lines_for_diff(left_path string, right_path string, patch *Patch, columns, 
 		return append(ans, &ht), nil
 	}
 	available_cols := columns/2 - margin_size
-	data := DiffData{left_path: left_path, right_path: right_path, available_cols: available_cols, margin_size: margin_size}
+	data := DiffData{
+		left_path: left_path, right_path: right_path, available_cols: available_cols, margin_size: margin_size,
+		left_moved_lines: patch.left_moved_lines, right_moved_lines: patch.right_moved_lines,
+	}
 	if left_path != "" {
 		data.left_lines, err = highlighted_lines_for_path(left_path)
 		if err != nil {
@@ -720,7 +756,7 @@ func all_lines(path string, columns, margin_size int, is_add bool, ans []*Logica
 	}
 	for line_number, line := range lines {
 		hlines := make([]HalfScreenLine, 0, 8)
-		hlines = render_half_line(line_number, line, ltype, available_cols, Center{}, hlines)
+		hlines = render_half_line(line_number, line, ltype, available_cols, Center{}, false, hlines)
 		l := ll
 		if is_add {
 			l.right_reference.linenum = line_number + 1
@@ -771,8 +807,13 @@ func rename_lines(path, other_path string, columns, margin_size int, ans []*Logi
 func render(collection *Collection, diff_map map[string]*Patch, screen_size screen_size, largest_line_number int, image_size graphics.Size) (result *LogicalLines, err error) {
 	margin_size := utils.Max(3, len(strconv.Itoa(largest_line_number))+1)
 	ans := make([]*LogicalLine, 0, 1024)
+	var title_line_indices []int
+	track_titles := conf != nil && conf.Sticky_header
 	columns := screen_size.columns
 	err = collection.Apply(func(path, item_type, changed_path string) error {
+		if track_titles {
+			title_line_indices = append(title_line_indices, len(ans))
+		}
 		ans = title_lines(path, changed_path, columns, margin_size, ans)
 		defer func() {
 			ans = append(ans, &LogicalLine{line_type: EMPTY_LINE, screen_lines: []*ScreenLine{{}}})
@@ -841,5 +882,5 @@ func render(collection *Collection, diff_map map[string]*Patch, screen_size scre
 		// Having am empty list of lines causes panics later on
 		ll = []*LogicalLine{{line_type: EMPTY_LINE, screen_lines: []*ScreenLine{{}}}}
 	}
-	return &LogicalLines{lines: ll, margin_size: margin_size, columns: columns}, err
+	return &LogicalLines{lines: ll, title_line_indices: title_line_indices, margin_size: margin_size, columns: columns}, err
 }

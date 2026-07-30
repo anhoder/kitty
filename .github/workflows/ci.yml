@@ -23,15 +23,15 @@ jobs:
                 cc: [gcc, clang]
                 include:
                     - python: a
-                      pyver: "3.10"
+                      pyver: "3.12"
                       sanitize: 0
 
                     - python: b
-                      pyver: "3.11"
+                      pyver: "3.13"
                       sanitize: 1
 
                     - python: c
-                      pyver: "3.12"
+                      pyver: "3.14"
                       sanitize: 1
 
 
@@ -45,18 +45,18 @@ jobs:
 
         steps:
           - name: Checkout source code
-            uses: actions/checkout@v6
+            uses: actions/checkout@v7.0.1
             with:
               fetch-depth: 10
               persist-credentials: false
 
           - name: Set up Python ${{ matrix.pyver }}
-            uses: actions/setup-python@v6
+            uses: actions/setup-python@v7.0.0
             with:
               python-version: ${{ matrix.pyver }}
 
           - name: Install Go
-            uses: actions/setup-go@v6
+            uses: actions/setup-go@v7.0.0
             with:
               go-version-file: go.mod
 
@@ -73,7 +73,7 @@ jobs:
             CFLAGS: -funsigned-char
         steps:
           - name: Checkout source code
-            uses: actions/checkout@v6
+            uses: actions/checkout@v7.0.1
             with:
               fetch-depth: 0  # needed for :commit: docs role
               persist-credentials: false
@@ -85,18 +85,18 @@ jobs:
             run: if grep -Inr ':code:`\s' kitty kitty_tests kittens docs *.py *.asciidoc *.rst *.go .gitattributes .gitignore; then echo Space at code block start found, aborting.; exit 1; fi
 
           - name: Set up Python
-            uses: actions/setup-python@v6
+            uses: actions/setup-python@v7.0.0
             with:
-              python-version: "3.13"
+              python-version: "3.14"
 
           - name: Install Go
-            uses: actions/setup-go@v6
+            uses: actions/setup-go@v7.0.0
             with:
               go-version-file: go.mod
               cache: false
 
           - name: Cache Go build artifacts separately
-            uses: actions/cache@v5
+            uses: actions/cache@v6.1.0
             with:
               path: |
                 ~/.cache/go-build
@@ -106,7 +106,7 @@ jobs:
                 ${{ runner.os }}-golang-static-
 
           - name: Install build-only deps
-            run: python -m pip install -r docs/requirements.txt ruff mypy types-requests types-docutils types-Pygments
+            run: python -m pip install -r docs/requirements.txt ruff ty types-requests types-docutils types-Pygments
 
           - name: Run ruff
             run: ruff check .
@@ -120,17 +120,14 @@ jobs:
           - name: Build kitty
             run: python setup.py build --debug
 
-          - name: Run mypy
-            run: which python && python -m mypy --version && ./test.py mypy
+          - name: Run type checking
+            run: which python && ./test.py type-check
 
           - name: Run go vet
             run: go version && go vet -tags testing ./...
 
-          - name: Build man page
-            run: make FAIL_WARN=1 man
-
-          - name: Build HTML docs
-            run: make FAIL_WARN=1 html
+          - name: Build docs
+            run: make FAIL_WARN=1 docs
 
           - name: Build static kittens
             run: python setup.py build-static-binaries
@@ -143,15 +140,16 @@ jobs:
                 os: [ubuntu-latest, macos-latest]
         env:
             KITTY_BUNDLE: 1
+            KITTY_SANITIZE: 1
         steps:
           - name: Checkout source code
-            uses: actions/checkout@v6
+            uses: actions/checkout@v7.0.1
             with:
               fetch-depth: 10
               persist-credentials: false
 
           - name: Install Go
-            uses: actions/setup-go@v6
+            uses: actions/setup-go@v7.0.0
             with:
               go-version-file: go.mod
 
@@ -166,18 +164,18 @@ jobs:
         runs-on: macos-latest
         steps:
           - name: Checkout source code
-            uses: actions/checkout@v6
+            uses: actions/checkout@v7.0.1
             with:
               fetch-depth: 0  # needed for :commit: docs role
               persist-credentials: false
 
           - name: Set up Python
-            uses: actions/setup-python@v6
+            uses: actions/setup-python@v7.0.0
             with:
-              python-version: "3.11"
+              python-version: "3.14"
 
           - name: Install Go
-            uses: actions/setup-go@v6
+            uses: actions/setup-go@v7.0.0
             with:
               go-version-file: go.mod
 
@@ -211,7 +209,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
           - name: Checkout source code
-            uses: actions/checkout@v6
+            uses: actions/checkout@v7.0.1
             with:
               fetch-depth: 10
               persist-credentials: false
@@ -220,7 +218,7 @@ jobs:
             run: sudo apt-get update && sudo apt-get install -y curl xz-utils build-essential git pkg-config libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev libxkbcommon-x11-dev libfontconfig-dev libx11-xcb-dev libdbus-1-dev
 
           - name: Install Go
-            uses: actions/setup-go@v6
+            uses: actions/setup-go@v7.0.0
             with:
               go-version-file: go.mod
 

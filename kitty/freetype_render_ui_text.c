@@ -189,9 +189,11 @@ static pixel
 alpha_blend_premult(pixel over, pixel under) {
     const uint16_t over_r = (over >> 16) & 0xff, over_g = (over >> 8) & 0xff, over_b = over & 0xff;
     const uint16_t under_r = (under >> 16) & 0xff, under_g = (under >> 8) & 0xff, under_b = under & 0xff;
-    const uint16_t factor = 255 - ((over >> 24) & 0xff);
+    const uint16_t over_alpha = (over >> 24) & 0xff;
+    const uint16_t factor = 255 - over_alpha;
+    const uint16_t result_alpha = over_alpha + (uint16_t)(factor * ((under >> 24) & 0xff) / 255);
 #define ans(x) (over_##x + (factor * under_##x) / 255)
-    return ARGB(under >> 24, ans(r), ans(g), ans(b));
+    return ARGB(result_alpha, ans(r), ans(g), ans(b));
 #undef ans
 }
 
@@ -316,7 +318,7 @@ render_run(RenderCtx *ctx, RenderState *rs) {
     unsigned int limit = len;
     for (unsigned int i = 0; i < len; i++) {
         float delta = (float)positions[i].x_offset / 64.0f + (float)positions[i].x_advance / 64.0f;
-        if (pos + delta >= rs->output_width) {
+        if (pos + delta > rs->output_width) {
             limit = i;
             break;
         }
@@ -483,6 +485,77 @@ end:
     return ok;
 }
 
+size_t
+freetype_text_width_for_single_line(FreeTypeRenderCtx ctx_, const char *text, unsigned sz_px) {
+    RenderCtx *ctx = (RenderCtx*)ctx_;
+    if (!ctx->created) return 0;
+    bool has_text = text && text[0];
+    if (!has_text) return 0;
+    hb_buffer_clear_contents(hb_buffer);
+    if (!hb_buffer_pre_allocate(hb_buffer, 512)) { PyErr_NoMemory(); return 0; }
+
+    size_t text_len = strlen(text);
+    char_type *unicode = calloc(text_len + 1, sizeof(char_type));
+    if (!unicode) { PyErr_NoMemory(); return 0; }
+    text_len = decode_utf8_string(text, text_len, unicode);
+    set_pixel_size(ctx, &main_face, sz_px, true);
+    // Use a very large output_width so nothing is truncated
+    RenderState rs = {
+        .current_face = &main_face, .fg = 0, .bg = 0, .horizontally_center = false,
+        .output_width = SIZE_MAX, .output_height = 0, .stride = 0,
+        .output = NULL, .x = 0, .y = 0, .sz_px = sz_px
+    };
+
+    for (size_t i = 0; i < text_len; i++) {
+        bool add_to_current_buffer = false;
+        char_type codep = unicode[i];
+        char_type next_codep = unicode[i + 1];
+        Face *fallback_font = NULL;
+        if (char_props_for(codep).is_combining_char) {
+            add_to_current_buffer = true;
+        } else if (glyph_id_for_codepoint(&main_face, codep) > 0) {
+            add_to_current_buffer = rs.current_face == &main_face;
+            if (!add_to_current_buffer) fallback_font = &main_face;
+        } else {
+            if (glyph_id_for_codepoint(rs.current_face, codep) > 0) fallback_font = rs.current_face;
+            else fallback_font = find_fallback_font_for(ctx, codep, next_codep);
+            add_to_current_buffer = !fallback_font || rs.current_face == fallback_font;
+        }
+        if (!add_to_current_buffer) {
+            if (rs.pending_in_buffer) {
+                // Shape the current run and accumulate width
+                hb_buffer_guess_segment_properties(hb_buffer);
+                set_pixel_size(ctx, rs.current_face, sz_px, false);
+                hb_shape(rs.current_face->hb, hb_buffer, NULL, 0);
+                unsigned int len = hb_buffer_get_length(hb_buffer);
+                hb_glyph_position_t *positions = hb_buffer_get_glyph_positions(hb_buffer, NULL);
+                for (unsigned int j = 0; j < len; j++) {
+                    rs.x += (float)positions[j].x_offset / 64.0f + (float)positions[j].x_advance / 64.0f;
+                }
+                rs.pending_in_buffer = 0;
+                hb_buffer_clear_contents(hb_buffer);
+            }
+            if (fallback_font) rs.current_face = fallback_font;
+        }
+        hb_buffer_add_utf32(hb_buffer, &codep, 1, 0, 1);
+        rs.pending_in_buffer += 1;
+    }
+    if (rs.pending_in_buffer) {
+        hb_buffer_guess_segment_properties(hb_buffer);
+        set_pixel_size(ctx, rs.current_face, sz_px, false);
+        hb_shape(rs.current_face->hb, hb_buffer, NULL, 0);
+        unsigned int len = hb_buffer_get_length(hb_buffer);
+        hb_glyph_position_t *positions = hb_buffer_get_glyph_positions(hb_buffer, NULL);
+        for (unsigned int j = 0; j < len; j++) {
+            rs.x += (float)positions[j].x_offset / 64.0f + (float)positions[j].x_advance / 64.0f;
+        }
+        hb_buffer_clear_contents(hb_buffer);
+    }
+
+    free(unicode);
+    return (size_t)ceilf(rs.x);
+}
+
 static uint8_t*
 render_single_char_bitmap(const FT_Bitmap *bm, size_t *result_width, size_t *result_height) {
     *result_width = bm->width; *result_height = bm->rows;
@@ -578,8 +651,8 @@ release_freetype_render_context(FreeTypeRenderCtx ctx) { if (ctx) { cleanup((Ren
 static PyObject*
 render_line(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
     // use for testing as below
-    // kitty +runpy "from kitty.fast_data_types import *; open('/tmp/test.rgba', 'wb').write(freetype_render_line())" && convert -size 800x60 -depth 8 /tmp/test.rgba /tmp/test.png && icat /tmp/test.png
-    const char *text = "Test 猫 H🐱🚀b rendering with ellipsis for cut off text", *family = NULL;
+    // kitty +runpy "from kitty.fast_data_types import *; open('/tmp/test.rgba', 'wb').write(freetype_render_line())" && magick -size 800x60 -depth 8 /tmp/test.rgba /tmp/test.png && icat /tmp/test.png
+    const char *text = "Test 猫 H🐱🚀b r\U000f0320endering with ellipsis for cut off text", *family = NULL;
     unsigned int width = 800, height = 60, right_margin = 0;
     int bold = 0, italic = 0;
     unsigned long fg = 0, bg = 0xfffefefe;

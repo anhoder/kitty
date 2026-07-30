@@ -3,7 +3,6 @@
 package clipboard
 
 import (
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +10,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/emmansun/base64"
 
 	"github.com/kovidgoyal/kitty/tools/tui/loop"
 	"github.com/kovidgoyal/kitty/tools/utils"
@@ -43,7 +44,7 @@ func (self *Input) has_mime_matching(predicate func(string) bool) bool {
 }
 
 func write_loop(inputs []*Input, opts *Options) (err error) {
-	lp, err := loop.New(loop.NoAlternateScreen, loop.NoRestoreColors, loop.NoMouseTracking, loop.NoInBandResizeNotifications)
+	lp, err := loop.NewForSimpleInteraction()
 	if err != nil {
 		return err
 	}

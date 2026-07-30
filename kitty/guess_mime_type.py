@@ -26,6 +26,8 @@ text_mimes = (
     'application/x-sh',
     'application/x-csh',
     'application/x-shellscript',
+    'application/x-fishscript',
+    'application/x-awk',
     'application/javascript',
     'application/json',
     'application/xml',
@@ -98,7 +100,7 @@ def guess_type(path: str, allow_filesystem_access: bool = False) -> str | None:
     mt = mt or is_special_file(path)
     if not mt:
         if is_dir:
-            mt = 'inode/directory'  # type: ignore
+            mt = 'inode/directory'
         elif is_exe:
             mt = 'inode/executable'
     return mt

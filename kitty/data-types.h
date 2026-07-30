@@ -116,6 +116,8 @@ typedef enum MouseShapes {
 } MouseShape;
 typedef enum { NONE, MENUBAR, WINDOW, ALL } WindowTitleIn;
 typedef enum { SCROLLBAR_NEVER, SCROLLBAR_ON_SCROLLED, SCROLLBAR_ON_HOVERED, SCROLLBAR_ON_SCROLL_AND_HOVER, SCROLLBAR_ALWAYS } ScrollbarVisibilityPolicy;
+typedef enum { PROGRESS_BAR_HIDDEN, PROGRESS_BAR_LEFT, PROGRESS_BAR_RIGHT, PROGRESS_BAR_TOP, PROGRESS_BAR_BOTTOM } ProgressBarPosition;
+typedef enum { PROGRESS_STATE_UNSET, PROGRESS_STATE_SET, PROGRESS_STATE_ERROR, PROGRESS_STATE_INDETERMINATE, PROGRESS_STATE_PAUSED } ProgressBarState;
 typedef enum { TILING, SCALED, MIRRORED, CLAMPED, CENTER_CLAMPED, CENTER_SCALED } BackgroundImageLayout;
 typedef struct ImageAnchorPosition {
     float canvas_x, canvas_y, image_x, image_y;
@@ -260,7 +262,7 @@ typedef struct {
     PyObject_HEAD
 
     bool dirty;
-    uint32_t color_table[256], orig_color_table[256];
+    color_type color_table[256], orig_color_table[256];
     TransparentDynamicColor configured_transparent_colors[8], overriden_transparent_colors[8];
     struct { DynamicColors dynamic_colors; uint32_t color_table[256]; TransparentDynamicColor transparent_colors[8]; } *color_stack;
     unsigned int color_stack_idx, color_stack_sz;
@@ -311,8 +313,9 @@ void cursor_from_sgr(Cursor *self, int *params, unsigned int count, bool is_grou
 const char* cursor_as_sgr(const Cursor *);
 
 PyObject* cm_thread_write(PyObject *self, PyObject *args);
-bool schedule_write_to_child(unsigned long id, unsigned int num, ...);
-bool schedule_write_to_child_python(unsigned long id, const char *prefix, PyObject* tuple_of_str_or_bytes, const char *suffix);
+bool schedule_write_to_child(id_type id, unsigned int num, ...);
+bool schedule_write_to_child_python(id_type id, const char *prefix, PyObject* tuple_of_str_or_bytes, const char *suffix);
+void schedule_write_to_child_if_possible(id_type id, const char *data, size_t sz, bool *found, bool *too_much_data, size_t keep_space);
 bool set_iutf8(int, bool);
 
 DynamicColor colorprofile_to_color(const ColorProfile *self, DynamicColor entry, DynamicColor defval);
@@ -326,7 +329,7 @@ bool colorprofile_pop_colors(ColorProfile*, unsigned int);
 void colorprofile_report_stack(ColorProfile*, unsigned int*, unsigned int*);
 
 void set_mouse_cursor(MouseShape);
-void enter_event(int modifiers);
+void enter_event(int modifiers, bool cursor_moved);
 void leave_event(int modifiers);
 void mouse_event(const int, int, int);
 void focus_in_event(void);

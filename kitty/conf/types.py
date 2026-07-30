@@ -5,7 +5,7 @@ import builtins
 import re
 import textwrap
 import typing
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from functools import lru_cache
 from importlib import import_module
 from re import Match
@@ -244,7 +244,7 @@ class Option:
     def is_color_table_color(self) -> bool:
         return self.name.startswith('color') and self.name[5:].isdigit()
 
-    def as_conf(self, commented: bool = False, level: int = 0, option_group: list['Option'] = []) -> list[str]:
+    def as_conf(self, commented: bool = False, level: int = 0, option_group: Sequence['Option'] = ()) -> list[str]:
         ans: list[str] = []
         a = ans.append
         if not self.documented:
@@ -264,13 +264,13 @@ class Option:
 
     def as_rst(
         self, conf_name: str, shortcut_slugs: dict[str, tuple[str, str]],
-        kitty_mod: str, level: int = 0, option_group: list['Option'] = []
+        kitty_mod: str, level: int = 0, option_group: Sequence['Option'] = ()
     ) -> list[str]:
         ans: list[str] = []
         a = ans.append
         if not self.documented:
             return ans
-        mopts = [self] + option_group
+        mopts = [self] + list(option_group)
         a('.. opt:: ' + ', '.join(f'{conf_name}.{mo.name}' for mo in mopts))
         if any(mo.defval_as_string for mo in mopts):
             a('.. code-block:: conf')
@@ -431,21 +431,26 @@ class ShortcutMapping(Mapping):
     setting_name: str = 'map'
 
     def __init__(
-        self, name: str, key: str, action_def: str, short_text: str, long_text: str, add_to_default: bool, documented: bool, group: 'Group', only: Only
+        self, name: str, raw_definition: str, short_text: str, long_text: str,
+        add_to_default: bool, documented: bool, group: 'Group', only: Only,
     ):
         self.name = name
         self.only = only
-        self.key = key
-        self.action_def = action_def
+        self._raw_definition = raw_definition
         self.short_text = short_text
         self.long_text = long_text
         self.documented = documented
         self.add_to_default = add_to_default
         self.group = group
+        from kitty.options.utils import parse_options_for_map
+        _, remainder = parse_options_for_map(raw_definition)
+        parts = remainder.split(maxsplit=1)
+        self.key = parts[0]
+        self.action_def = parts[1] if len(parts) > 1 else ''
 
     @property
     def parseable_text(self) -> str:
-        return f'{self.key} {self.action_def}'
+        return self._raw_definition
 
     @property
     def key_text(self) -> str:
@@ -733,8 +738,8 @@ class Definition:
     def add_map(
         self, short_text: str, defn: str, long_text: str = '', add_to_default: bool = True, documented: bool = True, only: Only = ''
     ) -> None:
-        name, key, action_def = defn.split(maxsplit=2)
-        sc = ShortcutMapping(name, key, action_def, short_text, long_text.strip(), add_to_default, documented, self.current_group, only)
+        name, rest = defn.split(maxsplit=1)
+        sc = ShortcutMapping(name, rest, short_text, long_text.strip(), add_to_default, documented, self.current_group, only)
         self.current_group.append(sc)
         self.shortcut_map.setdefault(name, []).append(sc)
 

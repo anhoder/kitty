@@ -4,7 +4,6 @@ package clipboard
 
 import (
 	"bytes"
-	"encoding/base64"
 	"fmt"
 	"image"
 	"io"
@@ -13,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/emmansun/base64"
 
 	"github.com/kovidgoyal/kitty/tools/tty"
 	"github.com/kovidgoyal/kitty/tools/tui/loop"
@@ -286,7 +287,7 @@ func parse_aliases(raw []string) (map[string][]string, error) {
 }
 
 func run_get_loop(opts *Options, args []string) (err error) {
-	lp, err := loop.New(loop.NoAlternateScreen, loop.NoRestoreColors, loop.NoMouseTracking, loop.NoInBandResizeNotifications)
+	lp, err := loop.NewForSimpleInteraction()
 	if err != nil {
 		return err
 	}
@@ -388,11 +389,9 @@ func run_get_loop(opts *Options, args []string) (err error) {
 					if getting_data_for != current_mime {
 						if prev := requested_mimes[getting_data_for]; prev != nil && !prev.all_data_received {
 							prev.all_data_received = true
-							wg.Add(1)
-							go func() {
+							wg.Go(func() {
 								prev.commit()
-								wg.Done()
-							}()
+							})
 
 						}
 						getting_data_for = current_mime
@@ -405,11 +404,9 @@ func run_get_loop(opts *Options, args []string) (err error) {
 			case "DONE":
 				if prev := requested_mimes[getting_data_for]; getting_data_for != "" && prev != nil && !prev.all_data_received {
 					prev.all_data_received = true
-					wg.Add(1)
-					go func() {
+					wg.Go(func() {
 						prev.commit()
-						wg.Done()
-					}()
+					})
 					getting_data_for = ""
 				}
 				lp.Quit(0)

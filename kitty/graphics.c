@@ -41,9 +41,9 @@ cache_key(const ImageAndFrame x, char *key) {
 #define CK(x) key, cache_key(x, key)
 
 static bool
-add_to_cache(GraphicsManager *self, const ImageAndFrame x, const void *data, const size_t sz) {
+add_to_cache(GraphicsManager *self, const ImageAndFrame x, const void *data, const size_t sz, bool memory_only) {
     char key[CACHE_KEY_BUFFER_SIZE];
-    return add_to_disk_cache(self->disk_cache, CK(x), data, sz);
+    return add_to_disk_cache(self->disk_cache, CK(x), data, sz, memory_only);
 }
 
 static bool
@@ -287,9 +287,12 @@ apply_storage_quota(GraphicsManager *self, size_t storage_limit, id_type current
     if (!sorted) fatal("Out of memory");
     Image **p = sorted;
     iter_images(self) { *p++ = i.data->val; }
-#define oldest_img_first(a, b) ((*a)->atime < (*b)->atime)
-    QSORT(Image*, sorted, num_images, oldest_img_first);
-#undef oldest_img_first
+#define transient_or_older_first(a, b) ( \
+    (*a)->root_frame.transient != (*b)->root_frame.transient ? \
+    (*a)->root_frame.transient > (*b)->root_frame.transient : \
+    (*a)->atime < (*b)->atime)
+    QSORT(Image*, sorted, num_images, transient_or_older_first);
+#undef transient_or_older_first
 
     for (p = sorted; self->used_storage > storage_limit && num_images; p++, num_images--) remove_image(self, *p);
     if (!num_images || !vt_size(&self->images_by_internal_id)) self->used_storage = 0;  // sanity check
@@ -555,7 +558,7 @@ load_image_data(GraphicsManager *self, Image *img, const GraphicsCommand *g, con
         case 'd':  // direct
             if (load_data->buf_capacity - load_data->buf_used < g->payload_sz) {
                 if (load_data->buf_used + g->payload_sz > MAX_DATA_SZ || data_fmt != PNG) ABRT("EFBIG", "Too much data");
-                load_data->buf_capacity = MIN(2 * load_data->buf_capacity, MAX_DATA_SZ);
+                load_data->buf_capacity = MAX(MIN(2 * load_data->buf_capacity, MAX_DATA_SZ), load_data->buf_used + g->payload_sz);
                 load_data->buf = realloc(load_data->buf, load_data->buf_capacity);
                 if (load_data->buf == NULL) {
                     load_data->buf_capacity = 0; load_data->buf_used = 0;
@@ -768,11 +771,12 @@ handle_add_command(GraphicsManager *self, const GraphicsCommand *g, const uint8_
             .is_opaque = self->currently_loading.is_opaque,
             .is_4byte_aligned = self->currently_loading.is_4byte_aligned,
             .width = img->width, .height = img->height,
+            .transient = (g->usage_hints & GRAPHICS_USAGE_HINT_TRANSIENT) != 0,
         };
         if (!is_query) {
-            if (!add_to_cache(self, (const ImageAndFrame){.image_id = img->internal_id, .frame_id=img->root_frame.id}, self->currently_loading.data, self->currently_loading.data_sz)) {
+            if (!add_to_cache(self, (const ImageAndFrame){.image_id = img->internal_id, .frame_id=img->root_frame.id}, self->currently_loading.data, self->currently_loading.data_sz, img->root_frame.transient)) {
                 if (PyErr_Occurred()) PyErr_Print();
-                ABRT("ENOSPC", "Failed to store image data in disk cache");
+                ABRT("ENOSPC", "Failed to store image data in cache");
             }
             upload_to_gpu(self, img, img->root_frame.is_opaque, img->root_frame.is_4byte_aligned, self->currently_loading.data);
             self->used_storage += required_sz;
@@ -826,8 +830,9 @@ update_src_rect(ImageRef *ref, Image *img) {
 static void
 update_dest_rect(ImageRef *ref, uint32_t num_cols, uint32_t num_rows, CellPixelSize cell) {
     uint32_t t;
-    if (num_cols == 0) {
-        if (num_rows == 0) {
+    const bool auto_cols = num_cols == 0, auto_rows = num_rows == 0;
+    if (auto_cols) {
+        if (auto_rows) {
             t = (uint32_t)(ref->src_width + ref->cell_x_offset);
             num_cols = t / cell.width;
             if (t > num_cols * cell.width) num_cols += 1;
@@ -837,8 +842,8 @@ update_dest_rect(ImageRef *ref, uint32_t num_cols, uint32_t num_rows, CellPixelS
             num_cols = (uint32_t)ceil(width_px / cell.width);
         }
     }
-    if (num_rows == 0) {
-        if (num_cols == 0) {
+    if (auto_rows) {
+        if (auto_cols) {
             t = (uint32_t)(ref->src_height + ref->cell_y_offset);
             num_rows = t / cell.height;
             if (t > num_rows * cell.height) num_rows += 1;
@@ -1354,7 +1359,7 @@ change_gap(Image *img, Frame *f, int32_t gap) {
 
 typedef struct {
     uint8_t *buf;
-    bool is_4byte_aligned, is_opaque;
+    bool is_4byte_aligned, is_opaque, transient;
 } CoalescedFrameData;
 
 static void
@@ -1450,6 +1455,7 @@ compose(const ComposeData d, uint8_t *under_data, const uint8_t *over_data) {
 static CoalescedFrameData
 get_coalesced_frame_data_standalone(const Image *img, const Frame *f, uint8_t *frame_data) {
     CoalescedFrameData ans = {0};
+    ans.transient = f->transient;
     bool is_full_frame = f->width == img->width && f->height == img->height && !f->x && !f->y;
     if (is_full_frame) {
         ans.buf = frame_data;
@@ -1513,6 +1519,7 @@ get_coalesced_frame_data_impl(GraphicsManager *self, Image *img, const Frame *f,
     };
     compose(d, base_data.buf, frame_data);
     free(frame_data);
+    base_data.transient = base_data.transient || f->transient;
     return base_data;
 }
 
@@ -1551,6 +1558,17 @@ reference_chain_too_large(Image *img, const Frame *frame) {
         num++;
     }
     return num >= 5 || drawn_area >= limit;
+}
+
+static bool
+frame_chain_is_transient(Image *img, const Frame *frame) {
+    // matches the recursion depth limit in get_coalesced_frame_data_impl
+    unsigned num = 0;
+    while (frame) {
+        if (frame->transient) return true;
+        if (!frame->base_frame_id || ++num > 32 || !(frame = frame_for_id(img, frame->base_frame_id))) break;
+    }
+    return false;
 }
 
 static Image*
@@ -1595,6 +1613,7 @@ handle_animation_frame_load_command(GraphicsManager *self, GraphicsCommand *g, I
         .alpha_blend = g->compose_mode != 1 && !load_data->is_opaque,
         .gap = g->gap > 0 ? g->gap : (g->gap < 0) ? 0 : DEFAULT_GAP,
         .bgcolor = g->bgcolor,
+        .transient = (g->usage_hints & GRAPHICS_USAGE_HINT_TRANSIENT) != 0,
     };
     Frame *frame;
     if (is_new_frame) {
@@ -1630,12 +1649,14 @@ handle_animation_frame_load_command(GraphicsManager *self, GraphicsCommand *g, I
                 transmitted_frame.x = 0; transmitted_frame.y = 0;
                 transmitted_frame.is_4byte_aligned = cfd.is_4byte_aligned;
                 transmitted_frame.is_opaque = cfd.is_opaque;
+                transmitted_frame.transient = transmitted_frame.transient || cfd.transient;
             } else {
                 transmitted_frame.base_frame_id = other_frame->id;
+                transmitted_frame.transient = transmitted_frame.transient || frame_chain_is_transient(img, other_frame);
             }
         }
         *frame = transmitted_frame;
-        if (!add_to_cache(self, key, load_data->data, load_data->data_sz)) {
+        if (!add_to_cache(self, key, load_data->data, load_data->data_sz, frame->transient)) {
             img->extra_framecnt--;
             if (PyErr_Occurred()) PyErr_Print();
             ABRT("ENOSPC", "Failed to cache data for image frame");
@@ -1651,6 +1672,7 @@ handle_animation_frame_load_command(GraphicsManager *self, GraphicsCommand *g, I
         if (g->gap != 0) change_gap(img, frame, transmitted_frame.gap);
         CoalescedFrameData cfd = get_coalesced_frame_data(self, img, frame);
         if (!cfd.buf) ABRT("EINVAL", "No data associated with frame number: %u", frame_number);
+        frame->transient = cfd.transient || transmitted_frame.transient;
         frame->alpha_blend = false; frame->base_frame_id = 0; frame->bgcolor = 0;
         frame->is_opaque = cfd.is_opaque; frame->is_4byte_aligned = cfd.is_4byte_aligned;
         frame->x = 0; frame->y = 0; frame->width = img->width; frame->height = img->height;
@@ -1664,7 +1686,7 @@ handle_animation_frame_load_command(GraphicsManager *self, GraphicsCommand *g, I
         };
         compose(d, cfd.buf, load_data->data);
         const ImageAndFrame key = { .image_id = img->internal_id, .frame_id = frame->id };
-        bool added = add_to_cache(self, key, cfd.buf, (size_t)bytes_per_pixel * frame->width * frame->height);
+        bool added = add_to_cache(self, key, cfd.buf, (size_t)bytes_per_pixel * frame->width * frame->height, frame->transient);
         if (added && frame == current_frame(img)) {
             update_current_frame(self, img, &cfd);
             *is_dirty = true;
@@ -1827,9 +1849,10 @@ handle_compose_command(GraphicsManager *self, bool *is_dirty, const GraphicsComm
         set_command_failed_response("ENOENT", "No destination frame number %u exists in image id: %u\n", g->other_frame_number, img->client_id);
         return;
     }
-    const unsigned int width = g->width ? g->width : img->width;
-    const unsigned int height = g->height ? g->height : img->height;
-    const unsigned int dest_x = g->x_offset, dest_y = g->y_offset, src_x = g->cell_x_offset, src_y = g->cell_y_offset;
+    // Use uint64_t to avoid overflow when testing for validity. All dimensions are 32bit numbers.
+    const uint64_t width = g->width ? g->width : img->width;
+    const uint64_t height = g->height ? g->height : img->height;
+    const uint64_t dest_x = g->x_offset, dest_y = g->y_offset, src_x = g->cell_x_offset, src_y = g->cell_y_offset;
     if (dest_x + width > img->width || dest_y + height > img->height) {
         set_command_failed_response("EINVAL", "The destination rectangle is out of bounds");
         return;
@@ -1866,10 +1889,13 @@ handle_compose_command(GraphicsManager *self, bool *is_dirty, const GraphicsComm
         .stride = img->width
     };
     compose_rectangles(d, dest_data.buf, src_data.buf);
+    bool transient = src_data.transient || dest_data.transient;
     const ImageAndFrame key = { .image_id = img->internal_id, .frame_id = dest_frame->id };
-    if (!add_to_cache(self, key, dest_data.buf, ((size_t)(dest_data.is_opaque ? 3 : 4)) * img->width * img->height)) {
+    if (!add_to_cache(self, key, dest_data.buf, ((size_t)(dest_data.is_opaque ? 3 : 4)) * img->width * img->height, transient)) {
         if (PyErr_Occurred()) PyErr_Print();
-        set_command_failed_response("ENOSPC", "Failed to store image data in disk cache");
+        set_command_failed_response("ENOSPC", "Failed to store image data in cache");
+    } else {
+        dest_frame->transient = transient;
     }
     // frame is now a fully coalesced frame
     dest_frame->x = 0; dest_frame->y = 0; dest_frame->width = img->width; dest_frame->height = img->height;

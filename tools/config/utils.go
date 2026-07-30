@@ -248,13 +248,74 @@ type KeyAction struct {
 	Normalized_keys []string
 	Name            string
 	Args            string
+	AllowFallback   string
 }
 
 func (self *KeyAction) String() string {
 	return fmt.Sprintf("map %#v %#v %#v\n", strings.Join(self.Normalized_keys, ">"), self.Name, self.Args)
 }
 
+func validateAllowFallback(value string) error {
+	if value == "" || value == "none" {
+		return nil
+	}
+	for part := range strings.SplitSeq(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "shifted" && part != "ascii" {
+			return fmt.Errorf("Invalid allow-fallback value %#v, allowed values: shifted, ascii, none", part)
+		}
+	}
+	return nil
+}
+
 func ParseMap(val string) (*KeyAction, error) {
+	allow_fallback := "shifted"
+	for strings.HasPrefix(val, "--") {
+		flag, rest, found := strings.Cut(val, " ")
+		if !found {
+			return nil, fmt.Errorf("No key specified after flag %s", flag)
+		}
+		rest = strings.TrimSpace(rest)
+		if name, value, ok := strings.Cut(flag, "="); ok {
+			// --flag=value form
+			name = strings.ReplaceAll(name[2:], "-", "_")
+			switch name {
+			case "allow_fallback":
+				if err := validateAllowFallback(value); err != nil {
+					return nil, err
+				}
+				if value == "none" {
+					allow_fallback = ""
+				} else {
+					allow_fallback = value
+				}
+			default:
+				return nil, fmt.Errorf("Unknown map option: %s", flag)
+			}
+		} else {
+			// --flag value form (space-separated)
+			name := strings.ReplaceAll(flag[2:], "-", "_")
+			switch name {
+			case "allow_fallback":
+				value, after, has_more := strings.Cut(rest, " ")
+				if !has_more {
+					return nil, fmt.Errorf("No key specified after %s %s", flag, value)
+				}
+				if err := validateAllowFallback(value); err != nil {
+					return nil, err
+				}
+				if value == "none" {
+					allow_fallback = ""
+				} else {
+					allow_fallback = value
+				}
+				rest = strings.TrimSpace(after)
+			default:
+				return nil, fmt.Errorf("Unknown map option: %s", flag)
+			}
+		}
+		val = rest
+	}
 	spec, action, found := strings.Cut(val, " ")
 	if !found {
 		return nil, fmt.Errorf("No action specified for shortcut %s", val)
@@ -262,39 +323,68 @@ func ParseMap(val string) (*KeyAction, error) {
 	action = strings.TrimSpace(action)
 	action_name, action_args, _ := strings.Cut(action, " ")
 	action_args = strings.TrimSpace(action_args)
-	return &KeyAction{Name: action_name, Args: action_args, Normalized_keys: NormalizeShortcuts(spec)}, nil
+	return &KeyAction{Name: action_name, Args: action_args, Normalized_keys: NormalizeShortcuts(spec), AllowFallback: allow_fallback}, nil
+}
+
+type partialMatch struct {
+	action   *KeyAction
+	priority int
 }
 
 type ShortcutTracker struct {
-	partial_matches      []*KeyAction
+	partial_matches      []partialMatch
 	partial_num_consumed int
 }
 
 func (self *ShortcutTracker) Match(ev *loop.KeyEvent, all_actions []*KeyAction) *KeyAction {
 	if self.partial_num_consumed > 0 {
 		ev.Handled = true
-		self.partial_matches = utils.Filter(self.partial_matches, func(ac *KeyAction) bool {
-			return self.partial_num_consumed < len(ac.Normalized_keys) && ev.MatchesPressOrRepeat(ac.Normalized_keys[self.partial_num_consumed])
-		})
+		new_matches := self.partial_matches[:0]
+		for _, pm := range self.partial_matches {
+			if self.partial_num_consumed >= len(pm.action.Normalized_keys) {
+				continue
+			}
+			p := ev.MatchesPressOrRepeatPriorityWithFallback(pm.action.Normalized_keys[self.partial_num_consumed], pm.action.AllowFallback)
+			if p >= 0 {
+				if p > pm.priority {
+					pm.priority = p
+				}
+				new_matches = append(new_matches, pm)
+			}
+		}
+		self.partial_matches = new_matches
 		if len(self.partial_matches) == 0 {
 			self.partial_num_consumed = 0
 			return nil
 		}
 	} else {
-		self.partial_matches = utils.Filter(all_actions, func(ac *KeyAction) bool {
-			return ev.MatchesPressOrRepeat(ac.Normalized_keys[0])
-		})
+		new_matches := self.partial_matches[:0]
+		for _, ac := range all_actions {
+			p := ev.MatchesPressOrRepeatPriorityWithFallback(ac.Normalized_keys[0], ac.AllowFallback)
+			if p >= 0 {
+				new_matches = append(new_matches, partialMatch{action: ac, priority: p})
+			}
+		}
+		self.partial_matches = new_matches
 		if len(self.partial_matches) == 0 {
 			return nil
 		}
 		ev.Handled = true
 	}
 	self.partial_num_consumed++
-	for _, x := range self.partial_matches {
-		if self.partial_num_consumed >= len(x.Normalized_keys) {
-			self.partial_num_consumed = 0
-			return x
+	var best *partialMatch
+	for i := range self.partial_matches {
+		pm := &self.partial_matches[i]
+		if self.partial_num_consumed >= len(pm.action.Normalized_keys) {
+			if best == nil || pm.priority < best.priority {
+				best = pm
+			}
 		}
+	}
+	if best != nil {
+		self.partial_num_consumed = 0
+		self.partial_matches = nil
+		return best.action
 	}
 	return nil
 }

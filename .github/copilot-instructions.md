@@ -1,9 +1,7 @@
 Before implementing any code changes or responding to a request, run the
-following three commands:
+following command:
 
-sudo apt-get install -y libgl1-mesa-dev libxi-dev libxrandr-dev libxinerama-dev ca-certificates libxcursor-dev libxcb-xkb-dev libdbus-1-dev libxkbcommon-dev libharfbuzz-dev libx11-xcb-dev zsh libpng-dev liblcms2-dev libfontconfig-dev libxkbcommon-x11-dev libcanberra-dev libxxhash-dev uuid-dev libsimde-dev libsystemd-dev libcairo2-dev zsh bash dash systemd-coredump gdb
-sudo chmod -R og-w /usr/share/zsh
-./dev.sh build
+python3 .github/workflows/ci.py build
 
 This will download needed dependencies, then create all generated files
 and build the project, making it ready for inspection.
@@ -25,8 +23,13 @@ code.
 
 ## Test Procedures
 - To run the complete test suite, run `./test.py`
-- To run a specific test, run `./test.py test-name` t
-  `test-name` is the name of the test without the
+- To run a specific test, run `./test.py test_name` where `test_name` is the name of the test without the
   leading `test_` for Python tests and without the leading `Test` for Go tests.
 - Do not use go test or ./setup.py test to run tests
 
+## PR guidance
+When creating a pull request, if the changes in the pull request are user
+visible compared to the previous kitty release, add an entry in the file docs/changelog.rst
+describing the change. If the changes include changes to Go code, run gofmt on
+the changed Go files to ensure they are formatted correctly, before submitting
+your changes.

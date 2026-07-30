@@ -7,6 +7,10 @@
 
 #define MAX_KEY_SIZE 16u
 
+#ifdef __APPLE__
+// needed for memset_s
+#define __STDC_WANT_LIB_EXT1__ 1
+#endif
 #include "disk-cache.h"
 #include "safe-wrappers.h"
 #include "simd-string.h"
@@ -16,6 +20,7 @@
 #include "cross-platform-random.h"
 #include <structmember.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <time.h>
@@ -28,7 +33,7 @@ typedef struct CacheKey {
 typedef struct {
     uint8_t *data;
     size_t data_sz;
-    bool written_to_disk, uses_encryption;
+    bool written_to_disk, uses_encryption, memory_only;
     off_t pos_in_cache_file;
     uint8_t encryption_key[64];
 } CacheValue;
@@ -40,7 +45,17 @@ static uint64_t key_hash(KEY_TY k);
 #define HASH_FN key_hash
 static bool keys_are_equal(CacheKey a, CacheKey b) { return a.hash_keylen == b.hash_keylen && memcmp(a.hash_key, b.hash_key, a.hash_keylen) == 0; }
 #define CMPR_FN keys_are_equal
-static void free_cache_value(CacheValue *cv) { free(cv->data); cv->data = NULL; free(cv); }
+static void free_cache_value(CacheValue *cv) {
+#ifdef __APPLE__
+    memset_s(cv->encryption_key, sizeof(cv->encryption_key), 0, sizeof(cv->encryption_key));
+#elif defined(__NetBSD__)
+    explicit_memset(cv->encryption_key, 0, sizeof(cv->encryption_key));
+#else
+    explicit_bzero(cv->encryption_key, sizeof(cv->encryption_key));
+#endif
+    free(cv->data); cv->data = NULL;
+    free(cv);
+}
 static void free_cache_key(CacheKey cv) { free(cv.hash_key); cv.hash_key = NULL; }
 #define KEY_DTOR_FN free_cache_key
 #define VAL_DTOR_FN free_cache_value
@@ -578,7 +593,7 @@ create_cache_entry(void) {
 }
 
 bool
-add_to_disk_cache(PyObject *self_, const void *key, size_t key_sz, const void *data, size_t data_sz) {
+add_to_disk_cache(PyObject *self_, const void *key, size_t key_sz, const void *data, size_t data_sz, bool memory_only) {
     DiskCache *self = (DiskCache*)self_;
     if (!ensure_state(self)) return false;
     if (key_sz > MAX_KEY_SIZE) { PyErr_SetString(PyExc_KeyError, "cache key is too long"); return false; }
@@ -603,11 +618,14 @@ add_to_disk_cache(PyObject *self_, const void *key, size_t key_sz, const void *d
         if (s->data) free(s->data);
     }
     s->data = copied_data; s->data_sz = data_sz; copied_data = NULL;
+    s->memory_only = memory_only;
+    s->written_to_disk = memory_only;
+    if (memory_only) s->pos_in_cache_file = -1;
     self->total_size += s->data_sz;
 end:
     mutex(unlock);
     if (PyErr_Occurred()) return false;
-    wakeup_write_loop(self);
+    if (!memory_only) wakeup_write_loop(self);
     return true;
 }
 
@@ -717,7 +735,7 @@ end:
     return data;
 }
 
-size_t
+static size_t
 disk_cache_clear_from_ram(PyObject *self_, bool(matches)(void*, void *key, unsigned keysz), void *data) {
     DiskCache *self = (DiskCache*)self_;
     size_t ans = 0;
@@ -725,7 +743,7 @@ disk_cache_clear_from_ram(PyObject *self_, bool(matches)(void*, void *key, unsig
     mutex(lock);
     cache_map_for_loop(i) {
         CacheValue *s = i.data->val;
-        if (s->written_to_disk && s->data && matches(data, i.data->key.hash_key, i.data->key.hash_keylen)) {
+        if (s->written_to_disk && !s->memory_only && s->data && matches(data, i.data->key.hash_key, i.data->key.hash_keylen)) {
             free(s->data); s->data = NULL;
             ans++;
         }
@@ -833,7 +851,7 @@ add(PyObject *self, PyObject *args) {
     const char *key, *data;
     Py_ssize_t keylen, datalen;
     PA("y#y#", &key, &keylen, &data, &datalen);
-    if (!add_to_disk_cache(self, key, keylen, data, datalen)) return NULL;
+    if (!add_to_disk_cache(self, key, keylen, data, datalen, false)) return NULL;
     Py_RETURN_NONE;
 }
 

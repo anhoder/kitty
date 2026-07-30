@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 # License: GPLv3 Copyright: 2020, Kovid Goyal <kovid at kovidgoyal.net>
 
-from collections.abc import Generator, Iterable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from enum import Enum
 from functools import partial
 from itertools import repeat
-from typing import Any, Callable, NamedTuple
+from typing import Any, ClassVar, NamedTuple, cast
 
 from kitty.borders import BorderColor
 from kitty.fast_data_types import BOTTOM_EDGE, RIGHT_EDGE, Region, get_options, set_active_window, viewport_for_window
@@ -91,7 +92,8 @@ def calculate_cells_map(
     number_of_windows: int, number_of_cells: int
 ) -> list[int]:
     if isinstance(bias, dict):
-        bias = convert_bias_map(bias, number_of_windows, number_of_cells)
+        b: dict[int, float] = cast(dict[int, float], bias)
+        bias = convert_bias_map(b, number_of_windows, number_of_cells)
     cells_per_window = number_of_cells // number_of_windows
     if bias is not None and number_of_windows > 1 and number_of_windows == len(bias) and cells_per_window > 5:
         cells_map = [int(b * number_of_cells) for b in bias]
@@ -116,14 +118,14 @@ def layout_dimension(
     bias: None | Sequence[float] | dict[int, float] = None
 ) -> LayoutDimension:
     number_of_windows = len(decoration_pairs)
-    number_of_cells = length // cell_length
+    number_of_cells = max(0, length // cell_length)
     dec_vals: Iterable[int] = map(sum, decoration_pairs)
     space_needed_for_decorations = sum(dec_vals)
     extra = length - number_of_cells * cell_length
-    while extra < space_needed_for_decorations:
+    while extra < space_needed_for_decorations and number_of_cells > 0:
         number_of_cells -= 1
         extra = length - number_of_cells * cell_length
-    cells_map = calculate_cells_map(bias, number_of_windows, number_of_cells)
+    cells_map = calculate_cells_map(bias, number_of_windows, number_of_cells) if number_of_cells > 0 else [0] * number_of_windows
     assert sum(cells_map) == number_of_cells
 
     extra = length - number_of_cells * cell_length - space_needed_for_decorations
@@ -225,6 +227,14 @@ def create_window_id_map_for_unserialize(all_windows: WindowList) -> dict[int, i
     return window_id_map
 
 
+class DragOverlayMode(Enum):
+    ' Controls drag-and-drop overlay display and valid direction axis for body drops '
+    full = 'full'  # full-window overlay, positional swap (Stack and any unrecognised layout)
+    axis_x = 'axis_x'  # top/bottom halves only (Vertical, Tall, Grid)
+    axis_y = 'axis_y'  # left/right halves only (Horizontal, Fat)
+    free = 'free'  # 4-way free direction (Splits; handled by its own insert_window_next_to override)
+
+
 class Layout:
 
     name: str = ''
@@ -232,6 +242,7 @@ class Layout:
     must_draw_borders = False  # can be overridden to customize behavior from kittens
     layout_opts = LayoutOpts({})
     only_active_window_visible = False
+    drag_overlay_mode: ClassVar[DragOverlayMode] = DragOverlayMode.full
 
     def __init__(self, os_window_id: int, tab_id: int, layout_opts: str = '') -> None:
         self.set_owner(os_window_id, tab_id)
@@ -303,6 +314,32 @@ class Layout:
     def move_window_to_group(self, all_windows: WindowList, group: int) -> bool:
         return all_windows.move_window_group(to_group=group)
 
+    def insert_window_next_to(
+        self,
+        all_windows: WindowList,
+        window: WindowType,
+        next_to: WindowType,
+        horizontal: bool,
+        after: bool,
+    ) -> None:
+        '''
+        Reposition window as a linear neighbour of next_to.
+
+        For axis_x/axis_y layouts this performs a positional insert that preserves
+        the order of all other groups. For 'full' layouts it falls back to a swap.
+        The Splits layout overrides this with tree-based logic.
+        '''
+        src_wg = all_windows.group_for_window(window)
+        dest_wg = all_windows.group_for_window(next_to)
+        if src_wg is None or dest_wg is None or src_wg.id == dest_wg.id:
+            return
+        all_windows.set_active_window_group_for(window)
+        if self.drag_overlay_mode in (DragOverlayMode.axis_x, DragOverlayMode.axis_y):
+            all_windows.insert_window_group_next_to(dest_wg.id, after)
+        else:
+            # 'full' fallback: swap (preserves existing behaviour for Stack etc.)
+            self.move_window_to_group(all_windows, dest_wg.id)
+
     def add_window(
         self, all_windows: WindowList, window: WindowType, location: str | None = None,
         overlay_for: int | None = None, put_overlay_behind: bool = False, bias: float | None = None,
@@ -371,7 +408,8 @@ class Layout:
         # Set show_title_bar flag on each visible window before layout
         min_windows = get_options().window_title_bar_min_windows
         visible_groups = tuple(all_windows.iter_all_layoutable_groups(only_visible=True))
-        show_title_bar = min_windows > 0 and len(visible_groups) >= min_windows
+        force_show = all_windows.force_show_title_bars
+        show_title_bar = force_show or (min_windows > 0 and len(visible_groups) >= min_windows)
         for wg in visible_groups:
             for w in wg.windows:
                 w.show_title_bar = show_title_bar
@@ -454,6 +492,9 @@ class Layout:
 
     def layout_action(self, action_name: str, args: Sequence[str], all_windows: WindowList) -> bool | None:
         pass
+
+    def on_window_removed(self, all_windows: WindowList) -> bool:
+        return False
 
     def layout_state(self) -> dict[str, Any]:
         return {}

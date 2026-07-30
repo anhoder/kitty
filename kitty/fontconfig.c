@@ -41,6 +41,7 @@ static struct {PyObject *face, *descriptor;} builtin_nerd_font = {0};
 #define FcPatternAddInteger dynamically_loaded_fc_symbol.PatternAddInteger
 #define FcPatternCreate dynamically_loaded_fc_symbol.PatternCreate
 #define FcPatternGetBool dynamically_loaded_fc_symbol.PatternGetBool
+#define FcPatternGetMatrix dynamically_loaded_fc_symbol.PatternGetMatrix
 #define FcPatternAddCharSet dynamically_loaded_fc_symbol.PatternAddCharSet
 #define FcConfigAppFontAddFile dynamically_loaded_fc_symbol.ConfigAppFontAddFile
 
@@ -66,6 +67,7 @@ static struct {
     FcBool (*PatternAddInteger) (FcPattern *p, const char *object, int i);
     FcPattern * (*PatternCreate) (void);
     FcResult (*PatternGetBool) (const FcPattern *p, const char *object, int n, FcBool *b);
+    FcResult (*PatternGetMatrix) (const FcPattern *p, const char *object, int n, FcMatrix **m);
     FcBool (*PatternAddCharSet) (FcPattern *p, const char *object, const FcCharSet *c);
     FcBool (*ConfigAppFontAddFile) (FcConfig *config, const FcChar8 *file);
 } dynamically_loaded_fc_symbol = {0};
@@ -117,6 +119,7 @@ load_fontconfig_lib(void) {
         LOAD_FUNC(PatternAddInteger);
         LOAD_FUNC(PatternCreate);
         LOAD_FUNC(PatternGetBool);
+        LOAD_FUNC(PatternGetMatrix);
         LOAD_FUNC(PatternAddCharSet);
         LOAD_FUNC(ConfigAppFontAddFile);
 }
@@ -210,6 +213,13 @@ pattern_as_dict(FcPattern *pat) {
     B(FC_OUTLINE, outline);
     B(FC_COLOR, color);
     E(FC_SPACING, spacing, pyspacing);
+    {
+        FcMatrix *mtx = NULL;
+        if (FcPatternGetMatrix(pat, FC_MATRIX, 0, &mtx) == FcResultMatch && mtx) {
+            RAII_PyObject(t, Py_BuildValue("(dddd)", mtx->xx, mtx->xy, mtx->yx, mtx->yy));
+            if (!t || PyDict_SetItemString(ans, "matrix", t) != 0) return NULL;
+        }
+    }
 
     Py_INCREF(ans);
     return ans;
@@ -320,7 +330,7 @@ _native_fc_match(FcPattern *pat, FontConfigFace *ans) {
     FcChar8 *out;
 #define g(func, prop, output) if (func(match, prop, 0, &output) != FcResultMatch) { PyErr_SetString(PyExc_ValueError, "No " #prop " found in fontconfig match result"); goto end; }
     g(FcPatternGetString, FC_FILE, out);
-    g(FcPatternGetInteger, FC_INDEX, ans->index);
+    if (FcPatternGetInteger(match, FC_INDEX, 0, &ans->index) != FcResultMatch) ans->index = 0;  // ignore missing index assume it is zero
     g(FcPatternGetInteger, FC_HINT_STYLE, ans->hintstyle);
     g(FcPatternGetBool, FC_HINTING, ans->hinting);
 #undef g
@@ -448,6 +458,10 @@ specialize_font_descriptor(PyObject *base_descriptor, double font_sz_in_pts, dou
     if (axes) {
         if (PyDict_SetItemString(ans, "axes", axes) != 0) return NULL;
     }
+    PyObject *matrix = PyDict_GetItemString(base_descriptor, "matrix");
+    if (matrix) {
+        if (PyDict_SetItemString(ans, "matrix", matrix) != 0) return NULL;
+    }
     PyObject *ff = PyDict_GetItemString(ans, "fontfeatures");
     if (ff && PyList_GET_SIZE(ff)) {
         for (Py_ssize_t i = 0; i < PyList_GET_SIZE(ff); i++) {
@@ -488,6 +502,26 @@ fallback_font(char_type ch, const char *family, bool bold, bool italic, bool pre
     ok = _native_fc_match(pat, ans);
 end:
     if (pat != NULL) FcPatternDestroy(pat);
+    if (!ok && builtin_nerd_font.face && builtin_nerd_font.descriptor &&
+            glyph_id_for_codepoint(builtin_nerd_font.face, ch) > 0) {
+        PyObject *pypath = PyDict_GetItemString(builtin_nerd_font.descriptor, "path");
+        PyObject *pyindex = PyDict_GetItemString(builtin_nerd_font.descriptor, "index");
+        PyObject *pyhinting = PyDict_GetItemString(builtin_nerd_font.descriptor, "hinting");
+        PyObject *pyhintstyle = PyDict_GetItemString(builtin_nerd_font.descriptor, "hint_style");
+        if (pypath && PyUnicode_Check(pypath)) {
+            const char *path = PyUnicode_AsUTF8(pypath);
+            if (path) {
+                ans->path = strdup(path);
+                if (ans->path) {
+                    ans->index = (pyindex && PyLong_Check(pyindex)) ? (int)PyLong_AsLong(pyindex) : 0;
+                    ans->hinting = (pyhinting && PyLong_Check(pyhinting)) ? (int)PyLong_AsLong(pyhinting) : 0;
+                    ans->hintstyle = (pyhintstyle && PyLong_Check(pyhintstyle)) ? (int)PyLong_AsLong(pyhintstyle) : 0;
+                    ok = true;
+                }
+            }
+        }
+        if (PyErr_Occurred()) PyErr_Clear();
+    }
     return ok;
 }
 

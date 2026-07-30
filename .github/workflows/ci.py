@@ -20,10 +20,14 @@ NERD_URL = 'https://github.com/ryanoasis/nerd-fonts/releases/latest/download/Ner
 is_bundle = os.environ.get('KITTY_BUNDLE') == '1'
 is_codeql = os.environ.get('KITTY_CODEQL') == '1'
 is_macos = 'darwin' in sys.platform.lower()
+running_under_sanitizer = os.environ.get('KITTY_SANITIZE') == '1'
 SW = ''
 
 
 def do_print_crash_reports() -> None:
+    sys.stdout.flush()
+    sys.stderr.flush()
+    time.sleep(2)
     print('Printing available crash reports...')
     if is_macos:
         end_time = time.monotonic() + 90
@@ -111,7 +115,7 @@ def install_deps() -> None:
             run('brew', 'install', 'fish', openssl, *items)
     else:
         run('sudo apt-get update')
-        run('sudo apt-get install -y libgl1-mesa-dev libxi-dev libxrandr-dev libxinerama-dev ca-certificates'
+        run('sudo apt-get install -y --fix-missing libgl1-mesa-dev libxi-dev libxrandr-dev libxinerama-dev ca-certificates'
             ' libxcursor-dev libxcb-xkb-dev libdbus-1-dev libxkbcommon-dev libharfbuzz-dev libx11-xcb-dev zsh'
             ' libpng-dev liblcms2-dev libfontconfig-dev libxkbcommon-x11-dev libcanberra-dev libxxhash-dev uuid-dev'
             ' libsimde-dev libsystemd-dev libcairo2-dev zsh bash dash systemd-coredump gdb')
@@ -131,9 +135,7 @@ def install_deps() -> None:
 def build_kitty() -> None:
     python = shutil.which('python3') if is_bundle else sys.executable
     cmd = f'{python} setup.py build --verbose'
-    if is_macos:
-        cmd += ' --debug'  # for better crash report to debug SIGILL issue
-    if os.environ.get('KITTY_SANITIZE') == '1':
+    if running_under_sanitizer:
         cmd += ' --debug --sanitize'
     run(cmd)
 
@@ -142,6 +144,8 @@ def test_kitty() -> None:
     if is_macos:
         run('ulimit -c unlimited')
         run('sudo chmod -R 777 /cores')
+        if running_under_sanitizer:
+            os.environ['MallocNanoZone'] = '0'
     run('./test.py', print_crash_reports=True)
 
 
@@ -225,8 +229,18 @@ IGNORED_DEPENDENCY_CVES = [
     'CVE-2025-12781',
     'CVE-2025-11468',
     'CVE-2026-2297',
+    'CVE-2026-3644',
+    'CVE-2026-4224',
+    'CVE-2026-4519',
+    'CVE-2026-1502',
+    'CVE-2026-7210',  # DoS in unused XML parser
+    'CVE-2026-3276',  # DoS in unicodedata.normalize()
+    'CVE-2026-7774',  # tarfile.data_filter path traversal bypass
+    'CVE-2026-12003',  # bug in release builds irrelevant to us
+    'CVE-2026-15308',  # bug in stdlib html parser irrelevant to us
     # github.com/nwaples/rardecode/v2
     'CVE-2025-11579', # rardecode is version 2.2.1, not vulnerable
+    'CVE-2026-2673',  # openssl fix not released
 ]
 
 

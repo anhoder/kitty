@@ -799,6 +799,17 @@ class TestParser(BaseTest):
         pb('\033[?2026$p', ('report_mode_status', 2026, 1))
         self.ae(c.wtcbuf, b'\x1b[?2026;2$y')
 
+        c.clear()
+        pb('\033[?998n', ('report_device_status', 998, 1))
+        self.ae(c.wtcbuf, b'\x1b[?999;1n')
+        c.clear()
+        pb('\033[?2033h', ('screen_set_mode', 2033, 1))
+        self.ae(c.wtcbuf, b'\x1b[?999;1n')
+        c.clear()
+        pb('\033[?2033$p', ('report_mode_status', 2033, 1))
+        self.ae(c.wtcbuf, b'\x1b[?2033;1$y')
+        pb('\033[?2033l', ('screen_reset_mode', 2033, 1))
+
     def test_csi_code_rep(self):
         s = self.create_screen(8)
         pb = partial(self.parse_bytes_dump, s)
@@ -920,7 +931,7 @@ class TestParser(BaseTest):
                 k.setdefault(f, b'\0')
             for f in ('format more id data_sz data_offset width height x_offset y_offset data_height data_width cursor_movement'
                       ' num_cells num_lines cell_x_offset cell_y_offset z_index placement_id image_number quiet unicode_placement'
-                      ' parent_id parent_placement_id offset_from_parent_x offset_from_parent_y'
+                      ' parent_id parent_placement_id usage_hints offset_from_parent_x offset_from_parent_y'
             ).split():
                 k.setdefault(f, 0)
             p = k.pop('payload', '')
@@ -943,6 +954,7 @@ class TestParser(BaseTest):
         t('a=t,t=d,s=100,z=-9', payload='X', action='t', transmission_type='d', data_width=100, z_index=-9)
         t('a=t,t=d,s=100,z=9', payload='payload', action='t', transmission_type='d', data_width=100, z_index=9)
         t('a=t,t=d,s=100,z=9,q=2', action='t', transmission_type='d', data_width=100, z_index=9, quiet=2)
+        t('N=1', usage_hints=1)
         e(',s=1', 'Malformed GraphicsCommand control block, invalid key character: 0x2c')
         e('W=1', 'Malformed GraphicsCommand control block, invalid key character: 0x57')
         e('1=1', 'Malformed GraphicsCommand control block, invalid key character: 0x31')

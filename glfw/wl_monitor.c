@@ -43,13 +43,14 @@ static void outputHandleGeometry(void* data,
                                  int32_t subpixel UNUSED,
                                  const char* make UNUSED,
                                  const char* model UNUSED,
-                                 int32_t transform UNUSED)
+                                 int32_t transform)
 {
     struct _GLFWmonitor *monitor = data;
     monitor->wl.x = x;
     monitor->wl.y = y;
     monitor->widthMM = physicalWidth;
     monitor->heightMM = physicalHeight;
+    monitor->wl.transform = transform;
 }
 
 static void outputHandleMode(void* data,
@@ -126,9 +127,94 @@ static const struct wl_output_listener outputListener = {
 };
 
 
+static void xdgOutputHandleLogicalPosition(void *data,
+                                            struct zxdg_output_v1 *xdg_output UNUSED,
+                                            int32_t x,
+                                            int32_t y)
+{
+    struct _GLFWmonitor *monitor = data;
+    monitor->wl.x = x;
+    monitor->wl.y = y;
+    monitor->wl.xdg_position_received = true;
+}
+
+static void xdgOutputHandleLogicalSize(void *data,
+                                        struct zxdg_output_v1 *xdg_output UNUSED,
+                                        int32_t width,
+                                        int32_t height)
+{
+    struct _GLFWmonitor *monitor = data;
+    monitor->wl.xdg_logical_width = width;
+    monitor->wl.xdg_logical_height = height;
+    monitor->wl.xdg_size_received = true;
+}
+
+static void computeXdgFractionalScale(struct _GLFWmonitor *monitor)
+{
+    if (monitor->wl.xdg_logical_width <= 0 || monitor->wl.xdg_logical_height <= 0) return;
+    if (monitor->modeCount == 0 || monitor->wl.currentMode < 0) return;
+    GLFWvidmode *mode = &monitor->modes[monitor->wl.currentMode];
+    if (mode->width <= 0 || mode->height <= 0) return;
+
+    // For 90° and 270° rotations the compositor maps physical width↔height,
+    // so use the swapped axis when dividing by the logical size.
+    int phys_w = mode->width, phys_h = mode->height;
+    int32_t t = monitor->wl.transform;
+    if (t == WL_OUTPUT_TRANSFORM_90 || t == WL_OUTPUT_TRANSFORM_270 ||
+        t == WL_OUTPUT_TRANSFORM_FLIPPED_90 || t == WL_OUTPUT_TRANSFORM_FLIPPED_270)
+    {
+        int tmp = phys_w; phys_w = phys_h; phys_h = tmp;
+    }
+
+    double sx = (double)phys_w / monitor->wl.xdg_logical_width;
+    double sy = (double)phys_h / monitor->wl.xdg_logical_height;
+    // Use the average in case of minor rounding differences between axes.
+    monitor->wl.fractional_scale = (sx + sy) * 0.5;
+}
+
+static void xdgOutputHandleDone(void *data,
+                                 struct zxdg_output_v1 *xdg_output UNUSED)
+{
+    struct _GLFWmonitor *monitor = data;
+    computeXdgFractionalScale(monitor);
+}
+
+static void xdgOutputHandleName(void *data,
+                                 struct zxdg_output_v1 *xdg_output UNUSED,
+                                 const char *name)
+{
+    // wl_output already provides the name; skip to avoid duplicate frees.
+    (void)data; (void)name;
+}
+
+static void xdgOutputHandleDescription(void *data,
+                                        struct zxdg_output_v1 *xdg_output UNUSED,
+                                        const char *description)
+{
+    (void)data; (void)description;
+}
+
+static const struct zxdg_output_v1_listener xdgOutputListener = {
+    xdgOutputHandleLogicalPosition,
+    xdgOutputHandleLogicalSize,
+    xdgOutputHandleDone,
+    xdgOutputHandleName,
+    xdgOutputHandleDescription,
+};
+
+
 //////////////////////////////////////////////////////////////////////////
 //////                       GLFW internal API                      //////
 //////////////////////////////////////////////////////////////////////////
+
+void _glfwCreateXdgOutputWayland(_GLFWmonitor* monitor)
+{
+    if (!_glfw.wl.xdg_output_manager || monitor->wl.xdg_output) return;
+    monitor->wl.xdg_output = zxdg_output_manager_v1_get_xdg_output(
+        _glfw.wl.xdg_output_manager, monitor->wl.output);
+    if (monitor->wl.xdg_output)
+        zxdg_output_v1_add_listener(monitor->wl.xdg_output, &xdgOutputListener, monitor);
+}
 
 void _glfwAddOutputWayland(uint32_t name, uint32_t version)
 {
@@ -160,6 +246,7 @@ void _glfwAddOutputWayland(uint32_t name, uint32_t version)
     monitor->wl.name = name;
 
     wl_output_add_listener(output, &outputListener, monitor);
+    _glfwCreateXdgOutputWayland(monitor);
 }
 
 
@@ -169,6 +256,8 @@ void _glfwAddOutputWayland(uint32_t name, uint32_t version)
 
 void _glfwPlatformFreeMonitor(_GLFWmonitor* monitor)
 {
+    if (monitor->wl.xdg_output)
+        zxdg_output_v1_destroy(monitor->wl.xdg_output);
     if (monitor->wl.output)
         wl_output_destroy(monitor->wl.output);
 }
@@ -184,10 +273,11 @@ void _glfwPlatformGetMonitorPos(_GLFWmonitor* monitor, int* xpos, int* ypos)
 void _glfwPlatformGetMonitorContentScale(_GLFWmonitor* monitor,
                                          float* xscale, float* yscale)
 {
-    if (xscale)
-        *xscale = (float) monitor->wl.scale;
-    if (yscale)
-        *yscale = (float) monitor->wl.scale;
+    float scale = monitor->wl.fractional_scale > 0.0
+                  ? (float)monitor->wl.fractional_scale
+                  : (float)monitor->wl.scale;
+    if (xscale) *xscale = scale;
+    if (yscale) *yscale = scale;
 }
 
 void _glfwPlatformGetMonitorWorkarea(_GLFWmonitor* monitor,
@@ -245,4 +335,65 @@ GLFWAPI struct wl_output* glfwGetWaylandMonitor(GLFWmonitor* handle)
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
     return monitor->wl.output;
+}
+
+GLFWAPI double glfwGetWaylandCurrentMonitorFractionalScale(void)
+{
+    _GLFW_REQUIRE_INIT_OR_RETURN(1.0);
+    if (!_glfw.wl.xdg_output_manager || _glfw.monitorCount == 0)
+        return 1.0;
+
+    // Use the monitor of the currently focused window, then the most recently
+    // focused window, then fall back to the primary monitor.
+    _GLFWmonitor *monitor = NULL;
+    GLFWid focus_ids[2] = { _glfw.wl.keyboardFocusId, _glfw.wl.lastKeyboardFocusId };
+    for (int i = 0; i < 2 && !monitor; i++) {
+        if (!focus_ids[i]) continue;
+        _GLFWwindow *window = _glfwWindowForId(focus_ids[i]);
+        if (window && window->wl.monitorsCount > 0)
+            monitor = window->wl.monitors[0];
+    }
+    if (!monitor) {
+        // No focused window to key off of (typically the first window at
+        // startup). Prefer the output at the logical origin (0, 0): the
+        // compositor's top-left/primary output is a better guess for where a
+        // new window will be placed than registry order. Fall back to the
+        // first output if no output reports position (0, 0).
+        //
+        // xdg_output geometry arrives asynchronously and x/y remain zero until
+        // it does, so wait for every monitor's logical geometry before trusting
+        // the reported positions (otherwise an as-yet-unpositioned output would
+        // spuriously match (0, 0)).
+        for (int i = 0; i < _glfw.monitorCount; i++) {
+            _GLFWmonitor *m = _glfw.monitors[i];
+            while (m->wl.xdg_output &&
+                   !(m->wl.xdg_size_received && m->wl.xdg_position_received)) {
+                if (wl_display_roundtrip(_glfw.wl.display) < 0) break;
+            }
+        }
+        for (int i = 0; i < _glfw.monitorCount; i++) {
+            _GLFWmonitor *m = _glfw.monitors[i];
+            if (m->wl.xdg_output && m->wl.xdg_size_received &&
+                m->wl.xdg_position_received &&
+                m->wl.x == 0 && m->wl.y == 0) { monitor = m; break; }
+        }
+        if (!monitor)
+            monitor = _glfw.monitors[0];
+    }
+
+    if (!monitor->wl.xdg_output)
+        return monitor->wl.scale > 0 ? (double)monitor->wl.scale : 1.0;
+
+    // Block until the compositor has delivered xdg_output logical size and position.
+    while (!(monitor->wl.xdg_size_received && monitor->wl.xdg_position_received))
+    {
+        if (wl_display_roundtrip(_glfw.wl.display) < 0) break;
+    }
+
+    if (monitor->wl.fractional_scale <= 0.0)
+        computeXdgFractionalScale(monitor);
+
+    return monitor->wl.fractional_scale > 0.0
+           ? monitor->wl.fractional_scale
+           : (monitor->wl.scale > 0 ? (double)monitor->wl.scale : 1.0);
 }

@@ -201,6 +201,16 @@ The offset (from zero) at which to start hint numbering. Note that only numbers
 greater than or equal to zero are respected.
 
 
+--prefix-free
+type=bool-set
+Generate hints such that no hint is a prefix of another. For example, with
+alphabet "abc" and 4 matches, hints are "b", "c", "aa", "ab", instead of "a",
+"b", "c", "aa" (where "a" prefixes "aa"). This works by applying a dynamic
+offset large enough so that the hints are prefix-free. When combined with a
+:option:`--hints-offset` greater than 0, the effective offset is whichever is
+larger.
+
+
 --alphabet
 The list of characters to use for hints. The default is to use numbers and
 lowercase English alphabets. Specify your preference as a string of characters.
@@ -234,9 +244,19 @@ color.
 --hints-text-color
 default=auto
 type=str
-The foreground color for text pointed to by the hints. You can use color names or hex values. For the eight basic
-named terminal colors you can also use the :code:`bright-` prefix to get the bright variant of the
-color. The default is to pick a suitable color automatically.
+The foreground color for text pointed to by the hints (excluding the hint label itself). You can use
+color names or hex values. For the eight basic named terminal colors you can also use the
+:code:`bright-` prefix to get the bright variant of the color. The default is to pick a suitable
+color automatically.
+
+
+--hints-text-background-color
+default=auto
+type=str
+The background color for text pointed to by the hints (excluding the hint label itself). You can use
+color names or hex values. For the eight basic named terminal colors you can also use the
+:code:`bright-` prefix to get the bright variant of the color. The default is to pick a suitable
+color automatically.
 
 
 --customize-processing
@@ -287,7 +307,7 @@ def linenum_handle_result(args: list[str], data: dict[str, Any], target_window_i
             def is_copy_action(s: str) -> bool:
                 return s in ('-', '@', '*') or s.startswith('@')
 
-            programs = list(filter(is_copy_action, data['programs'] or ()))
+            programs = list(filter(is_copy_action, data['programs'] or []))
             # keep for backward compatibility, previously option `--program` does not need to be specified to perform copy actions
             if is_copy_action(cmd[0]):
                 programs.append(cmd.pop(0))
@@ -402,7 +422,8 @@ def handle_result(args: list[str], data: dict[str, Any], target_window_id: int, 
                         w = boss.window_id_map.get(target_window_id)
                         boss.call_remote_control(self_window=w, args=tuple(launch_args + ([m] if isinstance(m, str) else m)))
                     else:
-                        boss.open_url(m, program, cwd=cwd)
+                        if isinstance(m, str):
+                            boss.open_url(m, program, cwd=cwd)
 
 
 if __name__ == '__main__':

@@ -3,18 +3,22 @@
 package loop
 
 import (
-	"encoding/base64"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/emmansun/base64"
 	"golang.org/x/sys/unix"
 
 	"github.com/kovidgoyal/go-parallel"
+	"github.com/kovidgoyal/kitty"
 	"github.com/kovidgoyal/kitty/tools/tty"
 	"github.com/kovidgoyal/kitty/tools/utils"
+	"github.com/kovidgoyal/kitty/tools/utils/machine_id"
 	"github.com/kovidgoyal/kitty/tools/utils/style"
 	"github.com/kovidgoyal/kitty/tools/wcswidth"
 )
@@ -37,6 +41,14 @@ const (
 	PM
 )
 
+type DndCommand struct {
+	Type         byte
+	Has_more     bool
+	Operation    int
+	X, Y, Xp, Yp int
+	Payload      []byte
+}
+
 type Loop struct {
 	controlling_term                       *tty.Term
 	terminal_options                       TerminalStateOptions
@@ -58,7 +70,10 @@ type Loop struct {
 	style_ctx                              style.Context
 	atomic_update_active                   bool
 	pointer_shapes                         []PointerShape
-	waiting_for_capabilities_response      bool
+	dnd_chunking                           struct {
+		active   bool
+		metadata DndCommand
+	}
 
 	// Queried capabilities from terminal
 	TerminalCapabilities TerminalCapabilities
@@ -99,6 +114,9 @@ type Loop struct {
 	// Called when a response to a query command is received
 	OnQueryResponse func(key, val string, valid bool) error
 
+	// Called when a drag and drop protocol escape code is received
+	OnDnDData func(cmd DndCommand) error
+
 	// Called when any input from tty is received
 	OnReceivedData func(data []byte) error
 
@@ -135,6 +153,20 @@ func New(options ...func(self *Loop)) (*Loop, error) {
 	return l, nil
 }
 
+// Create a loop that does not change terminal state such as keyboard mode,
+// resize/focus notifications, mouse tracking, alternate screen etc. Useful
+// for special purpose kittens such as icat/clipboard/@ etc.
+func NewForSimpleInteraction() (*Loop, error) {
+	lp, err := New(
+		NoAlternateScreen, NoRestoreColors, NoMouseTracking, NoInBandResizeNotifications,
+		NoFocusTracking, NoKeyboardStateChange, NoRoundtripToTerminalOnExit,
+	)
+	if err == nil {
+		lp.terminal_options.color_scheme_change_notification = false
+	}
+	return lp, err
+}
+
 func (self *Loop) AddTimer(interval time.Duration, repeats bool, callback TimerCallback) (IdType, error) {
 	return self.add_timer(interval, repeats, callback)
 }
@@ -154,6 +186,15 @@ func (self *Loop) NoAlternateScreen() *Loop {
 
 func NoAlternateScreen(self *Loop) {
 	self.terminal_options.Alternate_screen = false
+}
+
+func (self *Loop) NoRoundtripToTerminalOnExit() *Loop {
+	self.terminal_options.roundtrip_on_exit = false
+	return self
+}
+
+func NoRoundtripToTerminalOnExit(self *Loop) {
+	self.terminal_options.roundtrip_on_exit = false
 }
 
 func (self *Loop) OnlyDisambiguateKeys() *Loop {
@@ -333,7 +374,7 @@ func (self *Loop) Run() (err error) {
 			os.Stderr.WriteString(err.Error())
 			os.Stderr.WriteString("\n")
 			if is_terminal {
-				if term, err := tty.OpenControllingTerm(tty.SetRaw); err == nil {
+				if term, err := tty.OpenControllingTerm(tty.SetRaw); err != nil {
 					defer term.RestoreAndClose()
 					term.DebugPrintln(err.Error())
 					fmt.Println("Press any key to exit.\r")
@@ -568,12 +609,7 @@ func (self *Loop) CurrentPointerShape() (ans PointerShape, has_shape bool) {
 // callback will be called once the query response is received. This
 // function should be called as early as possible ideally in OnInitialize.
 func (self *Loop) QueryCapabilities() {
-	if !self.waiting_for_capabilities_response {
-		self.waiting_for_capabilities_response = true
-		self.StartAtomicUpdate()
-		self.QueueWriteString("\x1b[?u\x1b[?996n\x1b[c")
-		self.EndAtomicUpdate()
-	}
+	self.QueueWriteString("\x1b[?u\x1b[?996n\x1b[c")
 }
 
 type Alignment int
@@ -608,31 +644,115 @@ func (self *Loop) DrawSizedText(text string, spec SizedText) {
 	b.WriteString("\x1b]66;")
 	sep := ""
 	if spec.Scale > 1 {
-		b.WriteString(fmt.Sprintf("%ss=%d", sep, min(spec.Scale, 7)))
+		fmt.Fprintf(&b, "%ss=%d", sep, min(spec.Scale, 7))
 		sep = ":"
 	}
 	if spec.Width > 0 {
-		b.WriteString(fmt.Sprintf("%sw=%d", sep, min(spec.Width, 7)))
+		fmt.Fprintf(&b, "%sw=%d", sep, min(spec.Width, 7))
 		sep = ":"
 	}
 	if spec.Subscale_numerator > 0 {
-		b.WriteString(fmt.Sprintf("%sn=%d", sep, min(spec.Subscale_numerator, 15)))
+		fmt.Fprintf(&b, "%sn=%d", sep, min(spec.Subscale_numerator, 15))
 		sep = ":"
 	}
 	if spec.Subscale_denominator > spec.Subscale_numerator {
-		b.WriteString(fmt.Sprintf("%sd=%d", sep, min(spec.Subscale_denominator, 15)))
+		fmt.Fprintf(&b, "%sd=%d", sep, min(spec.Subscale_denominator, 15))
 		sep = ":"
 	}
 	if spec.Horizontal_alignment > ALIGN_START {
-		b.WriteString(fmt.Sprintf("%sh=%d", sep, spec.Horizontal_alignment))
+		fmt.Fprintf(&b, "%sh=%d", sep, spec.Horizontal_alignment)
 		sep = ":"
 	}
 	if spec.Vertical_alignment > ALIGN_START {
-		b.WriteString(fmt.Sprintf("%sv=%d", sep, spec.Vertical_alignment))
+		fmt.Fprintf(&b, "%sv=%d", sep, spec.Vertical_alignment)
 		sep = ":"
 	}
 	b.WriteString(";")
 	b.WriteString(text)
 	b.WriteString("\a")
 	self.QueueWriteString(b.String())
+}
+
+func (self *Loop) QueueDnDData(cmd DndCommand) IdType {
+	b := strings.Builder{}
+	b.Grow(64)
+	as_base64 := cmd.Type == 'r' || cmd.Type == 'p'
+	fmt.Fprintf(&b, "\x1b]%d;t=%c", kitty.DndCode, cmd.Type)
+	add := func(key byte, val int) {
+		if val != 0 {
+			fmt.Fprintf(&b, ":%c=%d", key, val)
+		}
+	}
+	add('o', cmd.Operation)
+	add('x', cmd.X)
+	add('y', cmd.Y)
+	add('X', cmd.Xp)
+	add('Y', cmd.Yp)
+	payload := utils.UnsafeBytesToString(cmd.Payload)
+	payload_sz := len(payload)
+	if payload_sz == 0 {
+		b.WriteString("\x1b\\")
+		return self.QueueWriteString(b.String())
+	}
+	if as_base64 {
+		payload_sz = base64.RawStdEncoding.EncodedLen(payload_sz)
+		dest := make([]byte, payload_sz)
+		base64.RawStdEncoding.Encode(dest, utils.UnsafeStringToBytes(payload))
+		payload = utils.UnsafeBytesToString(dest)
+	} else {
+		payload = string(cmd.Payload)
+	}
+	const chunk_size = 4096
+	var ans IdType
+	for i := 0; i < len(payload); i += chunk_size {
+		end := i + chunk_size
+		is_last := end >= len(payload)
+		end = min(end, len(payload))
+		if i == 0 {
+			fmt.Fprintf(&b, ":m=%d;", utils.IfElse(is_last, 0, 1))
+			self.QueueWriteString(b.String())
+		} else {
+			self.QueueWriteString(fmt.Sprintf("\x1b]%d;m=%d;", kitty.DndCode, utils.IfElse(is_last, 0, 1)))
+		}
+		self.QueueWriteString(payload[i:end])
+		ans = self.QueueWriteString("\x1b\\")
+	}
+	return ans
+}
+
+func effective_machine_id(m string) string {
+	if m == "" {
+		if ans, err := machine_id.MachineId(); err == nil {
+			m = ans
+		}
+	}
+	if m != "" {
+		mac := hmac.New(sha256.New, []byte("tty-dnd-protocol-machine-id"))
+		mac.Write(utils.UnsafeStringToBytes(m))
+		m = "1:" + hex.EncodeToString(mac.Sum(nil))
+	}
+	return m
+}
+
+func (self *Loop) StartAcceptingDrops(machine_id string, mime_types ...string) {
+	self.QueueDnDData(DndCommand{Type: 'a', Payload: []byte(strings.Join(mime_types, " "))})
+	if m := effective_machine_id(machine_id); m != "" {
+		self.QueueDnDData(DndCommand{Type: 'a', X: 1, Payload: []byte(m)})
+	}
+}
+
+func (self *Loop) StopAcceptingDrops() {
+	self.QueueDnDData(DndCommand{Type: 'A'})
+}
+
+func (self *Loop) StartOfferingDrags(machine_id string) {
+	payload := ""
+	if m := effective_machine_id(machine_id); m != "" {
+		payload = m
+	}
+	self.QueueDnDData(DndCommand{Type: 'o', X: 1, Payload: []byte(payload)})
+}
+
+func (self *Loop) StopOfferingDrags() {
+	self.QueueDnDData(DndCommand{Type: 'o', X: 2})
 }

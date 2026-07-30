@@ -8,6 +8,7 @@ from kitty.fast_data_types import (
     GLFW_MOD_CONTROL,
     GLFW_MOUSE_BUTTON_LEFT,
     GLFW_MOUSE_BUTTON_RIGHT,
+    MOUSE_SELECTION_WORD_AND_LINE_FROM_POINT,
     create_mock_window,
     mock_mouse_selection,
     send_mock_mouse_event_to_window,
@@ -83,11 +84,11 @@ class TestMouse(BaseTest):
                 from kitty.window import as_text
                 self.ae(sl, q, f'{sl!r} != {q!r} after movement to x={x} y={y}. Screen contents: {as_text(s)!r}')
 
-        def multi_click(x=0, y=0, count=2):
+        def multi_click(x=0, y=0, count=2, modifiers=0):
             clear_click_queue = True
             while count > 0:
                 count -= 1
-                ev(GLFW_MOUSE_BUTTON_LEFT, x=x, y=y, clear_click_queue=clear_click_queue)
+                ev(GLFW_MOUSE_BUTTON_LEFT, x=x, y=y, modifiers=modifiers, clear_click_queue=clear_click_queue)
                 clear_click_queue = False
 
         def scroll(x=0, y=0, up=True):
@@ -254,6 +255,52 @@ class TestMouse(BaseTest):
         release(x=2, button=GLFW_MOUSE_BUTTON_RIGHT)
         self.ae(sel(), 'ABCDE12345\n678')
 
+        # line select for wrapped lines below viewport
+        s.reset()
+        s.scroll(100, False)
+        # draw enough content to enable scrolling: fill lines-1 visual lines, then draw a long wrapped line
+        s.draw(('X' * s.columns) * (s.lines - 1))
+        s.linefeed(), s.carriage_return()
+        s.draw('ABCDE12345')  # wraps to 2 visual lines, second one pushed below viewport
+        # scroll up by 1 so top visual line of the wrapped text is visible but bottom wraps off-screen
+        s.scroll(1, True)
+        multi_click(x=1, y=s.lines - 1, count=3)
+        self.ae(sel(), 'ABCDE12345')
+        # extending selection to a line that wraps below viewport
+        s.reset()
+        s.scroll(100, False)
+        s.draw(('X' * s.columns) * (s.lines - 2))
+        s.linefeed(), s.carriage_return()
+        s.draw('678')
+        s.linefeed(), s.carriage_return()
+        s.draw('ABCDE12345')
+        s.scroll(1, True)
+        multi_click(x=1, y=3, count=3)
+        self.ae(sel(), '678')
+        press(x=2, y=s.lines - 1, button=GLFW_MOUSE_BUTTON_RIGHT)
+        release(x=2, y=s.lines - 1, button=GLFW_MOUSE_BUTTON_RIGHT)
+        self.ae(sel(), '678\nABCDE12345')
+        s.scroll(100, False)
+
+        # word select for wrapped words in scrollback
+        s.reset()
+        s.draw('abcde12345')
+        s.linefeed(), s.carriage_return()
+        s.draw(('X' * s.columns) * (s.lines-1))
+        multi_click(x=1)
+        self.ae(sel(), 'abcde12345')
+
+        # word select for wrapped words below viewport
+        s.reset()
+        s.scroll(100, False)
+        s.draw(('X' * s.columns) * (s.lines - 1))
+        s.linefeed(), s.carriage_return()
+        s.draw('abcde12345')
+        s.scroll(1, True)
+        multi_click(x=1, y=s.lines - 1)
+        self.ae(sel(), 'abcde12345')
+        s.scroll(100, False)
+
         # Rectangle select
         init()
         press(x=1, y=1, modifiers=GLFW_MOD_ALT | GLFW_MOD_CONTROL)
@@ -313,3 +360,68 @@ class TestMouse(BaseTest):
         s.draw('12345')
         press(x=0, y=0)
         move(x=2, y=2, q='abcde\n\n12')
+
+        # Line from begin select (alt+triple click): selects from column 0
+        # (including any leading whitespace), unlike normal triple click which strips it
+        s.reset()
+        s.draw(' 123')
+        s.linefeed(), s.carriage_return()
+        s.draw(' 456')
+        s.linefeed(), s.carriage_return()
+        multi_click(x=1, count=3, modifiers=GLFW_MOD_ALT)
+        self.ae(sel(), ' 123')
+        multi_click(x=1, count=3)
+        self.ae(sel(), '123')
+        multi_click(x=1, count=3, modifiers=GLFW_MOD_ALT)
+        move(y=1)
+        self.ae(sel(), ' 123\n 456')
+        release()
+
+        # Line from point select (ctrl+alt+triple click): selects from click
+        # position to end of line; cannot start before the first non-blank char
+        s.reset()
+        s.draw(' 123')
+        s.linefeed(), s.carriage_return()
+        s.draw(' 456')
+        s.linefeed(), s.carriage_return()
+        multi_click(x=2, count=3, modifiers=GLFW_MOD_ALT | GLFW_MOD_CONTROL)
+        self.ae(sel(), '23')
+        # click before first non-blank: selection starts at first non-blank
+        multi_click(x=0, count=3, modifiers=GLFW_MOD_ALT | GLFW_MOD_CONTROL)
+        self.ae(sel(), '123')
+        # click past last non-blank char: no selection created
+        multi_click(x=4, count=3, modifiers=GLFW_MOD_ALT | GLFW_MOD_CONTROL)
+        self.ae(sel(), '')
+        # drag to next line
+        multi_click(x=2, count=3, modifiers=GLFW_MOD_ALT | GLFW_MOD_CONTROL)
+        move(y=1)
+        self.ae(sel(), '23\n 456')
+        release()
+
+        # Word and line from point: selects the word at the click point and
+        # extends the selection to the end of the line
+        sel_word_and_line = MOUSE_SELECTION_WORD_AND_LINE_FROM_POINT
+        s.reset()
+        s.draw('ab cd')
+        press(x=0)
+        mock_mouse_selection(w, GLFW_MOUSE_BUTTON_LEFT, sel_word_and_line)
+        self.ae(sel(), 'ab cd')
+        press(x=3)
+        mock_mouse_selection(w, GLFW_MOUSE_BUTTON_LEFT, sel_word_and_line)
+        self.ae(sel(), 'cd')
+        # click on space: no word, selects from space to end of line
+        press(x=2)
+        mock_mouse_selection(w, GLFW_MOUSE_BUTTON_LEFT, sel_word_and_line)
+        self.ae(sel(), ' cd')
+        # click past last non-blank char: no selection created
+        press(x=4)
+        mock_mouse_selection(w, GLFW_MOUSE_BUTTON_LEFT, sel_word_and_line)
+        self.ae(sel(), '')
+
+        # Double-click on whitespace: no word found, no selection created
+        s.reset()
+        s.draw('ab cd')
+        multi_click(x=2)
+        self.ae(sel(), '')
+        multi_click(x=2.4)
+        self.ae(sel(), '')

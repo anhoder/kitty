@@ -82,7 +82,7 @@ def finalize_keys(opts: Options, accumulate_bad_lines: list[BadLine] | None = No
     defns: list[KeyDefinition] = []
     for d in opts.map:
         if d is None:  # clear_all_shortcuts
-            defns = []  # type: ignore
+            defns = []
         else:
             try:
                 defns.append(d.resolve_and_copy(opts.kitty_mod))
@@ -122,7 +122,7 @@ def finalize_mouse_mappings(opts: Options, accumulate_bad_lines: list[BadLine] |
     defns: list[MouseMapping] = []
     for d in opts.mouse_map:
         if d is None:  # clear_all_mouse_actions
-            defns = []  # type: ignore
+            defns = []
         else:
             try:
                 defns.append(d.resolve_and_copy(opts.kitty_mod))
@@ -142,7 +142,10 @@ def finalize_mouse_mappings(opts: Options, accumulate_bad_lines: list[BadLine] |
 
 
 def parse_config(
-    lines: Iterable[str], accumulate_bad_lines: list[BadLine] | None = None, effective_config_lines: Callable[[str, str], None] | None = None
+    lines: Iterable[str],
+    accumulate_bad_lines: list[BadLine] | None = None,
+    effective_config_lines: Callable[[str, str], None] | None = None,
+    allow_geninclude: bool = True,
 ) -> dict[str, Any]:
     from .options.parse import create_result_dict, parse_conf_item
     ans: dict[str, Any] = create_result_dict()
@@ -152,6 +155,7 @@ def parse_config(
         ans,
         accumulate_bad_lines=accumulate_bad_lines,
         effective_config_lines=effective_config_lines,
+        allow_geninclude=allow_geninclude,
     )
     return ans
 
@@ -169,6 +173,7 @@ def load_config(*paths: str, overrides: Iterable[str] | None = None, accumulate_
             effective_config_lines.append(line)
 
     overrides = tuple(overrides) if overrides is not None else ()
+
     opts_dict, found_paths = _load_config(
         defaults, partial(parse_config, accumulate_bad_lines=accumulate_bad_lines, effective_config_lines=add_effective_config_line),
         merge_result_dicts, *paths, overrides=overrides)

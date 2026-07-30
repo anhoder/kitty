@@ -6,11 +6,11 @@ import os
 import re
 import shlex
 import sys
-from collections.abc import Callable, Generator, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import suppress
 from functools import partial
 from gettext import gettext as _
-from typing import TYPE_CHECKING, Any, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 from .cli_stub import CLIOptions, GotoSessionOptions, SaveAsSessionOptions
 from .constants import config_dir, unserialize_launch_flag
@@ -123,9 +123,9 @@ class Session:
     def add_window(self, cmd: None | str | list[str], expand: Callable[[str], str] = lambda x: x) -> None:
         from .launch import parse_launch_args
         needs_expandvars = False
-        if isinstance(cmd, str) and cmd:
+        if isinstance(cmd, str):
             needs_expandvars = True
-            cmd = list(shlex_split(cmd))
+            cmd = list(shlex_split(cmd)) if cmd else []
         serialize_data: dict[str, Any] = {'id': 0, 'cmd_at_shell_startup': ()}
         if cmd and cmd[0].startswith(unserialize_launch_flag):
             serialize_data = json.loads(cmd[0][len(unserialize_launch_flag):])
@@ -374,9 +374,9 @@ def create_sessions(
     yield ans
 
 
-def window_for_session_name(boss: BossType, session_name: str) -> WindowType | None:
+def window_for_session_name(boss: BossType, session_name: str, allow_fallback: bool = True) -> WindowType | None:
     windows = [w for w in boss.all_windows if w.created_in_session_name == session_name]
-    if not windows:
+    if allow_fallback and not windows:
         tabs = (t for t in boss.all_tabs if t.created_in_session_name == session_name)
         windows = [t.active_window for t in tabs if t.active_window]
         if not windows:
@@ -429,8 +429,8 @@ def most_recent_session() -> str:
     return goto_session_history[-1] if goto_session_history else ''
 
 
-def switch_to_session(boss: BossType, session_name: str) -> bool:
-    w = window_for_session_name(boss, session_name)
+def switch_to_session(boss: BossType, session_name: str, only_if_actual_windows_present: bool = False) -> bool:
+    w = window_for_session_name(boss, session_name, allow_fallback=not only_if_actual_windows_present)
     if w is not None:
         append_to_session_history(session_name)
         boss.set_active_window(w, switch_os_window_if_needed=True)
@@ -628,7 +628,7 @@ def goto_session(boss: BossType, cmdline: Sequence[str]) -> None:
     if not session_name:
         boss.show_error(_('Invalid session'), _('{} is not a valid path for a session').format(path))
         return
-    if switch_to_session(boss, session_name):
+    if switch_to_session(boss, session_name, only_if_actual_windows_present=True):
         return
     try:
         session_name, created_new_os_window = create_session(boss, path)
@@ -691,7 +691,7 @@ co-located with their project directories.
 '''
 
 
-def save_as_session_part2(boss: BossType, opts: SaveAsSessionOptions, path: str) -> None:
+def save_as_session_part2(boss: BossType, opts: SaveAsSessionOptions, path: str, path_input_by_user: bool = False) -> None:
     if not path:
         return
     from .config import atomic_save
@@ -699,6 +699,8 @@ def save_as_session_part2(boss: BossType, opts: SaveAsSessionOptions, path: str)
         base_dir = os.path.abspath(os.path.expanduser(opts.base_dir))
         path = os.path.join(base_dir, path)
     path = os.path.abspath(os.path.expanduser(path))
+    if path_input_by_user and '.' not in os.path.basename(path):
+        path += '.kitty-session'
     session = '\n'.join(boss.serialize_state_as_session(path, opts))
     os.makedirs(os.path.dirname(path), exist_ok=True)
     atomic_save(session.encode(), path)
@@ -719,6 +721,10 @@ def default_save_as_session_opts() -> SaveAsSessionOptions:
 
 def save_as_session(boss: BossType, cmdline: Sequence[str]) -> None:
     opts, args = parse_save_as_options_spec_args(list(cmdline))
+    if args and len(args) > 1:
+        boss.show_error(_('Invalid save_as_session command line'), _(
+            'save_as_session must have no more than a single path argument. Note that any flags/options should come before the path'))
+        return
     path = args[0] if args else ''
     if path == '.':
         sn = boss.active_session
@@ -728,4 +734,4 @@ def save_as_session(boss: BossType, cmdline: Sequence[str]) -> None:
     else:
         boss.get_save_filepath(_(
             'Enter the path at which to save the session, usually session files are given the .kitty-session file extension'),
-                               partial(save_as_session_part2, boss, opts))
+                               partial(save_as_session_part2, boss, opts, path_input_by_user=True))

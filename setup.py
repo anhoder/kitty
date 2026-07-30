@@ -42,7 +42,7 @@ def check_version_info() -> None:
     else:
         is_ok = sys.version_info > q
     if not is_ok:
-        exit(f'calibre requires Python {minver}. Current Python version: {".".join(map(str, sys.version_info[:3]))}')
+        exit(f'kitty requires Python {minver}. Current Python version: {".".join(map(str, sys.version_info[:3]))}')
 
 
 check_version_info()
@@ -655,7 +655,7 @@ def kitty_env(args: Options) -> Env:
     if is_macos:
         platform_libs = [
             '-framework', 'Carbon', '-framework', 'CoreText', '-framework', 'CoreGraphics',
-            '-framework', 'AudioToolbox',
+            '-framework', 'AudioToolbox', '-framework', 'IOKit',
         ]
         test_program_src = '''#include <UserNotifications/UserNotifications.h>
         int main(void) { return 0; }\n'''
@@ -949,9 +949,9 @@ def add_builtin_fonts(args: Options) -> None:
                     break
         else:
             lines = subprocess.check_output([
-                'fc-match', '--format', '%{file}\n%{postscriptname}', f'term:postscriptname={psname}', 'file', 'postscriptname']).decode().splitlines()
+                'fc-list', '--format', '%{file}\n%{postscriptname}', f':postscriptname={psname}']).decode().splitlines()
             if len(lines) != 2:
-                raise SystemExit(f'fc-match returned unexpected output: {lines}')
+                raise SystemExit(f'fc-list returned unexpected output: {lines} when searching for the Symbols NERD font')
             if lines[1] != psname:
                 raise SystemExit(f'The font {human_name!r} was not found on your system, please install it')
             font_file = lines[0]
@@ -1286,11 +1286,15 @@ def build_static_kittens(
     cmd = go + ['build', '-v']
     vcs_rev = args.vcs_rev or get_vcs_rev()
     ld_flags: List[str] = []
-    binary_data_flags = [f"-X kitty.VCSRevision={vcs_rev}"]
+    with open('go.mod') as f:
+        m = re.search(r'^module\s+(\S+)', f.read(), flags=re.M)
+        assert m is not None
+        modpath = m.group(1).strip()
+    binary_data_flags = [f"-X {modpath}.VCSRevision={vcs_rev}"]
     if for_freeze:
-        binary_data_flags.append("-X kitty.IsFrozenBuild=true")
+        binary_data_flags.append(f"-X {modpath}.IsFrozenBuild=true")
     if for_platform:
-        binary_data_flags.append("-X kitty.IsStandaloneBuild=true")
+        binary_data_flags.append(f"-X {modpath}.IsStandaloneBuild=true")
     if not args.debug:
         ld_flags.append('-s')
         ld_flags.append('-w')
@@ -1365,8 +1369,11 @@ def read_bool_options(path: str = 'kitty/cli.py') -> Tuple[str, ...]:
 
 
 def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 'source') -> str:
-    werror = '' if args.ignore_compiler_warnings else '-pedantic-errors -Werror'
-    cflags = f'-Wall {werror} -fpie {c_std}'.strip().split()
+    cflags = ['-Wall']
+    if not args.ignore_compiler_warnings:
+        cflags.extend(('-pedantic-errors', '-Werror'))
+    if c_std:
+        cflags.append(c_std)
     cppflags = [define(f'WRAPPED_KITTENS=" {wrapped_kittens()} "')]
     ldflags = shlex.split(os.environ.get('LDFLAGS', ''))
     xxhash = xxhash_flags()
@@ -1722,6 +1729,7 @@ def macos_info_plist(for_quake: str = '') -> bytes:
         CFBundleAllowMixedLocalizations=True,
         TICapsLockLanguageSwitchCapable=True,
         # User Interface and Graphics
+        CFBundleIconName=appname,
         CFBundleIconFile=f'{appname}.icns',
         NSHighResolutionCapable=True,
         NSSupportsAutomaticGraphicsSwitching=True,
@@ -1757,6 +1765,9 @@ def macos_info_plist(for_quake: str = '') -> bytes:
         NSBluetoothAlwaysUsageDescription=access('Bluetooth.'),
         # Speech
         NSSpeechRecognitionUsageDescription=access('speech recognition.'),
+        # One time code autofill popups
+        # see https://github.com/kovidgoyal/kitty/pull/10250
+        NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac=True,
     )
     if for_quake:
         # exclude from dock and menubar
@@ -1765,24 +1776,8 @@ def macos_info_plist(for_quake: str = '') -> bytes:
 
 
 def create_macos_app_icon(where: str = 'Resources') -> None:
-    iconset_dir = os.path.abspath(os.path.join('logo', f'{appname}.iconset'))
-    icns_dir = os.path.join(where, f'{appname}.icns')
-    try:
-        subprocess.check_call([
-            'iconutil', '-c', 'icns', iconset_dir, '-o', icns_dir
-        ])
-    except FileNotFoundError:
-        print(f'{error("iconutil not found")}, using png2icns (without retina support) to convert the logo', file=sys.stderr)
-        subprocess.check_call([
-            'png2icns', icns_dir
-        ] + [os.path.join(iconset_dir, logo) for logo in [
-            # png2icns does not support retina icons, so only pass the non-retina icons
-            'icon_16x16.png',
-            'icon_32x32.png',
-            'icon_128x128.png',
-            'icon_256x256.png',
-            'icon_512x512.png',
-        ]])
+    for x in (f'{appname}.icns', 'Assets.car'):
+        shutil.copy(os.path.join('logo', x), os.path.join(where, x))
 
 
 quake_name = f'{appname}-quick-access'
@@ -2334,6 +2329,7 @@ def do_build(args: Options) -> None:
         elif args.action == 'export-ci-bundles':
             cmd = [sys.executable, '../bypy', 'export', 'download.calibre-ebook.com:/srv/download/ci/kitty']
             subprocess.check_call(cmd + ['linux'])
+            subprocess.check_call(cmd + ['linux', '--arch=arm64'])
             subprocess.check_call(cmd + ['macos'])
         elif args.action == 'build-static-binaries':
             build_static_binaries(args, launcher_dir)

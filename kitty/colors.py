@@ -5,13 +5,14 @@ import os
 from collections.abc import Iterable, Sequence
 from contextlib import suppress
 from enum import Enum
-from typing import Literal, Optional, TypedDict
+from typing import Any, Literal, Optional, TypedDict, cast
 
 from .config import parse_config
 from .constants import config_dir
 from .fast_data_types import Color, get_boss, get_options, glfw_get_system_color_theme, patch_color_profiles, patch_global_colors, set_os_window_chrome
-from .options.types import Options, nullable_colors, special_colors
+from .options.types import Options, all_colors, nullable_colors, special_colors
 from .rgb import color_from_int
+from .types import run_once
 from .typing_compat import WindowType
 
 ColorsSpec = dict[str, Optional[int]]
@@ -21,7 +22,7 @@ Colors = tuple[ColorsSpec, TransparentBackgroundColors]
 
 
 class BackgroundImageOptions(TypedDict, total=False):
-    background_image: str | None
+    background_image: Sequence[str] | None
     background_image_layout: str | None
     background_image_linear: bool | None
     background_tint: float | None
@@ -74,13 +75,14 @@ class ThemeColors:
 
     def refresh(self) -> bool:
         found = False
+        d: BackgroundImageOptions
         with suppress(FileNotFoundError):
             for x in os.scandir(config_dir):
                 if x.name == ThemeFile.dark.value:
                     mtime = x.stat().st_mtime_ns
                     if mtime > self.dark_mtime:
                         with open(x.path) as f:
-                            d: BackgroundImageOptions = {}
+                            d = {}
                             self.dark_spec, self.dark_tbc = self.parse_colors(f, d)
                             self.dark_background_image_options = d
                         self.dark_mtime = mtime
@@ -191,25 +193,40 @@ class ThemeColors:
 theme_colors = ThemeColors()
 
 
-def parse_colors(args: Iterable[str | Iterable[str]], background_image_options: BackgroundImageOptions | None = None) -> Colors:
+@run_once
+def all_color_related_conf_keys() -> frozenset[str]:
+    return all_colors | frozenset(BackgroundImageOptions.__optional_keys__) | frozenset({'transparent_background_colors'})
+
+
+def parse_colors(
+    args: Iterable[str | Iterable[str]], background_image_options: BackgroundImageOptions | None = None,
+    allow_reading_conf_files: bool = True,
+) -> Colors:
+    from kitty.options.parse import parse_conf_item
     colors: dict[str, Color | None | int] = {}
     nullable_color_map: dict[str, int | None] = {}
     special_color_map: dict[str, int] = {}
     transparent_background_colors = ()
+    allowed = all_color_related_conf_keys()
     for spec in args:
+        conf: dict[str, Any] = {}
         if isinstance(spec, str):
-            if '=' in spec:
-                conf = parse_config((spec.replace('=', ' '),))
-            else:
+            k, sep, v = spec.partition('=')
+            if sep == '=':
+                k, v = k.strip(), v.strip()
+                if k in allowed:
+                    parse_conf_item(k, v, conf)
+            elif allow_reading_conf_files:
                 with open(os.path.expanduser(spec), encoding='utf-8', errors='replace') as f:
                     conf = parse_config(f)
-        else:
+        elif allow_reading_conf_files:
             conf = parse_config(spec)
         transparent_background_colors = conf.pop('transparent_background_colors', ())
         if background_image_options is not None:
+            bio: dict[str, Any] = cast(dict[str, Any], background_image_options)
             for key in BackgroundImageOptions.__optional_keys__:
                 if key in conf:
-                    background_image_options.__setitem__(key, conf[key])
+                    bio[key] = conf[key]
         colors.update(conf)
     for k in nullable_colors:
         q = colors.pop(k, False)
@@ -248,17 +265,17 @@ def patch_options_with_color_spec(
 
 
 def patch_colors(
-    spec: ColorsSpec, transparent_background_colors: TransparentBackgroundColors, configured: bool = False,
+    spec: ColorsSpec, transparent_background_colors: TransparentBackgroundColors = (), configured: bool = False,
     windows: Sequence[WindowType] | None = None, notify_on_bg_change: bool = True,
     background_image_options: BackgroundImageOptions | None = None
 ) -> None:
     boss = get_boss()
+    opts = get_options()
     if windows is None:
         windows = tuple(boss.all_windows)
     bg_colors_before = {w.id: w.screen.color_profile.default_bg for w in windows}
     profiles = tuple(w.screen.color_profile for w in windows if w)
     patch_color_profiles(spec, transparent_background_colors, profiles, configured)
-    opts = get_options()
     if configured:
         patch_options_with_color_spec(opts, spec, transparent_background_colors, background_image_options)
     os_window_ids = set()
@@ -277,8 +294,9 @@ def patch_colors(
     notify_bg = notify_on_bg_change and default_bg_changed
     boss = get_boss()
     if background_image_options is not None:
+        bg = background_image_options.get('background_image')
         boss.set_background_image(
-            background_image_options.get('background_image'), tuple(os_window_ids), configured,
+            bg[0] if bg else None, tuple(os_window_ids), configured,
             layout=background_image_options.get('background_image_layout'),
             linear_interpolation=background_image_options.get('background_image_linear'), tint=background_image_options.get('background_tint'),
             tint_gaps=background_image_options.get('background_tint_gaps'))

@@ -72,6 +72,7 @@ typedef VkBool32 (APIENTRY *PFN_vkGetPhysicalDeviceWaylandPresentationSupportKHR
 #include "wayland-xdg-system-bell-v1-client-protocol.h"
 #include "wayland-xdg-toplevel-tag-v1-client-protocol.h"
 #include "wayland-xdg-toplevel-drag-v1-client-protocol.h"
+#include "wayland-xdg-output-unstable-v1-client-protocol.h"
 
 #define _glfw_dlopen(name) dlopen(name, RTLD_LAZY | RTLD_LOCAL)
 #define _glfw_dlclose(handle) dlclose(handle)
@@ -212,6 +213,7 @@ typedef struct _GLFWwindowWayland
         uint32_t source_type;
         monotonic_t x_start_time, x_stop_time, y_stop_time, y_start_time;
     } pointer_curr_axis_info;
+    GLFWOffsetType prev_frame_offset_type;
 
     _GLFWcursor*                currentCursor;
     double                      cursorPosX, cursorPosY, allCursorPosX, allCursorPosY;
@@ -310,7 +312,11 @@ typedef struct _GLFWWaylandDataOffer
     struct wl_surface *surface;
     const char **mimes;
     size_t mimes_capacity, mimes_count;
+    const char **copy_mimes;   // Working copy passed to callbacks; pointers into mimes[]
+    size_t copy_mimes_count;   // Count of entries in copy_mimes (accepted count after callback)
     bool drag_accepted, dropped;
+    enum wl_data_device_manager_dnd_action preferred;
+    int allowed;
     uint32_t serial;
     struct {
         id_type watch_id;
@@ -359,6 +365,9 @@ typedef struct _GLFWlibraryWayland
     struct wp_single_pixel_buffer_manager_v1 *wp_single_pixel_buffer_manager_v1;
     struct zwp_idle_inhibit_manager_v1* idle_inhibit_manager;
     struct zwp_keyboard_shortcuts_inhibit_manager_v1 *keyboard_shortcuts_inhibit_manager;
+    struct zwp_pointer_gestures_v1* pointer_gestures;
+    struct zwp_pointer_gesture_hold_v1* pointer_gesture_hold;
+    struct zxdg_output_manager_v1* xdg_output_manager;
 
     int                         compositorVersion;
     int                         seatVersion;
@@ -367,6 +376,12 @@ typedef struct _GLFWlibraryWayland
     struct wl_surface*          cursorSurface;
     GLFWCursorShape             cursorPreviousShape;
     uint32_t                    serial, input_serial, pointer_serial, pointer_enter_serial, keyboard_enter_serial;
+    // serial of the button press that started the current pointer implicit
+    // grab, and the number of currently pressed pointer buttons. Requests
+    // such as wl_data_device.start_drag are silently ignored by compositors
+    // unless made with the serial of an active implicit grab.
+    uint32_t                    pointer_grab_serial;
+    unsigned                    pointer_button_count;
 
     int32_t                     keyboardRepeatRate;
     monotonic_t                 keyboardRepeatDelay;
@@ -382,6 +397,7 @@ typedef struct _GLFWlibraryWayland
 
     _GLFWwindow*                pointerFocus;
     GLFWid                      keyboardFocusId;
+    GLFWid                      lastKeyboardFocusId;
 
     struct {
         void*                   handle;
@@ -421,6 +437,25 @@ typedef struct _GLFWlibraryWayland
         struct xdg_surface *toplevel_xdg_surface;
         struct xdg_toplevel *toplevel_xdg_toplevel;
         struct wl_buffer *toplevel_buffer;
+        // wl_data_device.start_drag is silently ignored by compositors when
+        // its serial does not match an active pointer implicit grab, which
+        // can happen as drags are started asynchronously and the client side
+        // view of the grab can be stale. A wl_display.sync issued right after
+        // start_drag detects this: any compositor event proving the DND
+        // session is live (wl_pointer.leave, wl_data_device.enter, any
+        // wl_data_source event) is ordered before the sync callback, so if
+        // the callback fires first the start_drag was dropped.
+        struct wl_callback *start_confirmation;
+        bool session_confirmed;
+        // The drag toplevel was configured before the session was confirmed,
+        // mapping it was deferred so it cannot end up as a stray regular
+        // window if start_drag was silently ignored.
+        bool toplevel_map_deferred;
+        // Number of extra sync roundtrips issued waiting for confirmation;
+        // some compositors (e.g. niri) send the confirmation event (drag icon
+        // wl_surface.enter) after the first sync roundtrip, so we retry once
+        // before concluding that start_drag was silently ignored.
+        uint8_t sync_retries;
         struct {
             const char *mime_type;
             int fd;
@@ -438,12 +473,20 @@ typedef struct _GLFWlibraryWayland
 typedef struct _GLFWmonitorWayland
 {
     struct wl_output*           output;
+    struct zxdg_output_v1*      xdg_output;
     uint32_t                    name;
     int                         currentMode;
 
     int                         x;
     int                         y;
     int                         scale;
+    int32_t                     transform;
+
+    int32_t                     xdg_logical_width;
+    int32_t                     xdg_logical_height;
+    double                      fractional_scale;
+    bool                        xdg_size_received;
+    bool                        xdg_position_received;
 
 } _GLFWmonitorWayland;
 
@@ -464,6 +507,7 @@ typedef struct _GLFWcursorWayland
 
 
 void _glfwAddOutputWayland(uint32_t name, uint32_t version);
+void _glfwCreateXdgOutputWayland(_GLFWmonitor* monitor);
 void _glfwWaylandBeforeBufferSwap(_GLFWwindow *window);
 void _glfwWaylandAfterBufferSwap(_GLFWwindow *window);
 void _glfwSetupWaylandDataDevice(void);
@@ -474,6 +518,7 @@ void animateCursorImage(id_type timer_id, void *data);
 struct wl_cursor* _glfwLoadCursor(GLFWCursorShape, struct wl_cursor_theme*);
 void destroy_data_offer(_GLFWWaylandDataOffer*);
 const char* _glfwWaylandCompositorName(void);
+void _glfwWaylandConfirmDragSession(void);
 
 typedef struct wayland_cursor_shape {
     int which; const char *name;

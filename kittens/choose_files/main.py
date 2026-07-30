@@ -156,15 +156,15 @@ map('Change to root directory', 'cd_root ctrl+/ cd /')
 map('Change to home directory', 'cd_home ctrl+~ cd ~')
 map('Change to home directory', 'cd_home ctrl+` cd ~')
 map('Change to home directory', 'cd_home ctrl+shift+` cd ~')
-map('Change to temp directory', 'cd_tmp ctrl+t cd /tmp')
+map('Change to temp directory', 'cd_tmp --allow-fallback=shifted,ascii ctrl+t cd /tmp')
 
-map('Next filter', 'next_filter ctrl+f 1')
-map('Previous filter', 'prev_filter alt+f -1')
+map('Next filter', 'next_filter --allow-fallback=shifted,ascii ctrl+f 1')
+map('Previous filter', 'prev_filter --allow-fallback=shifted,ascii alt+f -1')
 
-map('Toggle showing dotfiles', 'toggle_dotfiles alt+h toggle dotfiles')
-map('Toggle showing ignored files', 'toggle_ignorefiles alt+i toggle ignorefiles')
-map('Toggle sorting by dates', 'toggle_sort_by_dates alt+d toggle sort_by_dates')
-map('Toggle showing preview', 'toggle_preview alt+p toggle preview')
+map('Toggle showing dotfiles', 'toggle_dotfiles --allow-fallback=shifted,ascii alt+h toggle dotfiles')
+map('Toggle showing ignored files', 'toggle_ignorefiles --allow-fallback=shifted,ascii alt+i toggle ignorefiles')
+map('Toggle sorting by dates', 'toggle_sort_by_dates --allow-fallback=shifted,ascii alt+d toggle sort_by_dates')
+map('Toggle showing preview', 'toggle_preview --allow-fallback=shifted,ascii alt+p toggle preview')
 
 egr()  # }}}
 
@@ -211,10 +211,10 @@ def handle_result(args: list[str], data: dict[str, Any], target_window_id: int, 
 usage = '[directory to start choosing files in]'
 
 
-OPTIONS = '''
+OPTIONS = """
 --mode
 type=choices
-choices=file,files,save-file,dir,save-dir,dirs,save-files
+choices=file,files,all,save-file,dir,save-dir,dirs,save-files
 default=file
 The type of object(s) to select
 
@@ -266,11 +266,12 @@ Path to a file to which the output is written in addition to STDOUT.
 --output-format
 choices=text,json,shell,shell-relative
 default=text
-The format in which to write the output. The :code:`text` format is absolute paths separated by newlines.
-The :code:`shell` format is quoted absolute paths separated by spaces, quoting is done only if needed. The
-:code:`shell-relative` format is the same as :code:`shell` except it returns paths relative to the starting
-directory. Note that when invoked from a mapping, this option is ignored,
-and either text or shell format is used automatically based on whether the cursor is at a shell prompt or not.
+The format in which to write the output. The :code:`text` format is absolute paths separated by newlines,
+with a trailing newline. The :code:`shell` format is quoted absolute paths separated by spaces,
+quoting is done only if needed. The :code:`shell-relative` format is the same as :code:`shell` except that
+it returns paths relative to the starting directory. Note that when invoked from a mapping,
+this option is ignored, and either text or shell format is used automatically based on whether
+the cursor is at a shell prompt or not.
 
 
 --write-pid-to
@@ -280,7 +281,7 @@ Path to a file to which to write the process ID (PID) of this process to.
 --clear-cache
 type=bool-set
 Clear the caches used by this kitten.
-'''.format(config_help=CONFIG_HELP.format(conf_name='choose-files', appname=appname)).format
+""".format(config_help=CONFIG_HELP.format(conf_name='choose-files', appname=appname)).format
 
 
 help_text = '''\

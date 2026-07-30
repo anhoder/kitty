@@ -219,6 +219,12 @@ def set_cocoa_global_shortcuts(opts: Options) -> dict[str, SingleKey]:
         val = get_macos_shortcut_for(func_map, f'open_url {website_url()}', lookup_name='open_kitty_website')
         if val is not None:
             global_shortcuts['open_kitty_website'] = val
+        val = get_macos_shortcut_for(func_map, 'paste_from_clipboard')
+        if val is not None:
+            global_shortcuts['paste_from_clipboard'] = val
+        val = get_macos_shortcut_for(func_map, 'copy_or_noop')
+        if val is not None:
+            global_shortcuts['copy_or_noop'] = val
     return global_shortcuts
 
 
@@ -283,7 +289,8 @@ def _run_app(opts: Options, args: CLIOptions, bad_lines: Sequence[BadLine] = (),
                 if cached_workarea and glfw_get_monitor_workarea() == tuple(cached_workarea):
                     pos_x, pos_y = cached_values.get('window-pos', (None, None))
             if args.position:
-                pos_x, pos_y = map(int, args.position.lower().partition('x')[::2])
+                from .launch import parse_os_window_position
+                pos_x, pos_y = parse_os_window_position(args.position)
         startup_session_error: tuple[Exception, str] | None = None
         try:
             startup_sessions = tuple(create_sessions(opts, args, default_session=opts.startup_session))
@@ -599,7 +606,6 @@ def kitty_main(called_from_panel: bool = False) -> None:
 
 
 def main(called_from_panel: bool = False) -> None:
-    global redirected_for_quick_access
     try:
         if is_macos and launched_by_launch_services and not called_from_panel:
             with suppress(OSError):

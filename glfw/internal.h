@@ -461,6 +461,7 @@ struct _GLFWwindow
 #else
     const bool                swaps_disallowed;
 #endif
+    struct { GLFWDragOperationType preferred; int allowed, source_actions; } drop_operation;
 
     struct {
         GLFWwindowposfun        pos;
@@ -745,6 +746,7 @@ void _glfwPlatformGetWindowFrameSize(_GLFWwindow* window,
 void _glfwPlatformGetWindowContentScale(_GLFWwindow* window,
                                         float* xscale, float* yscale);
 monotonic_t _glfwPlatformGetDoubleClickInterval(_GLFWwindow* window);
+void _glfwPlatformGetKeyboardRepeatDelay(monotonic_t *delay, monotonic_t *interval);
 void _glfwPlatformIconifyWindow(_GLFWwindow* window);
 void _glfwPlatformRestoreWindow(_GLFWwindow* window);
 void _glfwPlatformMaximizeWindow(_GLFWwindow* window);
@@ -834,10 +836,11 @@ void _glfwPlatformEndDrop(GLFWwindow *w, GLFWDragOperationType op);
 int _glfwPlatformRequestDropData(_GLFWwindow *window, const char *mime);
 // Platform functions for drag source
 int _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail);
+void _glfwPlatformCancelDrag(_GLFWwindow* window);
 void _glfwFreeDragSourceData(void);
 void _glfwPlatformFreeDragSourceData(void);
 void _glfwInputDragSourceRequest(_GLFWwindow* window, GLFWDragEvent *ev);
-int _glfwPlatformDragDataReady(const char *mime_type);
+int _glfwPlatformDragDataReady(const char *mime_type, const char *data, size_t sz, int type);
 int _glfwPlatformChangeDragImage(const GLFWimage *thumbnail);
 
 
@@ -914,6 +917,7 @@ void glfw_handle_scroll_event_for_momentum(_GLFWwindow *w, const GLFWScrollEvent
 #else
 #define momentum_scroll_gesture_detection_timeout_ms 0
 #endif
+bool glfw_is_momentum_scroll_enabled(void);
 
 char* _glfw_strdup(const char* source);
 

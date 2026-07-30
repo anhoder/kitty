@@ -12,7 +12,7 @@ from contextlib import suppress
 from functools import lru_cache
 
 from kittens.ssh.utils import get_connection_data
-from kitty.constants import is_macos, kitten_exe, runtime_dir
+from kitty.constants import is_macos, kitten_exe, kitty_base_dir, runtime_dir
 from kitty.fast_data_types import CURSOR_BEAM, shm_unlink
 from kitty.utils import SSHConnectionData
 
@@ -81,6 +81,9 @@ print(' '.join(map(str, buf)))'''), lines=13, cols=77)
                 os.mkdir(f'{local_home}/d1/r')
                 touch('d1/r/noooo')
                 os.symlink('d2/x', f'{local_home}/d1/y')
+                bad_link_name = '$(touch SHOULD_NOT_EXIST)'
+                os.symlink('d2/x', os.path.join(local_home, 'd1', bad_link_name))
+                os.symlink('-dash-target', os.path.join(local_home, 'd1', 'dash-target-link'))
                 os.symlink('simple-file', f'{local_home}/s1')
                 os.symlink('simple-file', f'{local_home}/s2')
 
@@ -108,6 +111,9 @@ copy --exclude **/w.* --exclude **/r d1
                 self.assertTrue(os.path.lexists(f'{remote_home}/d1/y'))
                 self.assertTrue(os.path.exists(f'{remote_home}/d1/y'))
                 self.ae(os.readlink(f'{remote_home}/d1/y'), 'd2/x')
+                self.assertTrue(os.path.lexists(os.path.join(remote_home, 'd1', bad_link_name)))
+                self.assertFalse(os.path.exists(os.path.join(remote_home, 'SHOULD_NOT_EXIST')))
+                self.ae(os.readlink(f'{remote_home}/d1/dash-target-link'), '-dash-target')
                 self.ae(os.readlink(f'{remote_home}/s1'), 'simple-file')
                 contents = set(files_in(remote_home))
                 contents.discard('.zshrc')  # added by check_bootstrap()
@@ -116,7 +122,8 @@ copy --exclude **/w.* --exclude **/r d1
                 contents.discard(f'{tname}/x/xterm-kitty')
                 contents.discard(f'{tname}/78/xterm-kitty')
                 self.ae(contents, {
-                    'g.1', 'g.2', f'{tname}/kitty.terminfo', 'simple-file', 'd1/d2/x', 'd1/y', 'a/sfa', 's1', 's2',
+                    'g.1', 'g.2', f'{tname}/kitty.terminfo', 'simple-file', 'd1/d2/x', 'd1/y',
+                    f'd1/{bad_link_name}', 'd1/dash-target-link', 'a/sfa', 's1', 's2',
                     '.local/share/kitty-ssh-kitten/kitty/version', '.local/share/kitty-ssh-kitten/kitty/bin/kitty',
                     '.local/share/kitty-ssh-kitten/kitty/bin/kitten'
                 })
@@ -193,6 +200,38 @@ env COLORTERM
                 with tempfile.TemporaryDirectory() as tdir:
                     pty = self.check_bootstrap(sh, tdir, test_script=f'{m}; echo "$login_shell"; exit 0', SHELL_INTEGRATION_VALUE='')
                     self.assertIn(expected_login_shell, pty.screen_contents())
+
+    def test_ssh_login_shell_fallback_quoting(self):
+        bootstrap_utils = os.path.join(kitty_base_dir, 'shell-integration', 'ssh', 'bootstrap-utils.sh')
+        python = shutil.which('python3') or shutil.which('python2') or shutil.which('python')
+        if python is None:
+            self.skipTest('Python executable not found')
+        runners = [('execute_with_python', python, 'PYTHON_FOR_TEST')]
+        if perl := shutil.which('perl'):
+            runners.append(('execute_with_perl', perl, 'PERL_FOR_TEST'))
+        script = '''\
+. "$BOOTSTRAP_UTILS"
+detect_python() { python="$PYTHON_FOR_TEST"; return 0; }
+detect_perl() { perl="$PERL_FOR_TEST"; return 0; }
+login_shell=$LOGIN_SHELL
+shell_name=$(command basename "$login_shell")
+"$EXEC_FUNC"
+'''
+        for func, executable, env_key in runners:
+            with tempfile.TemporaryDirectory() as tdir:
+                login_shell = os.path.join(tdir, "login shell's python")
+                os.symlink(python, login_shell)
+                env = {
+                    'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+                    'BOOTSTRAP_UTILS': bootstrap_utils,
+                    'EXEC_FUNC': func,
+                    'LOGIN_SHELL': login_shell,
+                    env_key: executable,
+                }
+                cp = subprocess.run(
+                    ['sh', '-c', script], env=env, stdin=subprocess.DEVNULL,
+                    capture_output=True, text=True)
+                self.assertEqual(cp.returncode, 0, cp.stderr + cp.stdout)
 
     @retry_on_failure()
     def test_ssh_shell_integration(self):

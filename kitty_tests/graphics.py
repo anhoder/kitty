@@ -19,7 +19,7 @@ try:
     from PIL import Image
 except ImportError:
     Image = None
-
+png_data = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+P+/HgAFhAJ/wlseKgAAAABJRU5ErkJggg==')
 
 def send_command(screen, cmd, payload=b''):
     cmd = '\033_G' + cmd
@@ -386,6 +386,20 @@ class TestGraphics(BaseTest):
         self.assertIsNone(li(payload='2' * 12, z=77, m=1, q=2))
         self.assertIsNone(li(payload='2' * 12))
 
+    def test_transient_graphics_image(self):
+        s, g, pl, sl = load_helpers(self)
+        self.assertEqual(g.disk_cache.end_of_data_offset(), 0)
+        self.ae(pl('abc', s=1, v=1, f=24, N=1), 'OK')
+        self.assertTrue(g.disk_cache.wait_for_write())
+        self.assertEqual(g.disk_cache.end_of_data_offset(), 0)
+        img = g.image_for_client_id(1)
+        self.assertIsNotNone(img)
+        self.ae(img['data'], b'abc')
+
+        self.ae(pl('def', s=1, v=1, f=24, i=2), 'OK')
+        self.assertTrue(g.disk_cache.wait_for_write())
+        self.assertGreater(g.disk_cache.end_of_data_offset(), 0)
+
     def test_load_images(self):
         s, g, pl, sl = load_helpers(self)
         self.assertEqual(g.disk_cache.total_size, 0)
@@ -505,13 +519,21 @@ class TestGraphics(BaseTest):
 
     def test_load_png_simple(self):
         # 1x1 transparent PNG
-        png_data = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+P+/HgAFhAJ/wlseKgAAAABJRU5ErkJggg==')
         expected = b'\x00\xff\xff\x7f'
         self.ae(load_png_data(png_data), (expected, 1, 1))
         s, g, pl, sl = load_helpers(self)
         sl(png_data, f=100, expecting_data=expected)
         # test error handling for loading bad png data
         self.assertRaisesRegex(ValueError, '[EBADPNG]', load_png_data, b'dsfsdfsfsfd')
+        # Test that a large PNG chunk sent via direct transmission doesn't crash
+        # when its size exceeds 2 * initial_buf_capacity. Without the fix in
+        # commit 48ab623, the buffer reallocation used MIN(2*buf_capacity, MAX_DATA_SZ)
+        # which could leave buf_capacity smaller than the payload size, causing a
+        # heap buffer overflow when the data was copied in.
+        # Initial buf_capacity for PNG without an explicit S= is 10, so 2*10=20;
+        # a 25-byte chunk previously caused a crash.
+        res = pl(b'x' * 25, f=100)
+        self.ae(res.partition(':')[0], 'EBADPNG')
 
     def test_gr_operations_with_numbers(self):
         s = self.create_screen()
@@ -624,6 +646,13 @@ class TestGraphics(BaseTest):
         self.ae(put_image(s, 2*cw, 2*ch, num_cols=3)[1], 'OK')
         self.ae((s.cursor.x, s.cursor.y), (3, 2))
         rect_eq(layers(s)[0]['dest_rect'], -1, 1, -1 + 3 * dx, 1 - 3*dy)
+
+    def test_graphics_put_with_pixel_offsets(self):
+        cw, ch = 10, 20
+        # Image 10x20 placed with 5px X and Y pixel offsets
+        s, dx, dy, put_image, put_ref, layers, rect_eq = put_helpers(self, cw, ch)
+        self.ae(put_image(s, 10, 20, cell_x_off=5, cell_y_off=5)[1], 'OK')
+        self.ae((s.cursor.x, s.cursor.y), (2, 1))
 
     def test_image_layer_grouping(self):
         cw, ch = 10, 20
@@ -1263,6 +1292,15 @@ class TestGraphics(BaseTest):
             {'gap': 40, 'id': 2, 'data': b'abcdefghijkl'*3},
             {'gap': 40, 'id': 3, 'data': b'3' * 12 + (b'333abc' + b'3' * 6) * 2},
         ))
+        # Test that compose commands with offset values that would overflow a 32-bit
+        # unsigned integer are correctly rejected with EINVAL instead of crashing.
+        # In the old code, UINT32_MAX + img->width wrapped around as uint32_t to a
+        # small value that bypassed the bounds check, causing a crash (fix: e9661f0).
+        for offset_param in ('x', 'y', 'X', 'Y'):
+            self.assertEqual(
+                li(payload=b'', a='c', i=1, r=1, c=2, s=0, v=0, f=0, **{offset_param: 0xFFFFFFFF}).code,
+                'EINVAL', f'Expected EINVAL for overflow in compose offset parameter {offset_param!r}'
+            )
 
     def test_graphics_quota_enforcement(self):
         s = self.create_screen()
@@ -1287,6 +1325,25 @@ class TestGraphics(BaseTest):
         s.reset()
         self.ae(g.image_count, 0)
         self.assertEqual(g.disk_cache.total_size, 0)
+
+    def test_transient_image_preferential_eviction(self):
+        # Transient images should be evicted before non-transient ones when
+        # the storage quota is exceeded, regardless of insertion order.
+        s = self.create_screen()
+        g = s.grman
+        g.storage_limit = 36 * 2
+        li = make_send_command(s)
+        # Load a non-transient image first (older atime) and a transient image second.
+        self.assertEqual(li(a='T', i=1).code, 'OK')
+        self.assertEqual(li(a='T', i=2, N=1).code, 'OK')
+        self.assertEqual(g.image_count, 2)
+        # Adding a third image triggers the quota; the transient image (i=2) must be
+        # evicted first even though the non-transient image (i=1) is older.
+        self.assertEqual(li(a='T', i=3).code, 'OK')
+        self.assertEqual(g.image_count, 2)
+        self.assertIsNone(g.image_for_client_id(2), 'transient image should have been evicted')
+        self.assertIsNotNone(g.image_for_client_id(1), 'non-transient image should survive')
+        self.assertIsNotNone(g.image_for_client_id(3), 'newly added image should survive')
 
     @unittest.skipIf(Image is None, 'PIL not available, skipping PNG tests')
     def test_cached_rgba_conversion(self):

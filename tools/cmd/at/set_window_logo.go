@@ -4,12 +4,13 @@ package at
 
 import (
 	"bytes"
-	"encoding/base64"
 	"fmt"
 	"image"
 	"io"
 	"os"
 	"strings"
+
+	"github.com/emmansun/base64"
 
 	"github.com/kovidgoyal/kitty/tools/utils/images"
 )
@@ -75,4 +76,34 @@ func read_window_logo(io_data *rc_io_data, path string) (func(io_data *rc_io_dat
 		}
 		return false, nil
 	}, nil
+}
+
+func is_index_arg(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	start := 0
+	if s[0] == '+' || s[0] == '-' {
+		start = 1
+	}
+	if start >= len(s) {
+		return false
+	}
+	for _, c := range s[start:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func read_background_image(io_data *rc_io_data, path string) (func(io_data *rc_io_data) (bool, error), error) {
+	if is_index_arg(path) {
+		io_data.rc.Stream = false
+		return func(io_data *rc_io_data) (bool, error) {
+			set_payload_data(io_data, "index:"+path)
+			return true, nil
+		}, nil
+	}
+	return read_window_logo(io_data, path)
 }

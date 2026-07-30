@@ -44,6 +44,7 @@ const (
 	SELECT_SAVE_DIR
 	SELECT_SINGLE_DIR
 	SELECT_MULTIPLE_DIRS
+	SELECT_ANY
 )
 
 func (m Mode) CanSelectNonExistent() bool {
@@ -94,6 +95,8 @@ func (m Mode) WindowTitle() string {
 		return "Choose one or more directories"
 	case SELECT_SAVE_FILES:
 		return "Choose files to save"
+	case SELECT_ANY:
+		return "Choose an existing file or directory"
 	}
 	return ""
 }
@@ -213,6 +216,7 @@ type Handler struct {
 	result_manager                     *ResultManager
 	lp                                 *loop.Loop
 	rl                                 *readline.Readline
+	search_rl                          *readline.Readline
 	err_chan                           chan error
 	shortcut_tracker                   config.ShortcutTracker
 	msg_printer                        *message.Printer
@@ -352,6 +356,7 @@ func (h *Handler) init_sizes(new_size loop.ScreenSize) {
 	h.screen_size.width_px = int(new_size.WidthPx)
 	h.screen_size.height_px = int(new_size.HeightPx)
 	h.rl.ClearCachedScreenSize()
+	h.search_rl.ClearCachedScreenSize()
 }
 
 func (h *Handler) OnInitialize() (ans string, err error) {
@@ -370,6 +375,7 @@ func (h *Handler) OnInitialize() (ans string, err error) {
 				if (s.IsDir() && h.state.mode != SELECT_SAVE_FILE) || (!s.IsDir() && h.state.mode == SELECT_SAVE_FILE) {
 					h.state.SetCurrentDir(filepath.Dir(h.state.suggested_save_file_path))
 					h.state.SetSearchText(filepath.Base(h.state.suggested_save_file_name))
+					h.search_rl.SetText(h.state.SearchText())
 				}
 			}
 		}
@@ -391,6 +397,9 @@ func (h *Handler) current_abspath() string {
 }
 
 func (s *State) CanSelect(r *ResultItem) bool {
+	if s.mode == SELECT_ANY {
+		return true
+	}
 	return utils.IfElse(s.OnlyDirs(), r.ftype.IsDir(), !r.ftype.IsDir())
 }
 
@@ -420,6 +429,7 @@ func (h *Handler) toggle_selection() bool {
 func (h *Handler) change_current_dir(dir string) {
 	if dir != h.state.CurrentDir() {
 		h.state.SetCurrentDir(dir)
+		h.search_rl.ResetText()
 		h.result_manager.set_root_dir()
 		h.state.last_render = render_state{}
 	}
@@ -585,7 +595,7 @@ func (h *Handler) dispatch_action(name, args string) (err error) {
 		}
 	case "typename":
 		if !h.state.mode.CanSelectNonExistent() {
-			if h.state.mode.OnlyDirs() {
+			if h.state.mode.OnlyDirs() || h.state.mode == SELECT_ANY {
 				h.state.AddSelection(h.state.CurrentDir())
 				return h.finish_selection()
 			}
@@ -658,14 +668,19 @@ func (h *Handler) dispatch_action(name, args string) (err error) {
 func (h *Handler) OnKeyEvent(ev *loop.KeyEvent) (err error) {
 	switch h.state.screen {
 	case NORMAL:
-		if h.handle_edit_keys(ev) {
-			ev.Handled = true
-			h.draw_screen()
-		}
 		ac := h.shortcut_tracker.Match(ev, h.state.keyboard_shortcuts)
 		if ac != nil {
 			ev.Handled = true
+			if rlac, is_edit_action := edit_actions[ac.Name]; is_edit_action {
+				if err = h.perform_edit_action(rlac); err == nil {
+					err = h.draw_screen()
+				}
+				return
+			}
 			return h.dispatch_action(ac.Name, ac.Args)
+		}
+		if err = h.forward_key_event_to_search_rl(ev); err == nil {
+			err = h.draw_screen()
 		}
 	case SAVE_FILE:
 		err = h.save_file_name_handle_key(ev)
@@ -687,8 +702,10 @@ func (h *Handler) OnMouseEvent(event *loop.MouseEvent) (err error) {
 func (h *Handler) OnText(text string, from_key_event, in_bracketed_paste bool) (err error) {
 	switch h.state.screen {
 	case NORMAL:
-		h.set_query(h.state.SearchText() + text)
-		return h.draw_screen()
+		if err = h.search_rl.OnText(text, from_key_event, in_bracketed_paste); err == nil {
+			h.set_query(h.search_rl.AllText())
+			err = h.draw_screen()
+		}
 	case SAVE_FILE:
 		if err = h.rl.OnText(text, from_key_event, in_bracketed_paste); err == nil {
 			err = h.draw_screen()
@@ -730,6 +747,8 @@ func (h *Handler) set_state_from_config(conf *Config, opts *Options) (err error)
 		h.state.mode = SELECT_SINGLE_FILE
 	case "files":
 		h.state.mode = SELECT_MULTIPLE_FILES
+	case "all":
+		h.state.mode = SELECT_ANY
 	case "save-file":
 		h.state.mode = SELECT_SAVE_FILE
 	case "dir":
@@ -903,6 +922,10 @@ func main(_ *cli.Command, opts *Options, args []string) (rc int, err error) {
 				m = string(b)
 			}
 			os.Stdout.Write(utils.UnsafeStringToBytes(m))
+			if tty.IsTerminal(os.Stdout.Fd()) && opts.OutputFormat == "text" {
+				// Avoid zsh's silly no trailing newline marker
+				os.Stdout.WriteString("\n")
+			}
 			if opts.WriteOutputTo != "" {
 				os.WriteFile(opts.WriteOutputTo, utils.UnsafeStringToBytes(m), 0600)
 			}
@@ -939,6 +962,7 @@ func main(_ *cli.Command, opts *Options, args []string) (rc int, err error) {
 	handler.rl = readline.New(lp, readline.RlInit{
 		Prompt: "> ", ContinuationPrompt: ". ", Completer: FilePromptCompleter(getcwd),
 	})
+	handler.search_rl = readline.New(lp, readline.RlInit{DontMarkPrompts: true})
 	if err = handler.set_state_from_config(conf, opts); err != nil {
 		return 1, err
 	}

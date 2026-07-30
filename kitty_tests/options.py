@@ -125,14 +125,19 @@ version
 
 
 def launcher(self):
+    import tempfile
+
+    from kitty.constants import is_macos
     kexe = kitty_exe()
     cfgdir = None
-    def get_report(cmdline: str, launch_services= False):
+    def get_report(cmdline: str, launch_services= False, config_dir: str = ''):
         nonlocal cfgdir
         args = list(shlex_split(cmdline))
         env = dict(os.environ)
         if launch_services:
             env['KITTY_LAUNCHED_BY_LAUNCH_SERVICES'] = '1'
+        if config_dir:
+            env['KITTY_CONFIG_DIRECTORY'] = config_dir
         cp = subprocess.run([kexe, "+testing-launcher-code"] + args, env=env, stdout=subprocess.PIPE)
         self.assertEqual(cp.returncode, 0)
         ans = {}
@@ -200,10 +205,22 @@ def launcher(self):
     dt('--detach --session=moose --detached-log=xyz', detached_log='xyz', session='moose')
     pn('+kitten panel -1 --edge=left', edge='left')
 
+    if is_macos:
+        with tempfile.TemporaryDirectory() as tdir:
+            with open(tdir + '/macos-launch-services-cmdline', 'w') as f:
+                f.write('kitty --title from-file\n')
+            # File args are used when launched by launch services
+            r, output = get_report('', launch_services=True, config_dir=tdir)
+            self.assertEqual(r.get('title'), 'from-file', f'Expected title=from-file in:\n{output}')
+            # User args passed via open --args are appended after file args (and override them)
+            r, output = get_report('--title from-args', launch_services=True, config_dir=tdir)
+            self.assertEqual(r.get('title'), 'from-args', f'Expected title=from-args to override from-file in:\n{output}')
+
 
 def conf_parsing(self):
     from kitty.config import defaults, load_config
     from kitty.constants import is_macos
+    from kitty.fast_data_types import LEFT_EDGE, RIGHT_EDGE
     from kitty.fonts import FontModification, ModificationType, ModificationUnit, ModificationValue
     from kitty.options.utils import to_modifiers
     bad_lines = []
@@ -238,6 +255,18 @@ def conf_parsing(self):
     self.ae(opts.url_excluded_characters, "'''")
     opts = p("url_excluded_characters abc'")
     self.ae(opts.url_excluded_characters, "abc'")
+    opts = p('tab_bar_edge left')
+    self.ae(opts.tab_bar_edge, LEFT_EDGE)
+    opts = p('tab_bar_edge right')
+    self.ae(opts.tab_bar_edge, RIGHT_EDGE)
+    opts = p('tab_bar_align start')
+    self.ae(opts.tab_bar_align, 'start')
+    opts = p('tab_bar_align end')
+    self.ae(opts.tab_bar_align, 'end')
+    opts = p('tab_bar_align left')
+    self.ae(opts.tab_bar_align, 'left')
+    opts = p('tab_bar_align right')
+    self.ae(opts.tab_bar_align, 'right')
     opts = p('clear_all_shortcuts y', 'map f1 next_window')
     self.ae(len(opts.keyboard_modes[''].keymap), 1)
     opts = p('clear_all_mouse_actions y', 'mouse_map left click ungrabbed mouse_click_url_or_select')
@@ -310,6 +339,15 @@ def conf_parsing(self):
     opts = p('kitty_mod alt')
     self.ae(opts.kitty_mod, to_modifiers('alt'))
     self.ae(next(keys_for_func(opts, 'next_layout')).mods, opts.kitty_mod)
+
+    opts = p('inactive_text_alpha 0.25')
+    self.ae(opts.inactive_text_alpha, 0.25)
+    opts = p('inactive_text_alpha -0.25')
+    self.ae(opts.inactive_text_alpha, -0.25)
+    opts = p('inactive_text_alpha 2')
+    self.ae(opts.inactive_text_alpha, 1.0)
+    opts = p('inactive_text_alpha -2')
+    self.ae(opts.inactive_text_alpha, -1.0)
 
     # deprecation handling
     opts = p('clear_all_shortcuts y', 'send_text all f1 hello')

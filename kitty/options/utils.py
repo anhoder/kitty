@@ -88,6 +88,11 @@ def parse_send_text_bytes(text: str) -> bytes:
     return defines.expand_ansi_c_escapes(text).encode('utf-8')
 
 
+@func_with_args('scroll_line_up', 'scroll_line_down')
+def scroll_line_updown(func: str, rest: str) -> FuncArgsType:
+    return func, [rest.strip().lower() == 'smooth']
+
+
 @func_with_args('scroll_prompt_to_top')
 def scroll_prompt_to_top(func: str, rest: str) -> FuncArgsType:
     return func, [to_bool(rest) if rest else False]
@@ -441,12 +446,15 @@ def mouse_selection(func: str, rest: str) -> FuncArgsType:
             'normal': defines.MOUSE_SELECTION_NORMAL,
             'extend': defines.MOUSE_SELECTION_EXTEND,
             'move-end': defines.MOUSE_SELECTION_MOVE_END,
+            'move_end': defines.MOUSE_SELECTION_MOVE_END,
             'rectangle': defines.MOUSE_SELECTION_RECTANGLE,
             'word': defines.MOUSE_SELECTION_WORD,
             'line': defines.MOUSE_SELECTION_LINE,
+            'line_from_begin': defines.MOUSE_SELECTION_LINE_FROM_BEGIN,
             'line_from_point': defines.MOUSE_SELECTION_LINE_FROM_POINT,
             'word_and_line_from_point': defines.MOUSE_SELECTION_WORD_AND_LINE_FROM_POINT,
             'upto_surrounding_whitespace': defines.MOUSE_SELECTION_UPTO_SURROUNDING_WHITESPACE,
+            'drag_or_normal_select': defines.MOUSE_SELECTION_NORMAL - 1,
         }
         setattr(mouse_selection, 'code_map', cmap)
     return func, [cmap[rest]]
@@ -577,6 +585,16 @@ def cursor_trail_decay(x: str) -> tuple[float, float]:
     slow = max(slow, fast)
     return fast, slow
 
+
+def cursor_trail_start_threshold(x: str) -> tuple[int, int]:
+    parts = x.split()
+    if len(parts) == 1:
+        val = positive_int(parts[0])
+        return val, val
+    if len(parts) == 2:
+        return positive_int(parts[0]), positive_int(parts[1])
+    raise ValueError(f'cursor_trail_start_threshold must have 1 or 2 values, got: {x!r}')
+
 def scrollback_lines(x: str) -> int:
     ans = int(x)
     if ans < 0:
@@ -599,6 +617,24 @@ def url_style(x: str) -> int:
 
 def url_prefixes(x: str) -> tuple[str, ...]:
     return tuple(a.lower() for a in x.replace(',', ' ').split())
+
+
+
+def show_hyperlink_targets(x: str) -> Literal['never', 'always', 'Ctrl', 'Shift', 'Super', 'Alt']:
+    q = x.lower()
+    if q in ('never', 'n', 'no', 'false'):
+        return 'never'
+    if q in ('y', 'yes', 'true', 'always'):
+        return 'always'
+    if q == 'ctrl':
+        return 'Ctrl'
+    if q == 'shift':
+        return 'Shift'
+    if q in ('super', 'cmd'):
+        return 'Super'
+    if q in ('alt', 'meta'):
+        return 'Alt'
+    raise KeyError(f'Unknown value for show_hyperlink_targets: {x!r}')
 
 
 def copy_on_select(raw: str) -> str:
@@ -725,7 +761,15 @@ def tab_separator(x: str) -> str:
 
 
 def tab_bar_edge(x: str) -> int:
-    return {'top': defines.TOP_EDGE, 'bottom': defines.BOTTOM_EDGE}.get(x.lower(), defines.BOTTOM_EDGE)
+    match x.lower():
+        case 'top':
+            return defines.TOP_EDGE
+        case 'left':
+            return defines.LEFT_EDGE
+        case 'right':
+            return defines.RIGHT_EDGE
+        case _:
+            return defines.BOTTOM_EDGE
 
 
 def tab_font_style(x: str) -> tuple[bool, bool]:
@@ -827,6 +871,15 @@ def config_or_absolute_path(x: str, env: dict[str, str] | None = None) -> str | 
     if not x or x.lower() == 'none':
         return None
     return resolve_abs_or_config_path(x, env)
+
+
+def background_images(x: str) -> tuple[str, ...]:
+    if x.lower() in ('none', ''):
+        return ()
+    from glob import glob
+    x = resolve_abs_or_config_path(x, None)
+    return tuple(x for x in sorted(glob(x)) if x.rpartition('.')[-1].lower() in (
+        'jpeg', 'jpg', 'png', 'webp', 'tif', 'tiff', 'bmp', 'gif')) or (x,)
 
 
 def filter_notification(val: str, current_val: dict[str, str]) -> Iterable[tuple[str, str]]:
@@ -1266,24 +1319,35 @@ class LiteralField(Generic[T]):
         self._vals = vals
 
     def __set_name__(self, owner: object, name: str) -> None:
-        self._name = "_" + name
+        self._name = name
 
     def __get__(self, obj: object, type: type | None = None) -> T:
         if obj is None:
             return self._vals[0]
-        return getattr(obj, self._name, self._vals[0])
+        val = obj.__dict__.get(self._name)
+        if val is None or isinstance(val, LiteralField):
+            return self._vals[0]
+        return cast(T, val)
 
     def __set__(self, obj: object, value: str) -> None:
         if value not in self._vals:
-            raise KeyError(f'Invalid value for {self._name[1:]}: {value!r}')
-        object.__setattr__(obj, self._name, value)
+            raise KeyError(f'Invalid value for {self._name}: {value!r}')
+        obj.__dict__[self._name] = value
 
 
 OnUnknown = Literal['beep', 'end', 'ignore', 'passthrough']
 OnAction = Literal['keep', 'end']
 
 
-@dataclass(init=False, frozen=True)
+class KeyFallbackType(enum.Enum):
+    shifted = 'shifted'
+    alternate = 'alternate'
+
+    def __repr__(self) -> str:
+        return f'KeyFallbackType.{self.value}'
+
+
+@dataclass(frozen=True)
 class KeyMapOptions:
     when_focus_on: str = ''
     new_mode: str = ''
@@ -1291,6 +1355,7 @@ class KeyMapOptions:
     on_unknown: LiteralField[OnUnknown] = LiteralField[OnUnknown](get_args(OnUnknown))
     on_action: LiteralField[OnAction] = LiteralField[OnAction](get_args(OnAction))
     timeout: float | None = None
+    allow_fallback: tuple[KeyFallbackType, ...] = (KeyFallbackType.shifted,)
 
 
 default_key_map_options = KeyMapOptions()
@@ -1361,6 +1426,24 @@ class KeyboardMode:
 KeyboardModeMap = dict[str, KeyboardMode]
 key_map_option_converters: defaultdict[str, Callable[[str], Any]] = defaultdict(lambda: (lambda x: x))
 key_map_option_converters['timeout'] = float
+
+
+def _convert_allow_fallback(val: str) -> tuple[KeyFallbackType, ...]:
+    match val:
+        case 'shifted,ascii':
+            return (KeyFallbackType.shifted, KeyFallbackType.alternate)
+        case 'shifted':
+            return (KeyFallbackType.shifted,)
+        case '' | 'none':
+            return ()
+        case 'ascii,shifted':
+            return (KeyFallbackType.alternate, KeyFallbackType.shifted)
+        case 'ascii':
+            return (KeyFallbackType.alternate,)
+    raise ValueError(f'allow_fallback values must be a subset of shifted, ascii, got: {val}')
+
+
+key_map_option_converters['allow_fallback'] = _convert_allow_fallback
 
 
 def parse_options_for_map(val: str) -> tuple[KeyMapOptions, str]:

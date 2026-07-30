@@ -736,7 +736,12 @@ START_ALLOW_CASE_RANGE
         case 0xe0b0 ... 0xe0bf: case 0xe0d6 ... 0xe0d7:    // powerline box drawing
         case 0xee00 ... 0xee0b:    // fira code progress bar/spinner
         case 0x1fb00 ... 0x1fbae:  // symbols for legacy computing
-        case 0x1cd00 ... 0x1cde5: case 0x1fbe6: case 0x1fbe7:  // octants
+        case 0x1fbce ... 0x1fbef:  // blocks, diagonals, circles (legacy computing)
+        case 0x1cd00 ... 0x1cde5:  // octants
+        case 0x1cc1b ... 0x1cc2f:  // box drawing variants, double diagonals, separated block quadrants (supplement)
+        case 0x1cc30 ... 0x1cc3f:  // twelfth and quarter circle arcs (supplement)
+        case 0x1ce16 ... 0x1ce19:  // box drawings light vertical T-junctions (supplement)
+        case 0x1ce51 ... 0x1ceaf:  // separated block sextants, sixteenth blocks, quarter parts (supplement)
         case 0xf5d0 ... 0xf60d:    // branch drawing characters
             if (allow_use_of_box_fonts) return BOX_FONT;
             /* fallthrough */
@@ -778,9 +783,18 @@ START_ALLOW_CASE_RANGE
             return 0xf00 + ch - 0x2800; // IDs from 0xf00 to 0xfff
         case 0x1fb00 ... 0x1fbae:
             return 0x1000 + ch - 0x1fb00; // IDs from 0x1000 to 0x10ae
+        case 0x1fbce ... 0x1fbef:
+            return 0x10af + ch - 0x1fbce; // IDs from 0x10af to 0x10e0 (34 chars)
         case 0x1cd00 ... 0x1cde5:
             return 0x1100 + ch - 0x1cd00; // IDs from 0x1100 to 0x11e5
-        case 0x1fbe6: case 0x1fbe7: return 0x11e6 + ch - 0x1fbe6;
+        case 0x1cc1b ... 0x1cc2f:
+            return 0x11e8 + ch - 0x1cc1b; // IDs from 0x11e8 to 0x11fc (21 chars)
+        case 0x1cc30 ... 0x1cc3f:
+            return 0x11fd + ch - 0x1cc30; // IDs from 0x11fd to 0x120c (16 chars)
+        case 0x1ce16 ... 0x1ce19:
+            return 0x120d + ch - 0x1ce16; // IDs from 0x120d to 0x1210 (4 chars)
+        case 0x1ce51 ... 0x1ceaf:
+            return 0x1211 + ch - 0x1ce51; // IDs from 0x1211 to 0x126e (95 chars)
         case 0xf5d0 ... 0xf60d:
             return 0x2000 + ch - 0xf5d0; // IDs from 0x2000 to 0x203d
         default:
@@ -1411,13 +1425,33 @@ ligature_type_from_glyph_name(const char *glyph_name, SpacerStrategy strategy) {
 
 #define G(x) (group_state.x)
 
+static bool
+shaped_glyphs_have_iosevka_join_names(hb_font_t *hbf) {
+    char glyph_name[256]; glyph_name[arraysz(glyph_name)-1] = 0;
+    for (unsigned i = 0; i < G(num_glyphs); i++) {
+        glyph_index glyph_id = G(info)[i].codepoint;
+        hb_font_glyph_to_string(hbf, glyph_id, glyph_name, arraysz(glyph_name)-1);
+        // check if glyph name endswith .join-(l|r|m)
+        char *dot = strrchr(glyph_name, '.');
+        if (dot && strlen(dot+1) == 6 && memcmp(dot + 1, "join-", sizeof("join-")-1) == 0 && (dot[6] == 'l' || dot[6] == 'r' || dot[6] == 'm')) return true;
+    }
+    return false;
+}
+
+static size_t
+set_ascii_cells(CPUCell *cpu_cells, const char *text) {
+    size_t i;
+    for (i = 0; text[i] != 0; i++) cell_set_char(cpu_cells + i, text[i]);
+    return i;
+}
+
 static void
 detect_spacer_strategy(hb_font_t *hbf, Font *font, const TextCache *tc) {
-    CPUCell cpu_cells[3] = {0};
-    for (unsigned i = 0; i < arraysz(cpu_cells); i++) cell_set_char(&cpu_cells[i], '=');
+    CPUCell cpu_cells[5] = {0};
+    size_t len = set_ascii_cells(cpu_cells, "===");
     const CellAttrs w1 = {0};
-    GPUCell gpu_cells[3] = {{.attrs = w1}, {.attrs = w1}, {.attrs = w1}};
-    shape(cpu_cells, gpu_cells, arraysz(cpu_cells), hbf, font, false, tc);
+    GPUCell gpu_cells[5] = {{.attrs = w1}, {.attrs = w1}, {.attrs = w1}, {.attrs = w1}, {.attrs = w1}};
+    shape(cpu_cells, gpu_cells, len, hbf, font, false, tc);
     font->spacer_strategy = SPACERS_BEFORE;
     if (G(num_glyphs) > 1) {
         glyph_index glyph_id = G(info)[G(num_glyphs) - 1].codepoint;
@@ -1425,25 +1459,20 @@ detect_spacer_strategy(hb_font_t *hbf, Font *font, const TextCache *tc) {
         bool is_empty = is_special && is_empty_glyph(glyph_id, font);
         if (is_empty) font->spacer_strategy = SPACERS_AFTER;
     }
-    shape(cpu_cells, gpu_cells, 2, hbf, font, false, tc);
-    if (G(num_glyphs)) {
-        char glyph_name[128]; glyph_name[arraysz(glyph_name)-1] = 0;
-        for (unsigned i = 0; i < G(num_glyphs); i++) {
-            glyph_index glyph_id = G(info)[i].codepoint;
-            hb_font_glyph_to_string(hbf, glyph_id, glyph_name, arraysz(glyph_name)-1);
-            char *dot = strrchr(glyph_name, '.');
-            if (dot && (!strcmp(dot, ".join-l") || !strcmp(dot, ".join-r") || !strcmp(dot, ".join-m"))) {
-                font->spacer_strategy = SPACERS_IOSEVKA;
-                break;
-            }
+    static const char* probes[5] = {"==", "->", "<-", "<<=", "<==>"};
+    for (size_t i = 0; i < arraysz(probes); i++) {
+        len = set_ascii_cells(cpu_cells, probes[i]);
+        shape(cpu_cells, gpu_cells, len, hbf, font, false, tc);
+        if (shaped_glyphs_have_iosevka_join_names(hbf)) {
+            font->spacer_strategy = SPACERS_IOSEVKA;
+            break;
         }
     }
-
     // If spacer_strategy is still default, check ### glyph to confirm strategy
     // https://github.com/kovidgoyal/kitty/issues/4721
     if (font->spacer_strategy == SPACERS_BEFORE) {
-        for (unsigned i = 0; i < arraysz(cpu_cells); i++) cell_set_char(&cpu_cells[i], '#');
-        shape(cpu_cells, gpu_cells, arraysz(cpu_cells), hbf, font, false, tc);
+        len = set_ascii_cells(cpu_cells, "###");
+        shape(cpu_cells, gpu_cells, len, hbf, font, false, tc);
         if (G(num_glyphs) > 1) {
             glyph_index glyph_id = G(info)[G(num_glyphs) - 1].codepoint;
             bool is_special = is_special_glyph(glyph_id, font, &G(current_cell_data));

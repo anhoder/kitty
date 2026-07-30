@@ -6,9 +6,10 @@
 
 import re
 import sys
+from collections.abc import Iterator, Sequence
 from enum import Enum, auto
 from functools import lru_cache
-from typing import Any, Iterator, NamedTuple, Sequence
+from typing import Any, NamedTuple
 
 if getattr(sys, 'running_from_setup', False):
     is_macos = 'darwin' in sys.platform.lower()
@@ -461,7 +462,8 @@ invocations will instead create a new top-level window in the existing
 :italic:`{appname}` instance. This allows :italic:`{appname}` to share a single
 sprite cache on the GPU and also reduces startup time. You can also have
 separate groups of :italic:`{appname}` instances by using the :option:`{appname}
---instance-group` option.
+--instance-group` option. You can use the :option:`{appname} --start-as`=hidden
+flag to start a background kitty instance that acts as a server.
 
 
 --instance-group
@@ -489,7 +491,8 @@ specified in the session file gets overriden.
 
 
 --position
-The position, for example 10x20, on screen at which to place the first kitty OS Window.
+The position, for example 10x20, on screen at which to place the first kitty OS Window
+created by this invocation.
 This may or may not work depending on the policies of the desktop
 environment/window manager. It never works on Wayland.
 See also :opt:`remember_window_position` to have kitty automatically try
@@ -642,7 +645,9 @@ default={layer}
 On a Wayland compositor that supports the wlr layer shell protocol, specifies the layer
 on which the panel should be drawn. This parameter is ignored and set to
 :code:`background` if :option:`--edge` is set to :code:`background`. On macOS, maps
-these to appropriate NSWindow *levels*.
+these to appropriate NSWindow *levels*. Note that on macOS, you can use :opt:`macos_ns_window_layer`
+for more fine control over the layer, using the :code:`--override` flag, for example:
+:code:`--override macos_ns_window_layer=NSPopUpMenuWindowLevel`.
 
 
 --config -c

@@ -174,7 +174,7 @@ var PostProcessorMap = sync.OnceValue(func() map[string]PostProcessorFunc {
 					e -= len(url) - idx
 				}
 			}
-			for e > 1 && is_punctuation(char_at(text, e)) { // remove trailing punctuation
+			for e > 1 && is_punctuation(char_at(text, e-1)) { // remove trailing punctuation
 				e--
 			}
 			// truncate url at closing bracket/quote
@@ -706,6 +706,13 @@ process_answer:
 	}
 	largest_index := ans[len(ans)-1].Index
 	offset := max(0, opts.HintsOffset)
+	if opts.PrefixFree {
+		alphabetLength := len(opts.Alphabet)
+		if alphabetLength == 0 {
+			alphabetLength = len(DEFAULT_HINT_ALPHABET)
+		}
+		offset = max(offset, hints_to_skip(len(ans), alphabetLength))
+	}
 	index_map = make(map[int]*Mark, len(ans))
 	for i := range ans {
 		m := &ans[i]

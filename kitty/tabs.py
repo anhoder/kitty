@@ -12,7 +12,7 @@ from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import suppress
 from functools import wraps
 from gettext import gettext as _
-from typing import Any, Concatenate, Deque, NamedTuple, Optional, ParamSpec, TypeVar, cast
+from typing import Any, Concatenate, Deque, Literal, NamedTuple, Optional, ParamSpec, TypeVar, cast
 
 from .borders import Border, Borders
 from .child import Child
@@ -33,6 +33,7 @@ from .fast_data_types import (
     get_click_interval,
     get_options,
     get_tab_being_dragged,
+    get_window_being_dragged,
     is_tab_bar_visible,
     last_focused_os_window_id,
     mark_tab_bar_dirty,
@@ -48,11 +49,12 @@ from .fast_data_types import (
     set_active_window,
     set_redirect_keys_to_overlay,
     set_tab_being_dragged,
+    set_window_being_dragged,
     start_drag_with_data,
     swap_tabs,
     sync_os_window_title,
 )
-from .layout.base import Layout
+from .layout.base import DragOverlayMode, Layout
 from .layout.interface import create_layout_object_for, evict_cached_layouts
 from .progress import ProgressState
 from .tab_bar import TabBar, TabBarData, apply_title_template
@@ -80,12 +82,45 @@ def update_tab_bar_visibility(func: Callable[Concatenate['TabManager', P], T]) -
     return cast(Callable[Concatenate['TabManager', P], T], wrapper)
 
 
-class TabMouseEvent(NamedTuple):
+class MouseEvent(NamedTuple):
     button: int
     modifiers: int
-    action: int
+    is_press: bool
     at: float
-    tab_id: int = 0
+    x: float
+    y: float
+    object_id: int = 0
+
+    def distance_squared(self, other: 'MouseEvent') -> float:
+        return (self.x - other.x) * (self.x - other.x) + (self.y - other.y) * (self.y - other.y)
+
+    def is_click(self, prev: 'MouseEvent') -> bool:
+        cur = self
+        return (
+            cur.button == prev.button and prev.is_press and not cur.is_press and
+            cur.distance_squared(prev) < 25 and
+            cur.object_id == prev.object_id and cur.at - prev.at <= get_click_interval()
+        )
+
+
+class MouseEvents(deque[MouseEvent]):
+
+    def add(self, button: int, modifiers: int, action: int, x: float, y: float, object_id: int) -> None:
+        super().append(MouseEvent(button, modifiers, action != GLFW_RELEASE, monotonic(), x, y, object_id))
+        if len(self) > 5:
+            self.popleft()
+
+    def click_count(self, button: int = GLFW_MOUSE_BUTTON_LEFT) -> Literal[0, 1, 2]:
+        if len(self) > 1 and self[-1].button == button and self[-1].is_click(self[-2]):
+            if len(self) > 3 and self[-3].is_click(self[-4]) and \
+                    self[-1].at - self[-4].at <= 2 * get_click_interval() and self[-2].distance_squared(self[-3]) < 2:
+                return 2
+            return 1
+        return 0
+
+    def dump(self) -> None:
+        for x in self:
+            print(x)
 
 
 class TabDict(TypedDict):
@@ -93,6 +128,7 @@ class TabDict(TypedDict):
     is_focused: bool
     is_active: bool
     title: str
+    title_overridden: bool
     layout: str
     layout_state: dict[str, Any]
     layout_opts: dict[str, Any]
@@ -145,6 +181,8 @@ class Tab:  # {{{
     inactive_fg: int | None = None
     inactive_bg: int | None = None
     confirm_close_window_id: int = 0
+    force_show_title_bars: bool = False
+    renaming_in_window: int = 0
     num_of_windows_with_progress: int = 0
     total_progress: int = 0
     has_indeterminate_progress: bool = False
@@ -461,7 +499,9 @@ class Tab:  # {{{
     def relayout(self) -> None:
         if self.allow_relayouts:
             if self.windows:
+                self.windows.force_show_title_bars = self.force_show_title_bars
                 self.current_layout(self.windows)
+                self.windows.force_show_title_bars = False
             self.relayout_borders()
 
     def relayout_borders(self) -> None:
@@ -801,7 +841,10 @@ class Tab:  # {{{
 
     def post_window_removal_update(self) -> None:
         self.mark_tab_bar_dirty()
-        self.relayout()
+        self.relayout()  # prunes the closed window from the layout's internal tree
+        # equalize_on_close rebalances the pruned tree, requiring a second relayout
+        if self.current_layout.on_window_removed(self.windows):
+            self.relayout()
         active_window = self.active_window
         if active_window:
             self.title_changed(active_window)
@@ -1030,49 +1073,57 @@ class Tab:  # {{{
         self, field: str, query: str, active_tab_manager: Optional['TabManager'] = None,
         active_session: str = '', most_recent_session: str = ''
     ) -> bool:
-        if field == 'title':
-            return re.search(query, self.effective_title) is not None
-        if field == 'id':
-            return query == str(self.id)
-        if field in ('window_id', 'window_title'):
-            field = field.partition('_')[-1]
-            for w in self:
-                if w.matches_query(field, query):
-                    return True
-            return False
-        if field == 'index':
-            if active_tab_manager and len(active_tab_manager.tabs):
-                idx = (int(query) + len(active_tab_manager.tabs)) % len(active_tab_manager.tabs)
-                return active_tab_manager.tabs[idx] is self
-            return False
-        if field == 'recent':
-            if active_tab_manager and len(active_tab_manager.tabs):
-                return self is active_tab_manager.nth_active_tab(int(query))
-            return False
-        if field == 'state':
-            if query == 'active':
-                tm = self.tab_manager_ref()
-                return tm is not None and self is tm.active_tab
-            if query == 'focused':
-                return active_tab_manager is not None and self is active_tab_manager.active_tab and self.os_window_id == last_focused_os_window_id()
-            if query == 'needs_attention':
+        match field:
+            case 'title':
+                return re.search(query, self.effective_title) is not None
+            case 'id':
+                return query == str(self.id)
+            case 'window_id' | 'window_title':
+                field = field.partition('_')[-1]
                 for w in self:
-                    if w.needs_attention:
+                    if w.matches_query(field, query):
                         return True
-            if query == 'parent_active':
-                return active_tab_manager is not None and self.tab_manager_ref() is active_tab_manager
-            if query == 'parent_focused':
-                return active_tab_manager is not None and self.tab_manager_ref() is active_tab_manager and self.os_window_id == last_focused_os_window_id()
-            if query == 'focused_os_window':
-                return self.os_window_id == last_focused_os_window_id()
-            return False
-        if field == 'session':
-            match query:
-                case '.':
-                    return self.created_in_session_name == active_session
-                case '~':
-                    return self.created_in_session_name == active_session or self.created_in_session_name == most_recent_session
-            return re.search(query, self.created_in_session_name) is not None
+                return False
+            case 'var' | 'env':
+                for w in self:
+                    if w.matches_query(field, query):
+                        return True
+                return False
+            case 'index':
+                if active_tab_manager and len(active_tab_manager.tabs):
+                    idx = (int(query) + len(active_tab_manager.tabs)) % len(active_tab_manager.tabs)
+                    return active_tab_manager.tabs[idx] is self
+                return False
+            case 'recent':
+                if active_tab_manager and len(active_tab_manager.tabs):
+                    return self is active_tab_manager.nth_active_tab(int(query))
+                return False
+            case 'state':
+                match query:
+                    case 'active':
+                        tm = self.tab_manager_ref()
+                        return tm is not None and self is tm.active_tab
+                    case 'focused':
+                        return active_tab_manager is not None and self is active_tab_manager.active_tab and self.os_window_id == last_focused_os_window_id()
+                    case 'needs_attention':
+                        for w in self:
+                            if w.needs_attention:
+                                return True
+                    case 'parent_active':
+                        return active_tab_manager is not None and self.tab_manager_ref() is active_tab_manager
+                    case 'parent_focused':
+                        return active_tab_manager is not None and \
+                                self.tab_manager_ref() is active_tab_manager and self.os_window_id == last_focused_os_window_id()
+                    case 'focused_os_window':
+                        return self.os_window_id == last_focused_os_window_id()
+                return False
+            case 'session':
+                match query:
+                    case '.':
+                        return self.created_in_session_name == active_session
+                    case '~':
+                        return self.created_in_session_name == active_session or self.created_in_session_name == most_recent_session
+                return re.search(query, self.created_in_session_name) is not None
         return False
 
     def __iter__(self) -> Iterator[Window]:
@@ -1106,13 +1157,26 @@ class Tab:  # {{{
         tm = self.tab_manager_ref()
         if tm is not None:
             tm.set_active_tab(self)
+
+    def swap_windows(self, window_a: Window, window_b: Window) -> None:
+        if (wg_b := self.windows.group_for_window(window_b)) is None:
+            return
+        with get_boss().suppress_focus_change_events():
+            self.windows.set_active_window_group_for(window_a)
+            self.current_layout.move_window_to_group(self.windows, wg_b.id)
+            self.relayout()
 # }}}
 
 
 class TabBeingDropped(NamedTuple):
     data: TabBarData
     tab_ids: Sequence[int] = ()
-    last_drop_move_x: int = -1
+    last_drop_move_coordinate: int = -1
+
+
+class WindowBeingDropped(NamedTuple):
+    window_id: int  # the window whose title bar is currently highlighted as a drop target
+    quadrant: int = 0  # 0=none, 1=left, 2=right, 3=top, 4=bottom, 5=full+titlebar, 6=full
 
 
 class TabManager:  # {{{
@@ -1122,13 +1186,16 @@ class TabManager:  # {{{
     total_progress: int = 0
     has_indeterminate_progress: bool = False
     tab_being_dropped: TabBeingDropped | None = None
+    window_being_dropped: WindowBeingDropped | None = None
+    window_drag_target_tab_id: int = 0
+    window_drag_over_me: bool = False
 
     def __init__(self, os_window_id: int, args: CLIOptions, wm_class: str, wm_name: str, startup_session: SessionType | None = None):
         self.os_window_id = os_window_id
         self.wm_class = wm_class
         self.created_in_session_name = startup_session.session_name if startup_session else ''
-        self.recent_mouse_events: Deque[TabMouseEvent] = deque()
-        self.recent_title_bar_mouse_events: Deque[TabMouseEvent] = deque()
+        self.recent_tab_bar_mouse_events = MouseEvents()
+        self.recent_title_bar_mouse_events = MouseEvents()
         self.wm_name = wm_name
         self.args = args
         self.tab_bar_hidden = get_options().tab_bar_style == 'hidden'
@@ -1219,7 +1286,7 @@ class TabManager:  # {{{
 
     @property
     def tab_bar_should_be_visible(self) -> bool:
-        if self.tab_being_dropped is not None:
+        if self.tab_being_dropped is not None or self.window_drag_over_me:
             return True  # keep tab bar visible in the dest
         count = get_options().tab_bar_min_tabs
         if count < 1:
@@ -1263,7 +1330,9 @@ class TabManager:  # {{{
                 watcher(boss, w, data)
 
     def update_tab_bar_data(self) -> None:
-        self.tab_bar.update(self.tab_bar_data)
+        if self.tab_bar.update(self.tab_bar_data):
+            for tab in self.tabs:
+                tab.relayout_borders()
 
     def title_changed(self, tab: Tab) -> None:
         self.mark_tab_bar_dirty()
@@ -1337,8 +1406,13 @@ class TabManager:  # {{{
                 return self.tab_for_id(self.active_tab_history[-1])
         elif loc in ('left', 'right'):
             delta = -1 if loc == 'left' else 1
-            idx = (len(tabs) + self.active_tab_idx + delta) % len(tabs)
-            return tabs[idx]
+            if (at := self.active_tab) is not None:
+                try:
+                    active_idx = tabs.index(at)
+                except ValueError:
+                    return None
+                idx = (len(tabs) + active_idx + delta) % len(tabs)
+                return tabs[idx]
         return None
 
     def goto_tab(self, tab_num: int) -> None:
@@ -1382,6 +1456,7 @@ class TabManager:  # {{{
                         'is_focused': tab is active_tab and tab.os_window_id == current_focused_os_window_id(),
                         'is_active': tab is active_tab,
                         'title': tab.name or tab.title,
+                        'title_overridden': bool(tab.name),
                         'layout': str(tab.current_layout.name),
                         'layout_state': tab.current_layout.serialize(tab.windows),
                         'layout_opts': tab.current_layout.layout_opts.serialized(),
@@ -1439,8 +1514,14 @@ class TabManager:  # {{{
     def move_tab(self, delta: int = 1) -> None:
         tabs = tuple(self.tabs_to_be_shown_in_tab_bar)
         if len(tabs) > 1:
-            idx = self.active_tab_idx
-            new_active_tab = tabs[(idx + len(tabs) + delta) % len(tabs)]
+            if (at := self.active_tab) is None:
+                return
+            try:
+                filtered_idx = tabs.index(at)
+            except ValueError:
+                return
+            new_active_tab = tabs[(filtered_idx + len(tabs) + delta) % len(tabs)]
+            idx = self.tabs.index(at)
             nidx = self.tabs.index(new_active_tab)
             step = 1 if idx < nidx else -1
             for i in range(idx, nidx, step):
@@ -1575,10 +1656,17 @@ class TabManager:  # {{{
         dragged_tab_id, drag_started = get_tab_being_dragged()[:2]
         if drag_started:
             tab_being_dragged_from_here = self.tab_for_id(dragged_tab_id) is not None
+        window_drag_active = get_window_being_dragged()[1]
         if self.tab_being_dropped is None:
+            wdtt = self.window_drag_target_tab_id
             if tab_being_dragged_from_here:
-                return tuple(t.data_for_tab_bar(t is at) for t in self.tabs_to_be_shown_in_tab_bar if t.id != dragged_tab_id)
-            return tuple(t.data_for_tab_bar(t is at) for t in self.tabs_to_be_shown_in_tab_bar)
+                tabs = tuple(t.data_for_tab_bar(t is at or t.id == wdtt) for t in self.tabs_to_be_shown_in_tab_bar if t.id != dragged_tab_id)
+            else:
+                tabs = tuple(t.data_for_tab_bar(t is at or t.id == wdtt) for t in self.tabs_to_be_shown_in_tab_bar)
+            if window_drag_active or get_options().tab_bar_show_new_tab_button:
+                tabs = tabs + (TabBarData(
+                    title='+', is_active=self.window_drag_target_tab_id == -1, os_window_id=self.os_window_id),)
+            return tabs
         tmap = {t.id:t for t in self.tabs}
         at = self.active_tab
         ans = []
@@ -1606,9 +1694,9 @@ class TabManager:  # {{{
                 self.layout_tab_bar()
             return
         if self.tab_bar_should_be_visible:
-            all_tabs = [t.tab_id for t in self.tab_bar.last_laid_out_tabs]
+            all_tabs = [t.tab_id for t in self.tab_bar.last_laid_out_tabs if t.tab_id >= 0]
         else:
-            all_tabs = [t.tab_id for t in self.tab_bar_data]
+            all_tabs = [t.tab_id for t in self.tab_bar_data if t.tab_id >= 0]
         force_update = False
         if self.tab_being_dropped is None:
             tab = get_boss().tab_for_id(tab_id)
@@ -1617,27 +1705,29 @@ class TabManager:  # {{{
             tab_data = tab.data_for_tab_bar(tab is get_boss().active_tab)
             if tab_id not in all_tabs:
                 all_tabs.append(tab_id)
-            _, _, start_x, _ = get_tab_being_dragged()
-            self.tab_being_dropped = TabBeingDropped(data=tab_data, tab_ids=all_tabs, last_drop_move_x=int(start_x))
-            mouse_moved_left = False
+            _, _, start_x, start_y = get_tab_being_dragged()
+            start_coordinate = self.tab_bar.drag_axis_coordinate(int(start_x), int(start_y))
+            self.tab_being_dropped = TabBeingDropped(data=tab_data, tab_ids=all_tabs, last_drop_move_coordinate=start_coordinate)
             force_update = True
-        if x == self.tab_being_dropped.last_drop_move_x and not force_update:
+        coordinate = self.tab_bar.drag_axis_coordinate(x, y)
+        if coordinate == self.tab_being_dropped.last_drop_move_coordinate and not force_update:
             return
-        mouse_moved_left = x < self.tab_being_dropped.last_drop_move_x
+        mouse_moved_towards_start = coordinate < self.tab_being_dropped.last_drop_move_coordinate
         old_tab_ids = self.tab_being_dropped.tab_ids
         idx_under_mouse = -1
-        if (tab_id_under_mouse := self.tab_bar.tab_id_at(x)):
+        if (tab_id_under_mouse := self.tab_bar.tab_id_at(x, y)):
             with suppress(Exception):
                 idx_under_mouse = old_tab_ids.index(tab_id_under_mouse)
         if idx_under_mouse < 0:
-            idx_under_mouse = 0 if x < 20 else len(old_tab_ids) - 1
+            start = self.tab_bar.window_geometry.top if self.tab_bar.is_vertical else self.tab_bar.window_geometry.left
+            idx_under_mouse = 0 if coordinate < start else len(old_tab_ids) - 1
         old_idx_under_mouse = old_tab_ids.index(tab_id)
-        idx_moved_left = old_idx_under_mouse > idx_under_mouse
+        idx_moved_towards_start = old_idx_under_mouse > idx_under_mouse
         new_tab_ids = old_tab_ids
-        if mouse_moved_left == idx_moved_left:
+        if mouse_moved_towards_start == idx_moved_towards_start:
             new_tab_ids = list(old_tab_ids)
             new_tab_ids[idx_under_mouse], new_tab_ids[old_idx_under_mouse] = new_tab_ids[old_idx_under_mouse], new_tab_ids[idx_under_mouse]
-        self.tab_being_dropped = self.tab_being_dropped._replace(last_drop_move_x=x, tab_ids=new_tab_ids)
+        self.tab_being_dropped = self.tab_being_dropped._replace(last_drop_move_coordinate=coordinate, tab_ids=new_tab_ids)
         if force_update or self.tab_being_dropped.tab_ids != old_tab_ids:
             self.layout_tab_bar()
 
@@ -1646,6 +1736,9 @@ class TabManager:  # {{{
         if (td := self.tab_being_dropped) is None:
             return
         if (tab := get_boss().tab_for_id(td.data.tab_id)) is None:
+            self.tab_being_dropped = None
+            set_tab_being_dragged()
+            self.layout_tab_bar()
             return
         if not bypass_move:
             self.on_tab_drop_move(td.data.tab_id, True, x, y)
@@ -1687,13 +1780,18 @@ class TabManager:  # {{{
                 else:
                     fg = color_as_int(opts.inactive_tab_foreground)
                     bg = color_as_int(opts.inactive_tab_background)
-                title_pixels = draw_single_line_of_text(self.os_window_id, title, 0xff000000 | fg, 0xff000000 | bg, width)
+                title_pixels, width = draw_single_line_of_text(self.os_window_id, title, 0xff000000 | fg, 0xff000000 | bg, width)
                 title_height = len(title_pixels) // (width * 4)
                 thumbnails = ((title_pixels, width, title_height), (title_pixels + pixels, width, title_height + height))
                 drag_data = {
                     f'application/net.kovidgoyal.kitty-tab-{os.getpid()}': str(tab.id).encode(),
                 }
-                start_drag_with_data(self.os_window_id, drag_data, thumbnails)
+                try:
+                    start_drag_with_data(self.os_window_id, drag_data, thumbnails)
+                except OSError as e:
+                    log_error(f'Failed to start tab drag: {e}')
+                    set_tab_being_dragged()
+                    self.mark_tab_bar_dirty()  # re-render the tab bar in case it was drawn without the dragged tab
                 break
         else:
             set_tab_being_dragged()
@@ -1702,82 +1800,305 @@ class TabManager:  # {{{
         if button == -1:  # motion
             dragged_tab_id, drag_started, start_x, start_y = get_tab_being_dragged()
             if dragged_tab_id and self.tab_for_id(dragged_tab_id) is not None and not drag_started:
-                threshold = get_options().tab_bar_drag_threshold
+                threshold = get_options().drag_threshold
                 if threshold and math.sqrt((x-start_x)**2 + (y-start_y)**2) > threshold:
                     set_tab_being_dragged(dragged_tab_id, True, start_x, start_y)
                     request_callback_with_thumbnail("start_tab_drag", self.os_window_id)
+                    self.recent_tab_bar_mouse_events.clear()
             return
 
-        tab = self.tab_for_id(self.tab_bar.tab_id_at(int(x)))
-        now = monotonic()
+        tab_id_at_pointer = self.tab_bar.tab_id_at(int(x), int(y))
+        self.recent_tab_bar_mouse_events.add(button, modifiers, action, x, y, tab_id_at_pointer)
+        drag_started = get_tab_being_dragged()[1]
+        is_left_release = button == GLFW_MOUSE_BUTTON_LEFT and action == GLFW_RELEASE
+        if tab_id_at_pointer < 0:  # synthetic tab (e.g. "+" new-tab button)
+            if is_left_release and not drag_started:
+                set_tab_being_dragged()  # clear potential drag from a press on a tab
+            if self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_LEFT) == 1:
+                self.new_tab()
+                self.recent_tab_bar_mouse_events.clear()
+            return
+        if drag_started:
+            return
+        tab = self.tab_for_id(tab_id_at_pointer)
         if tab is None:
-            if button == GLFW_MOUSE_BUTTON_LEFT and action == GLFW_RELEASE and len(self.recent_mouse_events) > 2:
-                ci = get_click_interval()
-                prev, prev2 = self.recent_mouse_events[-1], self.recent_mouse_events[-2]
-                if (
-                    prev.button == button and prev2.button == button and
-                    prev.action == GLFW_PRESS and prev2.action == GLFW_RELEASE and
-                    prev.tab_id == 0 and prev2.tab_id == 0 and
-                    now - prev.at <= ci and now - prev2.at <= 2 * ci
-                ):  # double click
-                    self.new_tab()
-                    self.recent_mouse_events.clear()
-                    return
-        else:
-            if button == GLFW_MOUSE_BUTTON_LEFT:
-                if action == GLFW_PRESS:
-                    set_tab_being_dragged(tab.id, False, x, y)
-                else:
-                    drag_started = get_tab_being_dragged()[1]
-                    if not drag_started:
-                        if len(self.recent_mouse_events) > 2:
-                            ci = get_click_interval()
-                            prev, prev2 = self.recent_mouse_events[-1], self.recent_mouse_events[-2]
-                            if (
-                                prev.button == button and prev2.button == button and
-                                prev.action == GLFW_PRESS and prev2.action == GLFW_RELEASE and
-                                prev.tab_id == tab.id and prev2.tab_id == tab.id and
-                                now - prev.at <= ci and now - prev2.at <= 2 * ci
-                            ):  # double click on tab
-                                self.set_active_tab(tab)
-                                get_boss().set_tab_title()
-                                self.recent_mouse_events.clear()
-                                set_tab_being_dragged()
-                                return
-                        self.set_active_tab(tab)
-                        set_tab_being_dragged()
-            elif button == GLFW_MOUSE_BUTTON_MIDDLE:
-                if action == GLFW_RELEASE and self.recent_mouse_events:
-                    p = self.recent_mouse_events[-1]
-                    if p.button == button and p.action == GLFW_PRESS and p.tab_id == tab.id:
-                        get_boss().close_tab(tab)
-        self.recent_mouse_events.append(TabMouseEvent(button, modifiers, action, now, tab.id if tab else 0))
-        if len(self.recent_mouse_events) > 5:
-            self.recent_mouse_events.popleft()
-
-    def handle_window_title_bar_mouse(self, window_id: int, button: int, modifiers: int, action: int) -> None:
-        now = monotonic()
-        boss = get_boss()
+            if is_left_release:
+                set_tab_being_dragged()  # clear potential drag from a press on a tab
+            if self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_LEFT) == 2:
+                self.new_tab()
+                self.recent_tab_bar_mouse_events.clear()
+            return
         if button == GLFW_MOUSE_BUTTON_LEFT:
             if action == GLFW_PRESS:
-                if (w := boss.window_id_map.get(window_id)) is not None:
-                    get_boss().set_active_window(w, switch_os_window_if_needed=True)
-            elif action == GLFW_RELEASE and len(self.recent_title_bar_mouse_events) > 2:
-                ci = get_click_interval()
-                prev, prev2 = self.recent_title_bar_mouse_events[-1], self.recent_title_bar_mouse_events[-2]
-                if (
-                    prev.button == button and prev2.button == button and
-                    prev.action == GLFW_PRESS and prev2.action == GLFW_RELEASE and
-                    prev.tab_id == window_id and prev2.tab_id == window_id and
-                    now - prev.at <= ci and now - prev2.at <= 2 * ci
-                ):  # double click on window title bar
-                    if (w := boss.window_id_map.get(window_id)) is not None:
-                        w.set_window_title()
+                set_tab_being_dragged(tab.id, False, x, y)
+                return
+            match self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_LEFT):
+                case 2:
+                    self.set_active_tab(tab)
+                    get_boss().set_tab_title()
+                    set_tab_being_dragged()
+                    self.recent_tab_bar_mouse_events.clear()
+                case 1:
+                    if self.active_tab is not tab:
+                        self.set_active_tab(tab)
+                        self.recent_tab_bar_mouse_events.clear()
+            set_tab_being_dragged()
+            return
+        if button == GLFW_MOUSE_BUTTON_MIDDLE:
+            if self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_MIDDLE) == 1:
+                get_boss().close_tab(tab)
+                self.recent_tab_bar_mouse_events.clear()
+            return
+
+    def handle_window_title_bar_mouse(self, window_id: int, x: float, y: float, button: int, modifiers: int, action: int) -> None:
+        boss = get_boss()
+        if button == -1:  # motion event
+            dragged_window_id, drag_started, start_x, start_y = get_window_being_dragged()
+            if dragged_window_id and not drag_started:
+                threshold = get_options().drag_threshold
+                dist_sq = (x - start_x)**2 + (y - start_y)**2
+                if threshold and dist_sq > threshold * threshold:
+                    set_window_being_dragged(dragged_window_id, True, start_x, start_y)
+                    request_callback_with_thumbnail("start_window_drag", self.os_window_id, dragged_window_id)
                     self.recent_title_bar_mouse_events.clear()
+            return
+        self.recent_title_bar_mouse_events.add(button, modifiers, action, x, y, window_id)
+        if button != GLFW_MOUSE_BUTTON_LEFT:
+            return
+        if action == GLFW_PRESS:
+            if (w := boss.window_id_map.get(window_id)) is not None:
+                boss.set_active_window(w, switch_os_window_if_needed=True)
+            threshold = get_options().drag_threshold
+            if threshold:
+                set_window_being_dragged(window_id, False, x, y)
+            return
+
+        dragged_window_id, drag_started = get_window_being_dragged()[:2]
+        set_window_being_dragged()
+        if not drag_started and self.recent_title_bar_mouse_events.click_count() == 2:
+            self.recent_title_bar_mouse_events.clear()
+            if (w := boss.window_id_map.get(window_id)) is not None:
+                w.set_window_title()
+
+    def start_window_drag(self, pixels: bytes, width: int, height: int) -> None:
+        window_id = get_window_being_dragged()[0]
+        boss = get_boss()
+        if (w := boss.window_id_map.get(window_id)) is None:
+            set_window_being_dragged()
+            return
+        opts = get_options()
+        min_w = opts.window_title_bar_min_windows
+        for tm in boss.all_tab_managers:
+            tm.mark_tab_bar_dirty()
+            for t in tm:
+                visible = sum(1 for _ in t.windows.iter_all_layoutable_groups(only_visible=True))
+                if not (min_w > 0 and visible >= min_w):
+                    t.force_show_title_bars = True
+                    t.relayout()
+        title = str(w.title or '')
+        fg = color_as_int(opts.window_title_bar_active_foreground or opts.active_tab_foreground)
+        bg = color_as_int(opts.window_title_bar_active_background or opts.active_tab_background)
+        title_pixels, width = draw_single_line_of_text(self.os_window_id, title, 0xff000000 | fg, 0xff000000 | bg, width)
+        title_height = len(title_pixels) // (width * 4)
+        thumbnails = ((title_pixels + pixels, width, title_height + height),)
+        drag_data = {f'application/net.kovidgoyal.kitty-window-{os.getpid()}': str(window_id).encode()}
+        try:
+            start_drag_with_data(self.os_window_id, drag_data, thumbnails)
+        except OSError as e:
+            log_error(f'Failed to start window drag: {e}')
+            set_window_being_dragged()
+            self._clear_force_show_title_bars()
+
+    def _set_drag_target_tab(self, tab_id: int) -> None:
+        if self.window_drag_target_tab_id == tab_id:
+            return
+        self.window_drag_target_tab_id = tab_id
+        self.mark_tab_bar_dirty()
+
+    def _clear_force_show_title_bars(self) -> None:
+        boss = get_boss()
+        for tm in boss.all_tab_managers:
+            tm._set_drag_target_window(0)
+            tm._set_drag_target_tab(0)
+            for tab in tm:
+                if tab.force_show_title_bars:
+                    tab.force_show_title_bars = False
+                    tab.relayout()
+
+    def _find_window_at(self, x: int, y: int) -> 'Window | None':
+        from .fast_data_types import viewport_for_window
+        central = viewport_for_window(self.os_window_id)[0]
+        if not (central.left <= x < central.right and central.top <= y < central.bottom):
+            return None
+        rel_x = x - central.left
+        rel_y = y - central.top
+        if (active_tab := self.active_tab) is None:
+            return None
+        for win in active_tab:
+            g = win.geometry
+            if g.left <= rel_x < g.right and g.top <= rel_y < g.bottom:
+                return win
+        return None
+
+    def _set_drag_target_window(self, window_id: int, quadrant: int = 0) -> None:
+        ''' Highlight window_id's title bar as the drop target; 0 clears. quadrant!=0 shows quadrant overlay instead '''
+        from .fast_data_types import set_window_drag_overlay
+        boss = get_boss()
+        prev_id = self.window_being_dropped.window_id if self.window_being_dropped else 0
+        prev_quadrant = self.window_being_dropped.quadrant if self.window_being_dropped else 0
+        if prev_id == window_id and prev_quadrant == quadrant:
+            return
+        if prev_id and (prev_w := boss.window_id_map.get(prev_id)):
+            prev_w.is_drag_target = False
+            set_window_drag_overlay(self.os_window_id, prev_w.tab_id, prev_id, 0)
+            if prev_w._title_bar_screen is not None:
+                tab = prev_w.tabref()
+                prev_w.update_title_bar(is_active=tab is not None and tab.active_window is prev_w)
+        if window_id and (new_w := boss.window_id_map.get(window_id)):
+            if quadrant == 5:
+                new_w.is_drag_target = True
+                new_w.update_title_bar(is_active=True)
+            set_window_drag_overlay(self.os_window_id, new_w.tab_id, window_id, quadrant)
+            self.window_being_dropped = WindowBeingDropped(window_id=window_id, quadrant=quadrant)
+        else:
+            self.window_being_dropped = None
+
+    def on_window_drop_move(self, window_id: int = 0, is_dest: bool = False, x: int = 0, y: int = 0) -> None:
+        if not is_dest:
+            self._set_drag_target_window(0)
+            self._set_drag_target_tab(0)
+            if self.window_drag_over_me:
+                self.window_drag_over_me = False
+                if not self.tab_bar_hidden:
+                    self.layout_tab_bar()
+                    self.resize(only_tabs=True)
+            return
+        if not self.window_drag_over_me:
+            self.window_drag_over_me = True
+            if not self.tab_bar_hidden:
+                self.layout_tab_bar()
+                self.resize(only_tabs=True)
+        from .fast_data_types import viewport_for_window
+        tab_bar = viewport_for_window(self.os_window_id)[1]
+        if tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < tab_bar.bottom:
+            self._set_drag_target_window(0)
+            self._set_drag_target_tab(self.tab_bar.tab_id_at(x, y))
+            return
+        self._set_drag_target_tab(0)
+        dest_window = self._find_window_at(x, y)
+        if dest_window and dest_window.id != window_id:
+            from .fast_data_types import viewport_for_window as _vfw
+            central = _vfw(self.os_window_id)[0]
+            rel_y = y - central.top
+            if dest_window.show_title_bar:
+                from .fast_data_types import cell_size_for_window
+                _, ch = cell_size_for_window(self.os_window_id)
+                g = dest_window.geometry
+                opts = get_options()
+                tb_top = g.top if opts.window_title_bar == 'top' else g.bottom - ch
+                if tb_top <= rel_y < tb_top + ch:
+                    # Title bar hover: full window + title bar highlight (swap)
+                    self._set_drag_target_window(dest_window.id, 5)
                     return
-        self.recent_title_bar_mouse_events.append(TabMouseEvent(button, modifiers, action, now, window_id))
-        if len(self.recent_title_bar_mouse_events) > 5:
-            self.recent_title_bar_mouse_events.popleft()
+            active_tab = self.active_tab
+            if active_tab is not None:
+                rel_x = x - central.left
+                g = dest_window.geometry
+                dx = rel_x - (g.left + g.right) / 2
+                dy = rel_y - (g.top + g.bottom) / 2
+                quad_map = {'left': 1, 'right': 2, 'top': 3, 'bottom': 4}
+                match active_tab.current_layout.drag_overlay_mode:
+                    case DragOverlayMode.axis_y:
+                        direction = 'bottom' if dy > 0 else 'top'
+                    case DragOverlayMode.axis_x:
+                        direction = 'right' if dx > 0 else 'left'
+                    case DragOverlayMode.free:
+                        direction = ('right' if dx > 0 else 'left') if abs(dx) >= abs(dy) else ('bottom' if dy > 0 else 'top')
+                    case DragOverlayMode.full:
+                        self._set_drag_target_window(dest_window.id, 6)
+                        return
+                self._set_drag_target_window(dest_window.id, quad_map[direction])
+            else:
+                self._set_drag_target_window(0)
+        else:
+            self._set_drag_target_window(0)
+
+    def on_window_drop(self, x: int, y: int, window_id: int) -> None:
+        from .fast_data_types import cell_size_for_window, viewport_for_window
+        boss = get_boss()
+        # A window is being dropped on this tab manager, so the tab bar must have been
+        # visible to the user (showing the "+" button). Ensure it stays visible for the
+        # drop position calculation. This is needed because on_drag_source_finished can
+        # run before the on_drop data transfer completes, clearing window_drag_over_me
+        # and hiding the tab bar for the single-tab case before we get here.
+        self.window_drag_over_me = True
+        self._clear_force_show_title_bars()
+        w = boss.window_id_map.get(window_id)
+        if w is None:
+            return
+        set_window_being_dragged()
+        self.mark_tab_bar_dirty()
+        central, tab_bar = viewport_for_window(self.os_window_id)[:2]
+
+        # Case 1: Drop on tab bar → move to that tab
+        in_tab_bar = tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < tab_bar.bottom
+        if in_tab_bar:
+            if (tab_id := self.tab_bar.tab_id_at(x, y)) and (dest_tab := self.tab_for_id(tab_id)):
+                boss._move_window_to(w, target_tab_id=dest_tab.id)
+            else:
+                boss._move_window_to(w, target_tab_id='new')
+            return
+
+        # Case 2: Drop in central area
+        in_central = central.left <= x < central.right and central.top <= y < central.bottom
+        if not in_central:
+            return
+
+        rel_x = x - central.left
+        rel_y = y - central.top
+        if (active_tab := self.active_tab) is None:
+            return
+
+        dest_window = None
+        dest_in_title_bar = False
+        opts = get_options()
+        cw, ch = cell_size_for_window(self.os_window_id)
+        for win in active_tab:
+            g = win.geometry
+            if opts.window_title_bar == 'top':
+                tb_top, tb_bottom = g.top, g.top + ch
+            else:
+                tb_top, tb_bottom = g.bottom - ch, g.bottom
+            if g.left <= rel_x < g.right and g.top <= rel_y < g.bottom:
+                dest_window = win
+                dest_in_title_bar = getattr(win, 'show_title_bar', False) and (tb_top <= rel_y < tb_bottom)
+                break
+
+        if dest_window is None or dest_window.id == window_id:
+            # Dropped on empty space or self; if different tab, move there
+            if active_tab is not w.tabref():
+                boss._move_window_to(w, target_tab_id=active_tab.id)
+            return
+
+        if dest_in_title_bar:
+            if (src_tab := w.tabref()) is dest_window.tabref() and src_tab is not None:
+                # Same tab: swap positions
+                src_tab.swap_windows(w, dest_window)
+            else:
+                # Cross-tab title bar drop: move to the destination tab
+                boss._move_window_to(w, target_tab_id=active_tab.id)
+        else:
+            g = dest_window.geometry
+            dx = rel_x - (g.left + g.right) / 2
+            dy = rel_y - (g.top + g.bottom) / 2
+            match active_tab.current_layout.drag_overlay_mode:
+                case DragOverlayMode.axis_y:
+                    direction: Literal['left', 'right', 'top', 'bottom'] = 'bottom' if dy > 0 else 'top'
+                case DragOverlayMode.axis_x:
+                    direction = 'right' if dx > 0 else 'left'
+                case DragOverlayMode.free | DragOverlayMode.full:
+                    direction = ('right' if dx > 0 else 'left') if abs(dx) >= abs(dy) else ('bottom' if dy > 0 else 'top')
+            boss._insert_window_in_direction(w, dest_window, direction)
 
     def update_progress(self) -> None:
         self.num_of_windows_with_progress = 0

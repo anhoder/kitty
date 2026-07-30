@@ -440,8 +440,41 @@ clipboard_mime(void) {
     return buf;
 }
 
+static GLFWwaylandinitialsizefun initial_window_size_callback = NULL;
+
+GLFWAPI void
+glfwWaylandSetInitialWindowSizeCallback(GLFWwaylandinitialsizefun callback) {
+    initial_window_size_callback = callback;
+}
+
+static void
+maybe_recompute_initial_window_size(_GLFWwindow *window) {
+    // Before the initial window is mapped, the compositor tells us the real
+    // (possibly fractional) scale. For sizes specified in cells this changes
+    // the correct logical window size, because cell metrics are not a linear
+    // function of scale (integer-pixel rounding). Ask the embedder to recompute
+    // the logical size now, while the window is still unmapped, so it is mapped
+    // at the right size and the compositor's authoritative configure agrees.
+    if (window->wl.window_fully_created) return;
+    if (!initial_window_size_callback) return;
+    if (!window->wl.xdg.toplevel) return;  // only ordinary toplevels have cell-based sizes
+    if (window->wl.layer_shell.zwlr_layer_surface_v1) return;  // layer-shell surfaces size themselves
+    double scale = _glfwWaylandWindowScale(window);
+    int w = window->wl.width, h = window->wl.height;
+    initial_window_size_callback((GLFWwindow*)window, (float)scale, (float)scale, &w, &h);
+    if (w > 0 && h > 0 && (w != window->wl.width || h != window->wl.height)) {
+        debug("Recomputed initial size of window %llu for scale %.3f: %dx%d -> %dx%d\n",
+              window->id, scale, window->wl.width, window->wl.height, w, h);
+        window->wl.width = w; window->wl.height = h;
+        window->wl.user_requested_content_size.width = w;
+        window->wl.user_requested_content_size.height = h;
+        update_regions(window);
+    }
+}
+
 static void
 apply_scale_changes(_GLFWwindow *window, bool resize_framebuffer, bool update_csd) {
+    maybe_recompute_initial_window_size(window);
     double scale = _glfwWaylandWindowScale(window);
     if (resize_framebuffer) resizeFramebuffer(window);
     _glfwInputWindowContentScale(window, (float)scale, (float)scale);
@@ -476,7 +509,9 @@ inform_compositor_of_window_geometry(_GLFWwindow *window, const char *event) {
 #define geometry window->wl.decorations.geometry
     debug("Setting window %llu \"visible area\" geometry in %s event: x=%d y=%d %dx%d viewport: %dx%d\n",
             window->id, event, geometry.x, geometry.y, geometry.width, geometry.height, window->wl.width, window->wl.height);
-    xdg_surface_set_window_geometry(window->wl.xdg.surface, geometry.x, geometry.y, geometry.width, geometry.height);
+    // Layer-shell surfaces have no xdg_surface; geometry is managed via the
+    // layer surface, so skip the xdg call to avoid a NULL proxy dereference.
+    if (window->wl.xdg.surface) xdg_surface_set_window_geometry(window->wl.xdg.surface, geometry.x, geometry.y, geometry.width, geometry.height);
     if (window->wl.wp_viewport) wp_viewport_set_destination(window->wl.wp_viewport, window->wl.width, window->wl.height);
 #undef geometry
 }
@@ -1507,7 +1542,7 @@ int _glfwPlatformCreateWindow(
     // and only then create the OpenGL context.
     if (window->wl.visible) loop_till_window_fully_created(window);
     debug("Creating OpenGL context and attaching it to window\n");
-    if (ctxconfig->client != GLFW_NO_API) attach_opengl_context_to_window(window, ctxconfig, fbconfig);
+    if (ctxconfig->client != GLFW_NO_API && !attach_opengl_context_to_window(window, ctxconfig, fbconfig)) return false;
     return true;
 }
 
@@ -1588,6 +1623,14 @@ void _glfwPlatformSetWindowTitle(_GLFWwindow* window, const char* title)
 
 void
 _glfwPlatformSetWindowIcon(_GLFWwindow* window, int count, const GLFWimage* images) {
+    if (is_layer_shell(window)) {
+        _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: Cannot set window icon on layer shell surfaces");
+        return;
+    }
+    if (!window->wl.xdg.toplevel) {
+        _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: Ignoring attempt to set window icon on window without a toplevel");
+        return;
+    }
     if (!_glfw.wl.xdg_toplevel_icon_manager_v1) {
         static bool warned_once = false;
         if (!warned_once) {
@@ -1673,6 +1716,11 @@ void _glfwPlatformSetWindowSize(_GLFWwindow* window, int width, int height)
         return;
     }
     if (width != window->wl.width || height != window->wl.height) {
+        if (window->wl.current.toplevel_states & TOPLEVEL_STATE_DOCKED) {
+            _glfwInputError(GLFW_FEATURE_UNAVAILABLE,
+                            "Wayland: Resizing of docked windows is not supported");
+            return;
+        }
         window->wl.user_requested_content_size.width = width;
         window->wl.user_requested_content_size.height = height;
         int32_t w = 0, h = 0;
@@ -1759,6 +1807,13 @@ void _glfwPlatformGetWindowContentScale(_GLFWwindow* window,
 monotonic_t _glfwPlatformGetDoubleClickInterval(_GLFWwindow* window UNUSED)
 {
     return ms_to_monotonic_t(500ll);
+}
+
+void _glfwPlatformGetKeyboardRepeatDelay(monotonic_t *delay, monotonic_t *interval)
+{
+    if (delay) *delay = _glfw.wl.keyboardRepeatDelay;
+    if (interval && _glfw.wl.keyboardRepeatRate > 0)
+        *interval = s_to_monotonic_t(1ll) / (monotonic_t)_glfw.wl.keyboardRepeatRate;
 }
 
 void _glfwPlatformIconifyWindow(_GLFWwindow* window)
@@ -2364,8 +2419,23 @@ destroy_data_offer(_GLFWWaylandDataOffer *offer) {
         for (size_t i = 0; i < offer->mimes_count; i++) free((char*)offer->mimes[i]);
         free(offer->mimes);
     }
+    free(offer->copy_mimes);  // pointer array only; strings are owned by mimes[]
     if (offer->requested_drop_data) destroy_drop_data(offer);
     memset(offer, 0, sizeof(offer[0]));
+}
+
+// Reset the working copy of mimes so the next callback sees the full original
+// list. Returns false on allocation failure.
+static bool
+reset_copy_mimes(_GLFWWaylandDataOffer *offer) {
+    if (offer->mimes_count == 0) { offer->copy_mimes_count = 0; return true; }
+    if (!offer->copy_mimes) {
+        offer->copy_mimes = malloc(offer->mimes_count * sizeof(const char*));
+        if (!offer->copy_mimes) return false;
+    }
+    memcpy(offer->copy_mimes, offer->mimes, offer->mimes_count * sizeof(const char*));
+    offer->copy_mimes_count = offer->mimes_count;
+    return true;
 }
 
 static void
@@ -2480,17 +2550,25 @@ static void handle_primary_selection_offer(void *data UNUSED, struct zwp_primary
 
 // Helper function to update drop state from callback results
 static void
-update_drop_state(_GLFWWaylandDataOffer *d, _GLFWwindow* window UNUSED, size_t mime_count) {
-    for (size_t i = mime_count; i < d->mimes_count; i++) {
-        if (d->mimes[i]) { free((void*)d->mimes[i]); d->mimes[i] = NULL; }
-    }
-    d->mimes_count = mime_count;
-    bool accepted = mime_count > 0;
+update_drop_state(_GLFWWaylandDataOffer *d, _GLFWwindow* window, const size_t accepted_count) {
+    d->copy_mimes_count = accepted_count;
+    bool accepted = accepted_count > 0;
     bool acceptance_changed = (accepted != d->drag_accepted);
-    // The first MIME in the sorted list is the preferred one for drop
-    const char* new_preferred_mime = (accepted && mime_count > 0) ? d->mimes[0] : NULL;
+    // The first entry in the accepted (sorted) copy is the preferred MIME.
+    const char* new_preferred_mime = (accepted && d->copy_mimes) ? d->copy_mimes[0] : NULL;
     bool mime_changed = false;
-
+    enum wl_data_device_manager_dnd_action preferred = WL_DATA_DEVICE_MANAGER_DND_ACTION_NONE; int allowed = 0;
+    if (accepted && window->drop_operation.allowed) {
+        if (window->drop_operation.allowed & GLFW_DRAG_OPERATION_GENERIC) allowed |= WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY | WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE;
+        if (window->drop_operation.allowed & GLFW_DRAG_OPERATION_COPY) allowed |= WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY;
+        if (window->drop_operation.allowed & GLFW_DRAG_OPERATION_MOVE) allowed |= WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE;
+        switch (window->drop_operation.preferred) {
+            case GLFW_DRAG_OPERATION_GENERIC: preferred = WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY; break;
+            case GLFW_DRAG_OPERATION_COPY: preferred = WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY; break;
+            case GLFW_DRAG_OPERATION_MOVE: preferred = WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE; break;
+            case GLFW_DRAG_OPERATION_NONE: break;
+        }
+    }
     // Check if the preferred MIME changed
     if (d->mime_for_drop == NULL && new_preferred_mime != NULL) {
         mime_changed = true;
@@ -2499,16 +2577,30 @@ update_drop_state(_GLFWWaylandDataOffer *d, _GLFWwindow* window UNUSED, size_t m
     } else if (d->mime_for_drop != NULL && new_preferred_mime != NULL) {
         mime_changed = (strcmp(d->mime_for_drop, new_preferred_mime) != 0);
     }
+    const bool op_changed = preferred != d->preferred || allowed != d->allowed;
 
-    if (acceptance_changed || mime_changed) {
+    if (acceptance_changed || mime_changed || op_changed) {
         d->drag_accepted = accepted;
         d->mime_for_drop = new_preferred_mime;
+        d->preferred = preferred; d->allowed = allowed;
         wl_data_offer_accept(d->id, d->serial, d->mime_for_drop);
+        wl_data_offer_set_actions(d->id, d->allowed, d->preferred);
     }
 }
 
 static void
+update_drop_source_actions(_GLFWwindow *window, _GLFWWaylandDataOffer *offer) {
+    window->drop_operation.source_actions = GLFW_DRAG_OPERATION_NONE;
+    if (offer->source_actions & WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY) window->drop_operation.source_actions |= GLFW_DRAG_OPERATION_COPY;
+    if (offer->source_actions & WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE) window->drop_operation.source_actions |= GLFW_DRAG_OPERATION_MOVE;
+    if (offer->source_actions & WL_DATA_DEVICE_MANAGER_DND_ACTION_ASK) window->drop_operation.source_actions |= GLFW_DRAG_OPERATION_GENERIC;
+}
+
+static void
 drag_enter(void *data UNUSED, struct wl_data_device *wl_data_device UNUSED, uint32_t serial, struct wl_surface *surface, wl_fixed_t x, wl_fixed_t y, struct wl_data_offer *id) {
+    debug_input("Drop entered\n");
+    // an enter for a drag we started means the DND session is live
+    _glfwWaylandConfirmDragSession();
     _GLFWWaylandDataOffer *offer = &_glfw.wl.drop_data_offer;
     mark_data_offer(offer, id);
     if (!offer->id) return;
@@ -2522,10 +2614,13 @@ drag_enter(void *data UNUSED, struct wl_data_device *wl_data_device UNUSED, uint
         if (window->wl.surface == surface) {
             double xpos = wl_fixed_to_double(x);
             double ypos = wl_fixed_to_double(y);
-            size_t mime_count = _glfwInputDropEvent(
-                    window, GLFW_DROP_ENTER, xpos, ypos,
-                    offer->mimes, offer->mimes_count, offer->is_self_offer);
-            update_drop_state(offer, window, mime_count);
+            if (reset_copy_mimes(offer)) {
+                update_drop_source_actions(window, offer);
+                size_t mime_count = _glfwInputDropEvent(
+                        window, GLFW_DROP_ENTER, xpos, ypos,
+                        offer->copy_mimes, offer->copy_mimes_count, offer->is_self_offer);
+                update_drop_state(offer, window, mime_count);
+            }
             break;
         }
         window = window->next;
@@ -2534,6 +2629,7 @@ drag_enter(void *data UNUSED, struct wl_data_device *wl_data_device UNUSED, uint
 
 static void
 drag_leave(void *data UNUSED, struct wl_data_device *wl_data_device UNUSED) {
+    debug_input("Drop left window\n");
     _GLFWWaylandDataOffer *offer = &_glfw.wl.drop_data_offer;
     if (offer->id) {
         _GLFWwindow* window = _glfw.windowListHead;
@@ -2563,7 +2659,7 @@ _glfwPlatformReadAvailableDropData(GLFWwindow *w, GLFWDropEvent *ev, char *buffe
     for (size_t o = 0; o < offer->dd_count; o++) {
         if (offer->requested_drop_data[o].fd == fd) {
             ssize_t ret;
-            do { ret = read(fd, buffer, sz); } while (ret < 0 && errno == EINTR);
+            do { ret = read(fd, buffer, sz); } while (ret < 0 && (errno == EINTR || errno == EAGAIN));
             if (ret <= 0) removeWatch(&_glfw.wl.eventLoopData, offer->requested_drop_data[o].watch_id);
             return ret < 0 ? -errno : ret;
         }
@@ -2637,15 +2733,20 @@ _glfwPlatformRequestDropData(_GLFWwindow *window UNUSED, const char *mime) {
 
 static void
 drop(void *data UNUSED, struct wl_data_device *wl_data_device UNUSED) {
+    debug_input("Drop dropped\n");
     _GLFWWaylandDataOffer *offer = &_glfw.wl.drop_data_offer;
     if (!offer->id) return;
     offer->dropped = true;
     _GLFWwindow* window = _glfw.windowListHead;
     while (window) {
         if (window->wl.surface == offer->surface) {
-            size_t num_mimes = _glfwInputDropEvent(window, GLFW_DROP_DROP, 0, 0, offer->mimes, offer->mimes_count, offer->is_self_offer);
-            if (!offer->mimes) { destroy_data_offer(offer); return; }
-            for (size_t i = 0; i < num_mimes; i++) request_drop_data(offer, offer->mimes[i]);
+            if (reset_copy_mimes(offer)) {
+                size_t num_accepted = _glfwInputDropEvent(window, GLFW_DROP_DROP, 0, 0, offer->copy_mimes, offer->copy_mimes_count, offer->is_self_offer);
+                if (offer->copy_mimes) {  // a self drop will cause this to be NULL as glfw.c calls end drop from within the drop event handler
+                    update_drop_state(offer, window, num_accepted);
+                    for (size_t i = 0; i < num_accepted; i++) request_drop_data(offer, offer->copy_mimes[i]);
+                }
+            }
             break;
         }
         window = window->next;
@@ -2654,6 +2755,7 @@ drop(void *data UNUSED, struct wl_data_device *wl_data_device UNUSED) {
 
 static void
 motion(void *data UNUSED, struct wl_data_device *wl_data_device UNUSED, uint32_t time UNUSED, wl_fixed_t x, wl_fixed_t y) {
+    debug_input("Drop moved\n");
     _GLFWWaylandDataOffer *offer = &_glfw.wl.drop_data_offer;
     if (!offer->id) return;
     _GLFWwindow* window = _glfw.windowListHead;
@@ -2661,9 +2763,12 @@ motion(void *data UNUSED, struct wl_data_device *wl_data_device UNUSED, uint32_t
         if (window->wl.surface == offer->surface) {
             double xpos = wl_fixed_to_double(x);
             double ypos = wl_fixed_to_double(y);
-            size_t mime_count = _glfwInputDropEvent(
-                window, GLFW_DROP_MOVE, xpos, ypos, offer->mimes, offer->mimes_count, offer->is_self_offer);
-            update_drop_state(offer, window, mime_count);
+            if (reset_copy_mimes(offer)) {
+                update_drop_source_actions(window, offer);
+                size_t mime_count = _glfwInputDropEvent(
+                    window, GLFW_DROP_MOVE, xpos, ypos, offer->copy_mimes, offer->copy_mimes_count, offer->is_self_offer);
+                update_drop_state(offer, window, mime_count);
+            }
             break;
         }
         window = window->next;
@@ -2673,8 +2778,8 @@ motion(void *data UNUSED, struct wl_data_device *wl_data_device UNUSED, uint32_t
 void
 _glfwPlatformRequestDropUpdate(_GLFWwindow* window) {
     _GLFWWaylandDataOffer *d = &_glfw.wl.drop_data_offer;
-    if (d->id) {
-        size_t mime_count = _glfwInputDropEvent(window, GLFW_DROP_STATUS_UPDATE, 0, 0, d->mimes, d->mimes_count, d->is_self_offer);
+    if (d->id && reset_copy_mimes(d)) {
+        size_t mime_count = _glfwInputDropEvent(window, GLFW_DROP_STATUS_UPDATE, 0, 0, d->copy_mimes, d->copy_mimes_count, d->is_self_offer);
         update_drop_state(d, window, mime_count);
     }
 }
@@ -3099,15 +3204,33 @@ GLFWAPI bool glfwWaylandBeep(GLFWwindow *handle) {
 // Drag source {{{
 
 static void
-drag_toplevel_xdg_surface_configure(void *data UNUSED, struct xdg_surface *surface, uint32_t serial) {
-    xdg_surface_ack_configure(surface, serial);
-    if (_glfw.wl.drag.toplevel_buffer) {
-        wl_surface_attach(_glfw.wl.drag.drag_icon, _glfw.wl.drag.toplevel_buffer, 0, 0);
+map_drag_toplevel(void) {
+    struct wl_buffer *buf = _glfw.wl.drag.toplevel_buffer;
+    if (buf) {
+        wl_surface_attach(_glfw.wl.drag.drag_icon, buf, 0, 0);
         wl_surface_damage(_glfw.wl.drag.drag_icon, 0, 0, INT32_MAX, INT32_MAX);
-        wl_buffer_destroy(_glfw.wl.drag.toplevel_buffer);
         _glfw.wl.drag.toplevel_buffer = NULL;
+        debug_input("Drag toplevel icon buffer attached\n");
     }
     if (_glfw.wl.drag.drag_icon) wl_surface_commit(_glfw.wl.drag.drag_icon);
+    if (buf) wl_buffer_destroy(buf);
+}
+
+static void
+drag_toplevel_xdg_surface_configure(void *data UNUSED, struct xdg_surface *surface, uint32_t serial) {
+    debug_input("Drag toplevel surface configured\n");
+    xdg_surface_ack_configure(surface, serial);
+    if (_glfw.wl.drag.start_confirmation && !_glfw.wl.drag.session_confirmed) {
+        // The compositor has not yet proven that it accepted start_drag. If
+        // it silently ignored it (stale implicit grab serial), committing a
+        // buffer now would map the toplevel as a stray regular window that
+        // nothing ever destroys. Defer mapping until the session is
+        // confirmed; if it never is, the toplevel is destroyed unmapped.
+        debug_input("Deferring drag toplevel map until drag session is confirmed\n");
+        _glfw.wl.drag.toplevel_map_deferred = true;
+        return;
+    }
+    map_drag_toplevel();
 }
 
 static const struct xdg_surface_listener drag_toplevel_xdg_surface_listener = {
@@ -3134,14 +3257,99 @@ static const struct xdg_toplevel_listener drag_toplevel_listener = {
 };
 
 static void
-cancel_drag(GLFWDragEventType type) {
+cancel_drag2(GLFWDragEventType type, bool maybe_a_cancel) {
     _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
     if (window) {
-        GLFWDragEvent ev = {.type=type};
+        GLFWDragEvent ev = {.type=type, .drop_maybe_a_cancel=maybe_a_cancel};
         _glfwInputDragSourceRequest(window, &ev);
     }
     _glfwFreeDragSourceData();
 }
+
+static void cancel_drag(GLFWDragEventType type) { cancel_drag2(type, false); }
+
+void
+_glfwWaylandConfirmDragSession(void) {
+    // Called on receipt of any compositor event that can only happen when a
+    // DND session is actually live: the start_drag was not silently dropped.
+    if (!_glfw.wl.drag.source || _glfw.wl.drag.session_confirmed) return;
+    _glfw.wl.drag.session_confirmed = true;
+    debug_input("Drag session confirmed as started by compositor\n");
+    if (_glfw.wl.drag.toplevel_map_deferred) {
+        _glfw.wl.drag.toplevel_map_deferred = false;
+        map_drag_toplevel();
+    }
+}
+
+static const struct wl_callback_listener drag_start_confirmation_listener;
+
+static void
+drag_start_confirmation_handle_done(void *data UNUSED, struct wl_callback *callback, uint32_t cb_data UNUSED) {
+    if (callback != _glfw.wl.drag.start_confirmation) {
+        // stale callback from a drag that was already cleaned up
+        wl_callback_destroy(callback);
+        return;
+    }
+    _glfw.wl.drag.start_confirmation = NULL;
+    wl_callback_destroy(callback);
+    if (_glfw.wl.drag.session_confirmed) return;
+    // The compositor processed start_drag before this sync callback. An
+    // accepted start_drag should produce events that are ordered before this
+    // sync (pointer leave, data device enter, data source events, or drag icon
+    // wl_surface.enter). Some compositors (e.g. niri) send the confirmation
+    // event one roundtrip later than the sync. Use pointer_button_count to
+    // distinguish: if the button is still held the DND implicit grab (which
+    // sends pointer leave, resetting the count to 0) hasn't fired yet, so
+    // retry a few times. If the button has already been released (count == 0)
+    // there is no active grab and the compositor definitely ignored start_drag.
+    if (_glfw.wl.pointer_button_count > 0 && _glfw.wl.drag.sync_retries < 3) {
+        _glfw.wl.drag.sync_retries++;
+        debug_input("Drag session not yet confirmed, button still held; retrying sync (%u/3)\n",
+                    _glfw.wl.drag.sync_retries);
+        _glfw.wl.drag.start_confirmation = wl_display_sync(_glfw.wl.display);
+        if (_glfw.wl.drag.start_confirmation)
+            wl_callback_add_listener(_glfw.wl.drag.start_confirmation, &drag_start_confirmation_listener, NULL);
+        return;
+    }
+    // Without this detection the data source would never receive any event,
+    // leaking the drag state forever and orphaning the drag toplevel as a
+    // stray window.
+    _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: start_drag was silently ignored by the compositor, cancelling drag");
+    cancel_drag(GLFW_DRAG_CANCELLED);
+}
+
+static const struct wl_callback_listener drag_start_confirmation_listener = {
+    .done = drag_start_confirmation_handle_done,
+};
+
+static void
+drag_icon_surface_handle_enter(void *data UNUSED, struct wl_surface *surface UNUSED, struct wl_output *output UNUSED) {
+    // The compositor maps the drag icon surface to an output only when the
+    // DND session is live. Some compositors (e.g. niri) don't send a pointer
+    // leave or data device enter when accepting start_drag; this enter event
+    // on the drag icon is the only signal they provide.
+    _glfwWaylandConfirmDragSession();
+}
+
+static void
+drag_icon_surface_handle_leave(void *data UNUSED, struct wl_surface *surface UNUSED, struct wl_output *output UNUSED) {}
+
+#ifdef WL_SURFACE_PREFERRED_BUFFER_SCALE_SINCE_VERSION
+static void
+drag_icon_surface_handle_preferred_buffer_scale(void *data UNUSED, struct wl_surface *surface UNUSED, int32_t scale UNUSED) {}
+
+static void
+drag_icon_surface_handle_preferred_buffer_transform(void *data UNUSED, struct wl_surface *surface UNUSED, uint32_t transform UNUSED) {}
+#endif
+
+static const struct wl_surface_listener drag_icon_surface_listener = {
+    .enter = drag_icon_surface_handle_enter,
+    .leave = drag_icon_surface_handle_leave,
+#ifdef WL_SURFACE_PREFERRED_BUFFER_SCALE_SINCE_VERSION
+    .preferred_buffer_scale = &drag_icon_surface_handle_preferred_buffer_scale,
+    .preferred_buffer_transform = &drag_icon_surface_handle_preferred_buffer_transform,
+#endif
+};
 
 #define dr _glfw.wl.drag.data_requests[i]
 
@@ -3151,6 +3359,7 @@ finish_drag_write(size_t i) {
     dr.watch_id = 0;
     if (dr.fd > -1) safe_close(dr.fd);
     dr.fd = -1;
+    free(dr.pending_data); dr.pending_data = NULL; dr.sz = 0; dr.offset = 0;
     free((void*)dr.mime_type); dr.mime_type = NULL;
 }
 
@@ -3172,31 +3381,49 @@ write_as_much_as_possible(int fd, const char *data, size_t sz) {
 static void
 send_drag_data(_GLFWwindow *window, size_t i) {
     ssize_t ret;
-    bool has_preset_data = _glfw.drag.items[i].data_size > 0;
+    // Find the item matching the mime type for this data request.
+    // We cannot use i directly to index _glfw.drag.items because the compositor
+    // may call drag_source_send multiple times (once per target entered), making
+    // data_requests grow independently of the items array.
+    size_t item_idx = _glfw.drag.item_count;  // sentinel: not found
+    for (size_t j = 0; j < _glfw.drag.item_count; j++) {
+        if (dr.mime_type && _glfw.drag.items[j].mime_type &&
+                strcmp(_glfw.drag.items[j].mime_type, dr.mime_type) == 0) {
+            item_idx = j; break;
+        }
+    }
+    if (item_idx == _glfw.drag.item_count) {
+        _glfwInputError(GLFW_PLATFORM_ERROR,
+            "Wayland: compositor requested data for unrecognised MIME type: %s",
+            dr.mime_type ? dr.mime_type : "(null)");
+    }
+    bool has_preset_data = item_idx < _glfw.drag.item_count && _glfw.drag.items[item_idx].data_size > 0;
+    // On write error, only close this pipe; do NOT destroy the wl_data_source
+    // since the compositor must send cancelled/dnd_finished before that is safe.
 #define on_fail _glfwInputError(\
         GLFW_PLATFORM_ERROR, "Wayland: failed to write drag source data to pipe with error: %s", strerror(errno)); \
-        cancel_drag(GLFW_DRAG_CANCELLED);
+        finish_drag_write(i); return;
 
     if (dr.sz > dr.offset) {
         ret = write_as_much_as_possible(dr.fd, dr.pending_data + dr.offset, dr.sz - dr.offset);
         if (ret < 0) { on_fail; } else {
             dr.offset += ret;
             if (dr.offset >= dr.sz) {
-                free(dr.pending_data); dr.sz = 0; dr.offset = 0;
-                if (has_preset_data) finish_drag_write(i);
+                free(dr.pending_data); dr.pending_data = NULL; dr.sz = 0; dr.offset = 0;
+                finish_drag_write(i);
             }
         }
     } else if (has_preset_data) {
-        do { ret = write(dr.fd, _glfw.drag.items[i].optional_data, _glfw.drag.items[i].data_size); } while (ret < 0 && errno == EINTR);
+        do { ret = write(dr.fd, _glfw.drag.items[item_idx].optional_data, _glfw.drag.items[item_idx].data_size); } while (ret < 0 && errno == EINTR);
         if (ret < 0) {
             on_fail;
         } else {
-            if ((size_t)ret >= _glfw.drag.items[i].data_size) {
+            if ((size_t)ret >= _glfw.drag.items[item_idx].data_size) {
                 finish_drag_write(i);
             } else {
-                void *pending = malloc(_glfw.drag.items[i].data_size - ret);
-                if (!pending) { on_fail; } else {
-                    dr.pending_data = pending; dr.sz = _glfw.drag.items[i].data_size - ret; dr.offset = 0;
+                void *pending = malloc(_glfw.drag.items[item_idx].data_size - ret);
+                if (!pending) { errno = ENOMEM; on_fail; } else {
+                    dr.pending_data = pending; dr.sz = _glfw.drag.items[item_idx].data_size - ret; dr.offset = 0;
                 }
             }
         }
@@ -3205,21 +3432,20 @@ send_drag_data(_GLFWwindow *window, size_t i) {
         _glfwInputDragSourceRequest(window, &ev);
         if (ev.err_num) {
             if (ev.err_num == EAGAIN) { removeWatch(&_glfw.wl.eventLoopData, dr.watch_id); dr.watch_id = 0; }
-            else cancel_drag(GLFW_DRAG_CANCELLED);
+            else { finish_drag_write(i); return; }
         } else {
             if (ev.data_sz) {
                 ret = write_as_much_as_possible(dr.fd, ev.data, ev.data_sz);
-                if (ret >= 0) {
-                    if ((size_t)ret < ev.data_sz) {
-                        void *pending = malloc(ev.data_sz - ret);
-                        if (!pending) { on_fail; } else {
-                            dr.pending_data = pending; dr.sz = ev.data_sz - ret; dr.offset = 0;
-                            memcpy(pending, ev.data + ret, dr.sz);
-                        }
+                if (ret >= 0 && (size_t)ret < ev.data_sz) {
+                    void *pending = malloc(ev.data_sz - ret);
+                    if (!pending) { ret = -1; } else {
+                        dr.pending_data = pending; dr.sz = ev.data_sz - ret; dr.offset = 0;
+                        memcpy(pending, ev.data + ret, dr.sz);
                     }
                 }
                 _glfwInputDragSourceRequest(window, &ev);
                 if (ret < 0) { on_fail; }
+                else if ((size_t)ret >= ev.data_sz) { finish_drag_write(i); }
             } else finish_drag_write(i);
         }
     }
@@ -3267,7 +3493,7 @@ _glfwPlatformChangeDragImage(const GLFWimage *thumbnail) {
 }
 
 int
-_glfwPlatformDragDataReady(const char *mime_type) {
+_glfwPlatformDragDataReady(const char *mime_type, const char *data UNUSED, size_t sz UNUSED, int type UNUSED) {
     for (size_t i = 0; i < _glfw.wl.drag.count; i++) {
         if (strcmp(dr.mime_type, mime_type) == 0) {
             if (!dr.watch_id) dr.watch_id = add_drag_watch(dr.fd);
@@ -3278,6 +3504,7 @@ _glfwPlatformDragDataReady(const char *mime_type) {
 
 static void
 drag_source_send(void *data UNUSED, struct wl_data_source *source UNUSED, const char *mime_type, int fd) {
+    debug_input("Drag source data request received for MIME: %s on fd: %d\n", mime_type, fd);
     _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
 #define abort() safe_close(fd); cancel_drag(GLFW_DRAG_CANCELLED);  return
     if (!window) { abort(); }
@@ -3297,6 +3524,8 @@ drag_source_send(void *data UNUSED, struct wl_data_source *source UNUSED, const 
 #undef dr
 static void
 drag_source_target(void *data UNUSED, struct wl_data_source *source UNUSED, const char *mime_type) {
+    debug_input("Drag source accepted MIME type: %s\n", mime_type);
+    _glfwWaylandConfirmDragSession();
     _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
     if (window) {
         GLFWDragEvent ev = {.type=GLFW_DRAG_ACCEPTED, .mime_type=mime_type};
@@ -3306,6 +3535,8 @@ drag_source_target(void *data UNUSED, struct wl_data_source *source UNUSED, cons
 
 static void
 drag_source_action(void *data UNUSED, struct wl_data_source *source UNUSED, uint32_t dnd_action) {
+    debug_input("Drag source action changed: %d\n", dnd_action);
+    _glfwWaylandConfirmDragSession();
     _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
     if (window) {
         GLFWDragOperationType op = GLFW_DRAG_OPERATION_GENERIC;
@@ -3322,6 +3553,8 @@ drag_source_action(void *data UNUSED, struct wl_data_source *source UNUSED, uint
 
 static void
 drag_source_dnd_drop_performed(void *data UNUSED, struct wl_data_source *source UNUSED) {
+    debug_input("Drag source drop performed\n");
+    _glfwWaylandConfirmDragSession();
     _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
     if (window) {
         GLFWDragEvent ev = {.type=GLFW_DRAG_DROPPED};
@@ -3331,6 +3564,7 @@ drag_source_dnd_drop_performed(void *data UNUSED, struct wl_data_source *source 
 
 static void
 drag_source_dnd_finished(void *data UNUSED, struct wl_data_source *source UNUSED) {
+    debug_input("Drag source finished\n");
     _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
     if (window) {
         GLFWDragEvent ev = {.type=GLFW_DRAG_FINSHED, .action=_glfw.wl.drag.action};
@@ -3345,7 +3579,13 @@ drag_source_cancelled(void *data UNUSED, struct wl_data_source *source UNUSED) {
     // impossible to distinguish between drag cancelled and dropped but not
     // accepted. https://gitlab.freedesktop.org/wayland/wayland/-/issues/140
     // so we assume this is a drop unless we are in top-level mode. Sigh.
-    cancel_drag(_glfw.wl.drag.toplevel_xdg_toplevel ? GLFW_DRAG_CANCELLED : GLFW_DRAG_DROPPED);
+    if (_glfw.wl.drag.toplevel_xdg_toplevel) {
+        debug_input("Drag source cancelled\n");
+        cancel_drag(GLFW_DRAG_CANCELLED);
+    } else {
+        debug_input("Drag source cancelled or dropped on something that doesnt accept it\n");
+        cancel_drag2(GLFW_DRAG_DROPPED, true);
+    }
 }
 
 
@@ -3359,7 +3599,14 @@ static const struct wl_data_source_listener drag_source_listener = {
 };
 
 void
+_glfwPlatformCancelDrag(_GLFWwindow* window UNUSED) {
+    if (!_glfw.drag.window_id) return;
+    cancel_drag(GLFW_DRAG_CANCELLED);
+}
+
+void
 _glfwPlatformFreeDragSourceData(void) {
+    if (_glfw.wl.drag.start_confirmation) wl_callback_destroy(_glfw.wl.drag.start_confirmation);
     if (_glfw.wl.drag.drag_viewport) wp_viewport_destroy(_glfw.wl.drag.drag_viewport);
     if (_glfw.wl.drag.toplevel_drag) xdg_toplevel_drag_v1_destroy(_glfw.wl.drag.toplevel_drag);
     if (_glfw.wl.drag.toplevel_buffer) wl_buffer_destroy(_glfw.wl.drag.toplevel_buffer);
@@ -3391,6 +3638,17 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
         return ENOTSUP;
     }
 
+    if (_glfw.wl.pointer_button_count == 0) {
+        // start_drag requires the serial of an active pointer implicit grab,
+        // without one the compositor silently ignores the request and the
+        // data source never receives any events, so fail early instead.
+        // This can happen as drags are started asynchronously and the button
+        // may have been released by the time we get here. EPERM matches what
+        // start_window_drag() in kitty/glfw.c reports for this situation.
+        _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: Refusing to start drag without an active pointer implicit grab");
+        return EPERM;
+    }
+
     // Create the data source
     _glfw.wl.drag.source = wl_data_device_manager_create_data_source(_glfw.wl.dataDeviceManager);
     if (!_glfw.wl.drag.source) {
@@ -3411,11 +3669,13 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
     for (size_t i = 0; i < _glfw.drag.item_count; i++) wl_data_source_offer(_glfw.wl.drag.source, _glfw.drag.items[i].mime_type);
     wl_data_source_add_listener(_glfw.wl.drag.source, &drag_source_listener, NULL);
 
+    struct wl_buffer* icon_buffer = NULL;
+
     // Set up the drag icon surface if thumbnail is provided
     if (thumbnail && thumbnail->pixels) {
         _glfw.wl.drag.drag_icon = wl_compositor_create_surface(_glfw.wl.compositor);
         if (!_glfw.wl.drag.drag_icon) return ENOMEM;
-        struct wl_buffer* icon_buffer = NULL;
+        wl_surface_add_listener(_glfw.wl.drag.drag_icon, &drag_icon_surface_listener, NULL);
         icon_buffer = createShmBuffer(thumbnail, false, true);
         if (!icon_buffer) return ENOMEM;
         if (_glfw.wl.wp_viewporter) {
@@ -3431,6 +3691,7 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
         }
 
         if (_glfw.drag.needs_toplevel_on_wayland && _glfw.wl.xdg_toplevel_drag_manager_v1) {
+            // get_xdg_toplevel_drag must be called before start_drag per protocol spec
             _glfw.wl.drag.toplevel_drag = xdg_toplevel_drag_manager_v1_get_xdg_toplevel_drag(
                 _glfw.wl.xdg_toplevel_drag_manager_v1, _glfw.wl.drag.source);
             if (!_glfw.wl.drag.toplevel_drag) return ENOMEM;
@@ -3444,17 +3705,49 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
             if (!_glfw.wl.drag.toplevel_xdg_toplevel) return ENOMEM;
             xdg_toplevel_add_listener(_glfw.wl.drag.toplevel_xdg_toplevel, &drag_toplevel_listener, NULL);
             _glfw.wl.drag.toplevel_buffer = icon_buffer; icon_buffer = NULL;
-            xdg_toplevel_drag_v1_attach(_glfw.wl.drag.toplevel_drag,
-                                    _glfw.wl.drag.toplevel_xdg_toplevel, 0, 0);
-        } else wl_surface_attach(_glfw.wl.drag.drag_icon, icon_buffer, 0, 0);
-        wl_surface_commit(_glfw.wl.drag.drag_icon);
-        if (icon_buffer) wl_buffer_destroy(icon_buffer);
+            // Initial empty commit triggers the xdg_surface configure event.
+            wl_surface_commit(_glfw.wl.drag.drag_icon);
+        } else {
+            // For non-toplevel drag: set pending buffer state but do NOT commit yet.
+            // The surface gets the DND role when start_drag is called. Committing
+            // before role assignment means mutter won't process the buffer through
+            // the DND surface role's apply_state path.
+            wl_surface_attach(_glfw.wl.drag.drag_icon, icon_buffer, 0, 0);
+            wl_surface_damage(_glfw.wl.drag.drag_icon, 0, 0, INT32_MAX, INT32_MAX);
+        }
     }
-    // Start the drag operation
+
+    // Start the drag operation. For toplevel drags the icon surface is NULL
+    // since the xdg_toplevel itself serves as the visible drag representation.
     wl_data_device_start_drag(
         _glfw.wl.dataDevice, _glfw.wl.drag.source, window->wl.surface,
-        _glfw.wl.xdg_toplevel_drag_manager_v1 ? NULL : _glfw.wl.drag.drag_icon,
-        _glfw.wl.pointer_serial);
+        _glfw.wl.drag.toplevel_drag ? NULL : _glfw.wl.drag.drag_icon,
+        _glfw.wl.pointer_grab_serial);
+
+    if (_glfw.wl.drag.toplevel_drag) {
+        // Attach the toplevel AFTER start_drag, otherwise doesnt work on mutter
+        xdg_toplevel_drag_v1_attach(_glfw.wl.drag.toplevel_drag,
+                                    _glfw.wl.drag.toplevel_xdg_toplevel, 0, 0);
+    } else if (_glfw.wl.drag.drag_icon) {
+        // For non-toplevel drag: now that start_drag has assigned the DND role
+        // to the icon surface, commit the pending buffer+damage state. This
+        // ensures mutter's DND surface role processes the buffer.
+        wl_surface_commit(_glfw.wl.drag.drag_icon);
+    }
+
+    if (icon_buffer) wl_buffer_destroy(icon_buffer);
+
+    // The pointer_button_count check above uses the client side view of the
+    // implicit grab, which can be stale: the button may already be released
+    // with the release event still in flight, in which case the compositor
+    // silently ignores start_drag and the data source never receives any
+    // event. Detect that with a sync: an accepted start_drag synchronously
+    // produces events ordered before the sync callback.
+    _glfw.wl.drag.session_confirmed = false;
+    _glfw.wl.drag.sync_retries = 0;
+    _glfw.wl.drag.start_confirmation = wl_display_sync(_glfw.wl.display);
+    if (_glfw.wl.drag.start_confirmation)
+        wl_callback_add_listener(_glfw.wl.drag.start_confirmation, &drag_start_confirmation_listener, NULL);
 
     return 0;
 }

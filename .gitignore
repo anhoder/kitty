@@ -8,11 +8,12 @@
 *_generated_test.go
 *_generated_test.s
 *_generated.h
-/.dmypy.json
+*.local.md
 /dependencies
 /tags
 /build/
 /fonts/
+/shaders/
 /linux-package/
 /kitty.app/
 /glad/out/
@@ -23,11 +24,9 @@ __pycache__/
 /docs/_build/
 /docs/generated/
 /tools/simdstring/simdstring.test
-/.mypy_cache
 /.ruff_cache
 .DS_Store
 .cache
 bypy/b
 bypy/virtual-machines.conf
 _codeql_detected_source_root
-

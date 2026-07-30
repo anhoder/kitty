@@ -34,6 +34,7 @@
 #include "../kitty/monotonic.h"
 #include "wl_text_input.h"
 #include "wayland-text-input-unstable-v3-client-protocol.h"
+#include "wayland-pointer-gestures-unstable-v1-client-protocol.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -101,6 +102,14 @@ pointerHandleEnter(
 
 static void
 pointerHandleLeave(void* data UNUSED, struct wl_pointer* pointer UNUSED, uint32_t serial, struct wl_surface* surface) {
+    // The pointer never leaves the surface during an implicit grab, so a
+    // leave event means any implicit grab is over (e.g. the compositor took
+    // over the pointer for drag-and-drop). The matching button releases will
+    // never be delivered to us.
+    _glfw.wl.pointer_button_count = 0;
+    // A DND grab taking over the pointer sends a leave, making this the
+    // earliest proof that a just requested start_drag was accepted.
+    _glfwWaylandConfirmDragSession();
     _GLFWwindow* window = _glfw.wl.pointerFocus;
     if (!window) return;
     _glfw.wl.serial = serial;
@@ -137,6 +146,9 @@ static void pointerHandleButton(void* data UNUSED,
 {
     glfw_cancel_momentum_scroll();
     _glfw.wl.serial = serial; _glfw.wl.input_serial = serial; _glfw.wl.pointer_serial = serial;
+    if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+        if (_glfw.wl.pointer_button_count++ == 0) _glfw.wl.pointer_grab_serial = serial;
+    } else if (_glfw.wl.pointer_button_count > 0) _glfw.wl.pointer_button_count--;
 
     _GLFWwindow* window = _glfw.wl.pointerFocus;
     if (!window) return;
@@ -206,27 +218,35 @@ pointer_handle_frame(void *data UNUSED, struct wl_pointer *pointer UNUSED) {
     _GLFWwindow* window = _glfw.wl.pointerFocus;
     if (!window) return;
     GLFWScrollEvent ev = {.keyboard_modifiers=_glfw.wl.xkb.states.modifiers};
+    bool found = false;
 
     if (info.discrete.y_axis_type != AXIS_EVENT_UNKNOWN) {
         ev.unscaled.y = info.discrete.y;
         if (info.discrete.y_axis_type == AXIS_EVENT_VALUE120) ev.offset_type = GLFW_SCROLL_OFFEST_V120;
+        found = true;
     } else if (info.continuous.y_axis_type != AXIS_EVENT_UNKNOWN) {
         ev.offset_type = GLFW_SCROLL_OFFEST_HIGHRES;
         ev.unscaled.y = info.continuous.y;
+        found = true;
     }
 
     if (info.discrete.x_axis_type != AXIS_EVENT_UNKNOWN) {
         ev.unscaled.x = info.discrete.x;
         if (info.discrete.x_axis_type == AXIS_EVENT_VALUE120) ev.offset_type = GLFW_SCROLL_OFFEST_V120;
+        found = true;
     } else if (info.continuous.x_axis_type != AXIS_EVENT_UNKNOWN) {
         ev.offset_type = GLFW_SCROLL_OFFEST_HIGHRES;
         ev.unscaled.x = info.continuous.x;
+        found = true;
     }
+    bool stopped = info.y_stop_received || info.x_stop_received;
+    if (!found && stopped) ev.offset_type = window->wl.prev_frame_offset_type;
     ev.unscaled.x *= -1;
     const double scale = ev.offset_type == GLFW_SCROLL_OFFEST_HIGHRES ? _glfwWaylandWindowScale(window) : 1;
     ev.x_offset = scale * ev.unscaled.x; ev.y_offset = scale * ev.unscaled.y;
     glfw_handle_scroll_event_for_momentum(
-        window, &ev, info.y_stop_received || info.x_stop_received, info.source_type == WL_POINTER_AXIS_SOURCE_FINGER);
+        window, &ev, stopped, info.source_type == WL_POINTER_AXIS_SOURCE_FINGER);
+    window->wl.prev_frame_offset_type = ev.offset_type;
     /* clear pointer_curr_axis_info for next frame */
     memset(&info, 0, sizeof(info));
 }
@@ -316,7 +336,7 @@ static void keyboardHandleKeymap(void* data UNUSED,
 }
 
 static bool
-needs_synthetic_key_repeat(void) { return _glfw.wl.keyboardRepeatRate > 0 && !_glfw.wl.has_key_repeat_events; }
+needs_synthetic_key_repeat(void) { return _glfw.wl.keyboardRepeatRate > 0; }
 
 static void
 start_key_repeat_timer(bool initial) {
@@ -363,6 +383,7 @@ static void keyboardHandleEnter(void* data UNUSED,
 
     _glfw.wl.serial = serial; _glfw.wl.input_serial = serial; _glfw.wl.keyboard_enter_serial = serial;
     _glfw.wl.keyboardFocusId = window->id;
+    _glfw.wl.lastKeyboardFocusId = window->id;
     _glfwInputWindowFocus(window, true);
     uint32_t* key;
     if (keys && _glfw.wl.keyRepeatInfo.key) {
@@ -407,7 +428,10 @@ static void keyboardHandleKey(void* data UNUSED,
         case WL_KEYBOARD_KEY_STATE_PRESSED: action = GLFW_PRESS; break;
         case WL_KEYBOARD_KEY_STATE_RELEASED: action = GLFW_RELEASE; break;
 #ifdef WL_KEYBOARD_KEY_STATE_REPEATED_SINCE_VERSION
-        case WL_KEYBOARD_KEY_STATE_REPEATED: action = GLFW_REPEAT; break;
+        case WL_KEYBOARD_KEY_STATE_REPEATED:
+            if (needs_synthetic_key_repeat()) return;
+            action = GLFW_REPEAT;
+            break;
 #endif
     }
 
@@ -455,6 +479,22 @@ static const struct wl_keyboard_listener keyboardListener = {
     keyboardHandleRepeatInfo,
 };
 
+static void
+holdGestureHandleBegin(void *data UNUSED, struct zwp_pointer_gesture_hold_v1 *gesture UNUSED,
+                       uint32_t serial UNUSED, uint32_t time UNUSED,
+                       struct wl_surface *surface UNUSED, uint32_t fingers UNUSED) {
+    glfw_cancel_momentum_scroll();
+}
+
+static void
+holdGestureHandleEnd(void *data UNUSED, struct zwp_pointer_gesture_hold_v1 *gesture UNUSED,
+                     uint32_t serial UNUSED, uint32_t time UNUSED, int32_t cancelled UNUSED) {}
+
+static const struct zwp_pointer_gesture_hold_v1_listener holdGestureListener = {
+    .begin = holdGestureHandleBegin,
+    .end = holdGestureHandleEnd,
+};
+
 static void seatHandleCapabilities(void* data UNUSED,
                                    struct wl_seat* seat,
                                    enum wl_seat_capability caps)
@@ -468,11 +508,19 @@ static void seatHandleCapabilities(void* data UNUSED,
             _glfw.wl.wp_cursor_shape_device_v1 = NULL;
             _glfw.wl.wp_cursor_shape_device_v1 = wp_cursor_shape_manager_v1_get_pointer(_glfw.wl.wp_cursor_shape_manager_v1, _glfw.wl.pointer);
         }
+        if (_glfw.wl.pointer_gestures) {
+            _glfw.wl.pointer_gesture_hold = zwp_pointer_gestures_v1_get_hold_gesture(_glfw.wl.pointer_gestures, _glfw.wl.pointer);
+            zwp_pointer_gesture_hold_v1_add_listener(_glfw.wl.pointer_gesture_hold, &holdGestureListener, NULL);
+        }
     }
     else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && _glfw.wl.pointer)
     {
         if (_glfw.wl.wp_cursor_shape_device_v1) wp_cursor_shape_device_v1_destroy(_glfw.wl.wp_cursor_shape_device_v1);
         _glfw.wl.wp_cursor_shape_device_v1 = NULL;
+        if (_glfw.wl.pointer_gesture_hold) {
+            zwp_pointer_gesture_hold_v1_destroy(_glfw.wl.pointer_gesture_hold);
+            _glfw.wl.pointer_gesture_hold = NULL;
+        }
         wl_pointer_destroy(_glfw.wl.pointer);
         _glfw.wl.pointer = NULL;
         if (_glfw.wl.cursorAnimationTimer) toggleTimer(&_glfw.wl.eventLoopData, _glfw.wl.cursorAnimationTimer, 0);
@@ -668,6 +716,10 @@ static void registryHandleGlobal(void* data UNUSED,
     else if (is(zwp_keyboard_shortcuts_inhibit_manager_v1)) {
         _glfw.wl.keyboard_shortcuts_inhibit_manager = wl_registry_bind(registry, name, &zwp_keyboard_shortcuts_inhibit_manager_v1_interface, 1);
     }
+    else if (is(zwp_pointer_gestures_v1)) {
+        if (version >= 3)
+            _glfw.wl.pointer_gestures = wl_registry_bind(registry, name, &zwp_pointer_gestures_v1_interface, 3);
+    }
     else if (is(xdg_toplevel_icon_manager_v1)) {
         _glfw.wl.xdg_toplevel_icon_manager_v1 = wl_registry_bind(registry, name, &xdg_toplevel_icon_manager_v1_interface, 1);
     }
@@ -677,6 +729,10 @@ static void registryHandleGlobal(void* data UNUSED,
         _glfw.wl.xdg_toplevel_tag_manager_v1 = wl_registry_bind(registry, name, &xdg_toplevel_tag_manager_v1_interface, 1);
     } else if (is(xdg_toplevel_drag_manager_v1)) {
         _glfw.wl.xdg_toplevel_drag_manager_v1 = wl_registry_bind(registry, name, &xdg_toplevel_drag_manager_v1_interface, 1);
+    } else if (is(zxdg_output_manager_v1)) {
+        _glfw.wl.xdg_output_manager = wl_registry_bind(registry, name, &zxdg_output_manager_v1_interface, MIN(version, 3u));
+        for (int i = 0; i < _glfw.monitorCount; i++)
+            _glfwCreateXdgOutputWayland(_glfw.monitors[i]);
     }
 #undef is
 }
@@ -789,7 +845,8 @@ get_compositor_missing_capabilities(void) {
     C(single_pixel_buffer, wp_single_pixel_buffer_manager_v1); C(preferred_scale, has_preferred_buffer_scale);
     C(idle_inhibit, idle_inhibit_manager); C(icon, xdg_toplevel_icon_manager_v1); C(bell, xdg_system_bell_v1);
     C(window-tag, xdg_toplevel_tag_manager_v1); C(keyboard_shortcuts_inhibit, keyboard_shortcuts_inhibit_manager);
-    C(key-repeat, has_key_repeat_events); C(top_level_drag, xdg_toplevel_drag_manager_v1);
+    C(key-repeat, has_key_repeat_events); C(top_level_drag, xdg_toplevel_drag_manager_v1); C(output_manager, xdg_output_manager);
+    C(pointer_gestures, pointer_gestures);
 #define P(x) p += snprintf(p, sizeof(buf) - (p - buf), "%s ", x);
     if (_glfw.wl.xdg_wm_base_version < 6) P("window-state-suspended");
     if (_glfw.wl.xdg_wm_base_version < 5) P("window-capabilities");
@@ -979,6 +1036,8 @@ void _glfwPlatformTerminate(void)
         xdg_toplevel_tag_manager_v1_destroy(_glfw.wl.xdg_toplevel_tag_manager_v1);
     if (_glfw.wl.xdg_toplevel_drag_manager_v1)
         xdg_toplevel_drag_manager_v1_destroy(_glfw.wl.xdg_toplevel_drag_manager_v1);
+    if (_glfw.wl.xdg_output_manager)
+        zxdg_output_manager_v1_destroy(_glfw.wl.xdg_output_manager);
     if (_glfw.wl.wp_single_pixel_buffer_manager_v1)
         wp_single_pixel_buffer_manager_v1_destroy(_glfw.wl.wp_single_pixel_buffer_manager_v1);
     if (_glfw.wl.wp_cursor_shape_manager_v1)
@@ -997,6 +1056,10 @@ void _glfwPlatformTerminate(void)
         zwp_idle_inhibit_manager_v1_destroy(_glfw.wl.idle_inhibit_manager);
     if (_glfw.wl.keyboard_shortcuts_inhibit_manager)
         zwp_keyboard_shortcuts_inhibit_manager_v1_destroy(_glfw.wl.keyboard_shortcuts_inhibit_manager);
+    if (_glfw.wl.pointer_gesture_hold)
+        zwp_pointer_gesture_hold_v1_destroy(_glfw.wl.pointer_gesture_hold);
+    if (_glfw.wl.pointer_gestures)
+        zwp_pointer_gestures_v1_release(_glfw.wl.pointer_gestures);
 
     if (_glfw.wl.registry)
         wl_registry_destroy(_glfw.wl.registry);

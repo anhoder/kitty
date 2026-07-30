@@ -30,10 +30,10 @@
     },
 
     {
-        "name": "openssl 3.5.5",
+        "name": "openssl 3.5.7",
         "unix": {
             "file_extension": "tar.gz",
-            "hash": "sha256:b28c91532a8b65a1f983b4c28b7488174e4a01008e29ce8e69bd789f28bc2a89",
+            "hash": "sha256:a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8",
             "urls": ["https://www.openssl.org/source/{filename}"]
         }
     },
@@ -59,10 +59,10 @@
     },
 
     {
-        "name": "libxml2 2.14.6",
+        "name": "libxml2 2.15.3",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "sha256:7ce458a0affeb83f0b55f1f4f9e0e55735dbfc1a9de124ee86fb4a66b597203a",
+            "hash": "sha256:78262a6e7ac170d6528ebfe2efccdf220191a5af6a6cd61ea4a9a9a5042c7a07",
             "urls": ["https://download.gnome.org/sources/libxml2/{version_except_last}/{filename}"]
         }
     },
@@ -78,11 +78,11 @@
     },
 
     {
-        "name": "sqlite 3.50.4",
+        "name": "sqlite 3.53.2",
         "unix": {
             "file_extension": "tar.gz",
-            "hash": "sha256:a3db587a1b92ee5ddac2f66b3edb41b26f9c867275782d46c3a088977d6a5b18",
-            "urls": ["https://www.sqlite.org/2025/{name}-autoconf-3500400.{file_extension}"]
+            "hash": "sha256:588ad51949419a56ebe81fe56193d510c559eb94c9a57748387860b5d3069316",
+            "urls": ["https://www.sqlite.org/2026/{name}-autoconf-3530200.{file_extension}"]
         }
     },
 
@@ -117,10 +117,10 @@
     },
 
     {
-        "name": "xz 5.8.1",
+        "name": "xz 5.8.3",
         "unix": {
             "file_extension": "tar.gz",
-            "hash": "sha256:507825b599356c10dca1cd720c9d0d0c9d5400b9de300af00e4d1ea150795543",
+            "hash": "sha256:3d3a1b973af218114f4f889bbaa2f4c037deaae0c8e815eec381c3d546b974a0",
             "urls": ["https://tukaani.org/xz/{filename}"]
         }
     },
@@ -145,19 +145,19 @@
     },
 
     {
-        "name": "python 3.14.3",
+        "name": "python 3.14.6",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "sha256:a97d5549e9ad81fe17159ed02c68774ad5d266c72f8d9a0b5a9c371fe85d902b",
+            "hash": "sha256:143b1dddefaec3bd2e21e3b839b34a2b7fb9842272883c576420d605e9f30c63",
             "urls": ["https://www.python.org/ftp/python/{version}/Python-{version}.{file_extension}"]
         }
     },
 
     {
-        "name": "libpng 1.6.55",
+        "name": "libpng 1.6.57",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "sha256:d925722864837ad5ae2a82070d4b2e0603dc72af44bd457c3962298258b8e82d",
+            "hash": "sha256:d10c20d7171569804cae8dfc13ba6dcd0662c41ed39d43d4d429314aafb10a80",
             "urls": ["https://downloads.sourceforge.net/sourceforge/libpng/{filename}"]
         }
     },
@@ -202,12 +202,12 @@
     },
 
     {
-        "name": "glib 2.86.3",
+        "name": "glib 2.88.1",
         "os": "linux",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "sha256:b3211d8d34b9df5dca05787ef0ad5d7ca75dec998b970e1aab0001d229977c65",
-            "urls": ["https://download.gnome.org/sources/glib/{version_except_last}/{filename}"]
+            "hash": "sha256:51ab804c56f6eab3e5045c774d1290ac5e4c923d4f9a3d8e33123bee45c1840e",
+            "urls": ["https://ftp.gnome.org/pub/GNOME/sources/glib/{version_except_last}/{filename}"]
         }
     },
 
@@ -242,12 +242,12 @@
     },
 
     {
-        "name": "fontconfig 2.13.1",
+        "name": "fontconfig 2.17.1",
         "os": "linux",
         "unix": {
-            "file_extension": "tar.bz2",
-            "hash": "sha256:f655dd2a986d7aa97e052261b36aa67b0a64989496361eca8d604e6414006741",
-            "urls": ["https://www.fontconfig.org/release/{filename}"]
+            "file_extension": "tar.xz",
+            "hash": "sha256:9f5cae93f4fffc1fbc05ae99cdfc708cd60dfd6612ffc0512827025c026fa541",
+            "urls": ["https://gitlab.freedesktop.org/api/v4/projects/890/packages/generic/fontconfig/{version}/{filename}"]
         }
     },
 
@@ -271,11 +271,10 @@
     },
 
     {
-        "name": "simde 0.7.6",
-        "comment": "Cannot update till gcc in the build VM is updated as simde 0.8 requires newer gcc",
+        "name": "simde 0.8.2",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "sha256:703eac1f2af7de1f7e4aea2286130b98e1addcc0559426e78304c92e2b4eb5e1",
+            "hash": "sha256:59068edc3420e75c5ff85ecfd80a77196fb3a151227a666cc20abb313a5360bf",
             "urls": ["https://github.com/simd-everywhere/simde/releases/download/v{version}/simde-amalgamated-{version}.{file_extension}"]
         }
     },

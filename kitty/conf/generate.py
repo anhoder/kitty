@@ -6,15 +6,17 @@ import inspect
 import os
 import re
 import textwrap
+import types
 from collections.abc import Callable, Iterator
 from typing import Any, get_type_hints
 
 from kitty.conf.types import Definition, MultiOption, Option, ParserFuncType, unset
+from kitty.fast_data_types import NULL_COLOR_VALUE
+from kitty.options.utils import parse_options_for_map
 from kitty.simple_cli_definitions import serialize_as_go_string
-from kitty.types import _T
 
 
-def chunks(lst: list[_T], n: int) -> Iterator[list[_T]]:
+def chunks[_T](lst: list[_T], n: int) -> Iterator[list[_T]]:
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
 
@@ -54,6 +56,7 @@ def generate_class(defn: Definition, loc: str) -> tuple[str, str]:
     def option_type_data(option: Option | MultiOption) -> tuple[Callable[[Any], Any], str]:
         func = option.parser_func
         if func.__module__ == 'builtins':
+            assert isinstance(func, types.FunctionType)
             return func, func.__name__
         th = get_type_hints(func)
         rettype = th['return']
@@ -84,6 +87,7 @@ def generate_class(defn: Definition, loc: str) -> tuple[str, str]:
         if isinstance(option, MultiOption):
             mval: dict[str, dict[str, Any]] = {'macos': {}, 'linux': {}, '': {}}
             func, typ = option_type_data(option)
+            assert isinstance(func, types.FunctionType)
             for val in option:
                 if val.add_to_default:
                     gr = mval[val.only]
@@ -112,10 +116,14 @@ def generate_class(defn: Definition, loc: str) -> tuple[str, str]:
             func = str
         elif defn.has_color_table and option.is_color_table_color:
             func, typ = option_type_data(option)
+            assert isinstance(func, types.FunctionType)
             t(f'        ans[{option.name!r}] = {func.__name__}(val)')
             tc_imports.add((func.__module__, func.__name__))
             cnum = int(option.name[5:])
-            color_table[cnum] = f'0x{func(option.defval_as_string).__int__():06x}'
+            if option.defval_as_string == 'none':
+                color_table[cnum] = f'0x{NULL_COLOR_VALUE:x}'
+            else:
+                color_table[cnum] = f'0x{func(option.defval_as_string).__int__():06x}'
             continue
         else:
             func, typ = option_type_data(option)
@@ -123,6 +131,7 @@ def generate_class(defn: Definition, loc: str) -> tuple[str, str]:
                 params = dict(inspect.signature(func).parameters)
             except Exception:
                 params = {}
+            assert isinstance(func, types.FunctionType)
             if 'dict_with_parse_results' in params:
                 t(f'        {func.__name__}(val, ans)')
             else:
@@ -158,6 +167,7 @@ def generate_class(defn: Definition, loc: str) -> tuple[str, str]:
         a(f'    {option_name}: {typ} = ' '{}')
 
     for parser, aliases in defn.deprecations.items():
+        assert isinstance(parser, types.FunctionType)
         for alias in aliases:
             parser_function_declaration(alias)
             tc_imports.add((parser.__module__, parser.__name__))
@@ -172,10 +182,13 @@ def generate_class(defn: Definition, loc: str) -> tuple[str, str]:
             fmod = f'{loc}.options.utils'
         imports.add((fmod, ftype))
         return ftype
+    if loc == 'kitty':
+        imports.add(('kitty.options.utils', 'KeyFallbackType'))
 
     for aname, action in defn.actions.items():
         option_names.add(aname)
         action_parsers[aname] = func = action.parser_func
+        assert isinstance(func, types.FunctionType)
         th = get_type_hints(func)
         rettype = th['return']
         typ = option_type_as_str(rettype)
@@ -264,6 +277,8 @@ def generate_class(defn: Definition, loc: str) -> tuple[str, str]:
         a('                k = int(q)')
         a('                if 0 <= k <= 255:')
         a('                    x = self.color_table[k]')
+        a(f'                    if x == 0x{NULL_COLOR_VALUE:x}:')
+        a('                        return None')
         a('                    return Color((x >> 16) & 255, (x >> 8) & 255, x & 255)')
         a('        raise AttributeError(key)')
         a('')
@@ -273,7 +288,10 @@ def generate_class(defn: Definition, loc: str) -> tuple[str, str]:
         a('            if q.isdigit():')
         a('                k = int(q)')
         a('                if 0 <= k <= 255:')
-        a('                    self.color_table[k] = int(val)')
+        a('                    if val is None:')
+        a(f'                        self.color_table[k] = 0x{NULL_COLOR_VALUE:x}')
+        a('                    else:')
+        a('                        self.color_table[k] = int(val)')
         a('                    return')
         a('        object.__setattr__(self, key, val)')
 
@@ -475,6 +493,7 @@ def go_type_data(parser_func: ParserFuncType, ctype: str, is_multiple: bool = Fa
             _, rsep, fsep = ctype.split('_', 2)
             return 'map[string]string', f'config.ParseStrDict(val, `{rsep}`, `{fsep}`)'
         return f'*{ctype}', f'Parse{ctype}(val)'
+    assert isinstance(parser_func, types.FunctionType)
     p = parser_func.__name__
     if p == 'int':
         return 'int64', 'strconv.ParseInt(val, 10, 64)'
@@ -618,9 +637,15 @@ def gen_go_code(defn: Definition) -> str:
     if keyboard_shortcuts:
         a('KeyboardShortcuts: []*config.KeyAction{')
         for sc in keyboard_shortcuts:
-            aname, aargs = map(serialize_as_go_string, sc.action_def.partition(' ')[::2])
-            a('{'f'Name: "{aname}", Args: "{aargs}", Normalized_keys: []string''{')
-            ns = normalize_shortcuts(sc.key_text)
+            options, leftover = parse_options_for_map(sc.parseable_text)
+            allow_fallback = ','.join(x.value for x in options.allow_fallback)
+            key_spec, action = leftover.split(None, 1)
+            aname, _, aargs = action.partition(' ')
+            aname = serialize_as_go_string(aname)
+            aargs = serialize_as_go_string(aargs)
+            fb = f', AllowFallback: "{serialize_as_go_string(allow_fallback)}"'
+            a('{'f'Name: "{aname}", Args: "{aargs}"{fb}, Normalized_keys: []string''{')
+            ns = normalize_shortcuts(key_spec)
             a(', '.join(f'"{serialize_as_go_string(x)}"' for x in ns) + ',')
             a('}''},')
         a('},')
@@ -653,23 +678,22 @@ def gen_go_code(defn: Definition) -> str:
     has_parsers = bool(go_parsers or keyboard_shortcuts)
     a('func (c *Config) Parse(key, val string) (err error) {')
     if has_parsers:
-        if go_parsers:
-            a('switch key {')
-            a('default: return fmt.Errorf("Unknown configuration key: %#v", key)')
-            for oname, pname in go_parsers.items():
-                ol = oname.lower()
-                is_multiple = oname in multiopts
-                a(f'case "{ol}":')
-                if is_multiple:
-                    a(f'var temp_val []{go_types[oname]}')
-                else:
-                    a(f'var temp_val {go_types[oname]}')
-                a(f'temp_val, err = {pname}')
-                a(f'if err != nil {{ return fmt.Errorf("Failed to parse {ol} = %#v with error: %w", val, err) }}')
-                if is_multiple:
-                    a(f'c.{oname} = append(c.{oname}, temp_val...)')
-                else:
-                    a(f'c.{oname} = temp_val')
+        a('switch key {')
+        a('default: return fmt.Errorf("Unknown configuration key: %#v", key)')
+        for oname, pname in go_parsers.items():
+            ol = oname.lower()
+            is_multiple = oname in multiopts
+            a(f'case "{ol}":')
+            if is_multiple:
+                a(f'var temp_val []{go_types[oname]}')
+            else:
+                a(f'var temp_val {go_types[oname]}')
+            a(f'temp_val, err = {pname}')
+            a(f'if err != nil {{ return fmt.Errorf("Failed to parse {ol} = %#v with error: %w", val, err) }}')
+            if is_multiple:
+                a(f'c.{oname} = append(c.{oname}, temp_val...)')
+            else:
+                a(f'c.{oname} = temp_val')
         if keyboard_shortcuts:
             a('case "map":')
             a('tempsc, err := config.ParseMap(val)')

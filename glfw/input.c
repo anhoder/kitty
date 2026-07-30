@@ -37,6 +37,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define NAME mime_dedup_set
+#define KEY_TY const char *
+#include "../3rdparty/verstable.h"
+
 // Internal key state used for sticky keys
 #define _GLFW_STICK 3
 
@@ -402,15 +406,50 @@ void _glfwInputCursorEnter(_GLFWwindow* window, bool entered)
         window->callbacks.cursorEnter((GLFWwindow*) window, entered);
 }
 
-// Notifies shared code of a drop event
+// Notifies shared code of a drop event.
+// The caller is responsible for passing a mutable working-copy of the mimes
+// array (reset to the full original list before each call) so that the
+// callback can sort/filter in-place without touching the backend's canonical
+// storage.  The return value is ev.num_mimes after the callback returns,
+// i.e. the number of accepted (possibly reordered) mimes starting at
+// mimes[0].
 size_t _glfwInputDropEvent(_GLFWwindow *window, GLFWDropEventType type, double xpos, double ypos, const char** mimes, size_t num_mimes, bool from_self) {
     if (!window->callbacks.drop_event) return 0;
+    if (num_mimes > 1) {
+        mime_dedup_set seen;
+        mime_dedup_set_init(&seen);
+        size_t write_pos = 0;
+        for (size_t i = 0; i < num_mimes; i++) {
+            if (mime_dedup_set_is_end(mime_dedup_set_get(&seen, mimes[i]))) {
+                if (mime_dedup_set_is_end(mime_dedup_set_insert(&seen, mimes[i]))) {
+                    // OOM: shift remaining entries to write_pos and stop deduplicating
+                    memmove(mimes + write_pos, mimes + i, (num_mimes - i) * sizeof(const char*));
+                    write_pos += num_mimes - i;
+                    break;
+                }
+                // Swap the unique entry into write_pos; the displaced entry moves to
+                // position i where it will end up at or beyond the new num_mimes.
+                if (write_pos != i) {
+                    const char *tmp = mimes[write_pos];
+                    mimes[write_pos] = mimes[i];
+                    mimes[i] = tmp;
+                }
+                write_pos++;
+            }
+            // duplicate: left in-place; will end up at a position >= new num_mimes
+        }
+        num_mimes = write_pos;
+        mime_dedup_set_cleanup(&seen);
+    }
     GLFWDropEvent ev = {
         .mimes=mimes, .type=type, .xpos=xpos, .ypos=ypos, .num_mimes=num_mimes, .from_self=from_self,
         .read_data=type == GLFW_DROP_DATA_AVAILABLE ? _glfwPlatformReadAvailableDropData : NULL,
         .finish_drop=type == GLFW_DROP_DATA_AVAILABLE || type == GLFW_DROP_DROP ? _glfwPlatformEndDrop : NULL,
+        .operation.allowed = window->drop_operation.allowed, .operation.preferred = window->drop_operation.preferred,
+        .operation.source_actions = window->drop_operation.source_actions,
     };
     window->callbacks.drop_event((GLFWwindow*)window, &ev);
+    window->drop_operation.preferred = ev.operation.preferred; window->drop_operation.allowed = ev.operation.allowed;
     return ev.num_mimes;
 }
 
@@ -712,6 +751,13 @@ GLFWAPI bool glfwGrabKeyboard(int grab) {
         if (_glfwPlatformGrabKeyboard(grab)) _glfw.keyboard_grabbed = grab;
     }
     return _glfw.keyboard_grabbed;
+}
+
+GLFWAPI void glfwGetKeyboardRepeatDelay(monotonic_t *delay, monotonic_t *interval) {
+    _GLFW_REQUIRE_INIT();
+    if (delay) *delay = ms_to_monotonic_t(500ll);
+    if (interval) *interval = ms_to_monotonic_t(30ll);
+    _glfwPlatformGetKeyboardRepeatDelay(delay, interval);
 }
 
 GLFWAPI int glfwGetInputMode(GLFWwindow* handle, int mode)
@@ -1147,6 +1193,7 @@ GLFWAPI GLFWdragsourcefun glfwSetDragSourceCallback(GLFWwindow* handle, GLFWdrag
 
 void
 _glfwFreeDragSourceData(void) {
+    GLFWid drag_window_id = _glfw.drag.window_id;
     _glfwPlatformFreeDragSourceData();
     if (_glfw.drag.items) {
         for (size_t i = 0; i < _glfw.drag.item_count; i++) {
@@ -1158,6 +1205,15 @@ _glfwFreeDragSourceData(void) {
     GLFWid iid = _glfw.drag.instance_id;
     memset(&_glfw.drag, 0, sizeof(_glfw.drag));
     _glfw.drag.instance_id = iid;
+    // Send a synthetic left button release to the drag source window if the
+    // button is still marked as pressed. The focus-loss release was suppressed
+    // while the drag was in progress, and on some platforms (Wayland, Cocoa)
+    // the OS never sends a natural button release after the drag ends.
+    if (drag_window_id) {
+        _GLFWwindow* drag_window = _glfwWindowForId(drag_window_id);
+        if (drag_window && drag_window->mouseButtons[GLFW_MOUSE_BUTTON_LEFT] == GLFW_PRESS)
+            _glfwInputMouseClick(drag_window, GLFW_MOUSE_BUTTON_LEFT, GLFW_RELEASE, 0);
+    }
 }
 
 GLFWAPI int
@@ -1165,8 +1221,9 @@ glfwStartDrag(GLFWwindow* handle, const GLFWDragSourceItem *items, size_t item_c
     _GLFWwindow* window = (_GLFWwindow*) handle;
     assert(window != NULL);
     _GLFW_REQUIRE_INIT_OR_RETURN(EINVAL);
-    if (operations == -1) return _glfwPlatformDragDataReady(items[0].mime_type);
+    if (operations == -1) return _glfwPlatformDragDataReady(items[0].mime_type, items[0].optional_data, items[0].data_size, items[0].type);
     if (operations == -2) return _glfwPlatformChangeDragImage(thumbnail);
+    if (operations == -3) { _glfwPlatformCancelDrag(window); return 0; }
     _glfwFreeDragSourceData();
     _glfw.drag.instance_id++;
     if (!items || !item_count) return 0;
@@ -1185,6 +1242,7 @@ glfwStartDrag(GLFWwindow* handle, const GLFWDragSourceItem *items, size_t item_c
             memcpy((void*)_glfw.drag.items[i].optional_data, items[i].optional_data, items[i].data_size);
         }
         _glfw.drag.items[i].data_size = items[i].data_size;
+        _glfw.drag.items[i].is_remote_client = items[i].is_remote_client;
     }
     _glfw.drag.window_id = window->id;
     _glfw.drag.operations = operations;
