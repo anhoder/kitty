@@ -17,7 +17,7 @@ from typing import Any, Concatenate, Deque, Literal, NamedTuple, Optional, Param
 from .borders import Border, Borders
 from .child import Child
 from .cli_stub import CLIOptions, SaveAsSessionOptions
-from .constants import appname
+from .constants import appname, is_macos
 from .fast_data_types import (
     GLFW_MOUSE_BUTTON_LEFT,
     GLFW_MOUSE_BUTTON_MIDDLE,
@@ -1473,7 +1473,8 @@ class TabManager:  # {{{
         self.recent_title_bar_mouse_events = MouseEvents()
         self.wm_name = wm_name
         self.args = args
-        self.tab_bar_hidden = get_options().tab_bar_style == 'hidden'
+        opts = get_options()
+        self.tab_bar_hidden = opts.tab_bar_style == 'hidden' or (is_macos and opts.macos_native_tabs)
         self.tabs: list[Tab] = []
         self.active_tab_history: Deque[int] = deque()
         self.tab_bar = TabBar(self.os_window_id)
@@ -2447,7 +2448,8 @@ class TabManager:  # {{{
         at = self.active_tab
         for tab in self:
             tab.apply_options(at is tab)
-        self.tab_bar_hidden = get_options().tab_bar_style == 'hidden'
+        opts = get_options()
+        self.tab_bar_hidden = opts.tab_bar_style == 'hidden' or (is_macos and opts.macos_native_tabs)
         self.tab_bar.apply_options()
         self.update_tab_bar_data()
         self.layout_tab_bar()

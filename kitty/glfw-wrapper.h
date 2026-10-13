@@ -2602,6 +2602,14 @@ typedef void (*glfwCocoaSetWindowLevel_func)(GLFWwindow*, const char*);
 GFW_EXTERN glfwCocoaSetWindowLevel_func glfwCocoaSetWindowLevel_impl;
 #define glfwCocoaSetWindowLevel glfwCocoaSetWindowLevel_impl
 
+typedef void (*glfwCocoaEnableNativeTabs_func)(bool);
+GFW_EXTERN glfwCocoaEnableNativeTabs_func glfwCocoaEnableNativeTabs_impl;
+#define glfwCocoaEnableNativeTabs glfwCocoaEnableNativeTabs_impl
+
+typedef void (*glfwCocoaMergeWindowIntoTabs_func)(GLFWwindow*, GLFWwindow*);
+GFW_EXTERN glfwCocoaMergeWindowIntoTabs_func glfwCocoaMergeWindowIntoTabs_impl;
+#define glfwCocoaMergeWindowIntoTabs glfwCocoaMergeWindowIntoTabs_impl
+
 typedef const char* (*glfwGetPrimarySelectionString_func)(GLFWwindow*);
 GFW_EXTERN glfwGetPrimarySelectionString_func glfwGetPrimarySelectionString_impl;
 #define glfwGetPrimarySelectionString glfwGetPrimarySelectionString_impl

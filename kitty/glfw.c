@@ -2214,9 +2214,10 @@ set_window_creation_error(bool is_panel) {
 static PyObject *
 create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     int x = INT_MIN, y = INT_MIN, window_state = WINDOW_NORMAL, disallow_override_title = 0;
+    unsigned long tab_group_parent_os_window_id = 0;
     char *title, *wm_class_class, *wm_class_name;
     PyObject *optional_window_state = NULL, *load_programs = NULL, *get_window_size, *pre_show_callback, *optional_x = NULL, *optional_y = NULL,
-             *layer_shell_config = NULL;
+             *layer_shell_config = NULL, *optional_tab_parent = NULL;
     static const char *kwlist[] = {
         "get_window_size",
         "pre_show_callback",
@@ -2229,11 +2230,12 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         "y",
         "disallow_override_title",
         "layer_shell_config",
+        "tab_group_parent_os_window_id",
         NULL};
     if (!PyArg_ParseTupleAndKeywords(
             args,
             kw,
-            "OOsss|OOOOpO",
+            "OOsss|OOOOpOO",
             (char **)kwlist,
             &get_window_size,
             &pre_show_callback,
@@ -2245,9 +2247,17 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
             &optional_x,
             &optional_y,
             &disallow_override_title,
-            &layer_shell_config))
+            &layer_shell_config,
+            &optional_tab_parent))
         return NULL;
     GLFWLayerShellConfig *lsc = NULL, lsc_stack = {0};
+    if (optional_tab_parent && optional_tab_parent != Py_None) {
+        if (!PyLong_Check(optional_tab_parent)) {
+            PyErr_SetString(PyExc_TypeError, "tab_group_parent_os_window_id must be an int");
+            return NULL;
+        }
+        tab_group_parent_os_window_id = PyLong_AsUnsignedLong(optional_tab_parent);
+    }
     if (optional_window_state && optional_window_state != Py_None) {
         if (!PyLong_Check(optional_window_state)) {
             PyErr_SetString(PyExc_TypeError, "window_state must be an int");
@@ -2309,6 +2319,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         if (!global_state.is_wayland) glfwWindowHint(GLFW_SRGB_CAPABLE, true);
 #ifdef __APPLE__
         cocoa_set_activation_policy(OPT(macos_hide_from_tasks) || lsc != NULL);
+        glfwCocoaEnableNativeTabs(OPT(macos_native_tabs));
         glfwWindowHint(GLFW_COCOA_GRAPHICS_SWITCHING, true);
         glfwSetApplicationShouldHandleReopen(on_application_reopen);
         glfwSetApplicationWillFinishLaunching(cocoa_application_lifecycle_event);
@@ -2421,6 +2432,12 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         temp_window = NULL;
     }
     if (glfw_window == NULL) glfw_failure(lsc != NULL);
+#ifdef __APPLE__
+    if (tab_group_parent_os_window_id > 0) {
+        OSWindow *parent_w = os_window_for_id(tab_group_parent_os_window_id);
+        if (parent_w && parent_w->handle) glfwCocoaMergeWindowIntoTabs(glfw_window, parent_w->handle);
+    }
+#endif
 #undef glfw_failure
     // Set titlebar-only mode before the window becomes visible
     if (global_state.is_wayland && (OPT(hide_window_decorations) & 2) && glfwWaylandSetTitlebarHidden) { glfwWaylandSetTitlebarHidden(glfw_window, true); }

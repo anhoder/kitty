@@ -3455,6 +3455,23 @@ Note that when using :ref:`auto_color_scheme` this option is overridden by the c
 )
 
 opt(
+    'macos_native_tabs',
+    'no',
+    option_type='to_bool',
+    ctype='bool',
+    long_text="""
+Use the native macOS window tab bar instead of the tab bar drawn by kitty. When
+enabled every kitty tab becomes a separate operating system window, grouped
+together by macOS into a single window with the system tab bar. Splits inside a
+tab continue to work as normal. The options that control kitty's own tab bar,
+such as :opt:`tab_bar_style`, :opt:`tab_bar_edge` and
+:opt:`tab_activity_symbol`, have no effect when this is enabled, since the tab
+bar is drawn by the operating system. Requires macOS 10.13 or newer. Changing
+this option by reloading the config is not supported.
+""",
+)
+
+opt(
     'macos_option_as_alt',
     'no',
     option_type='macos_option_as_alt',

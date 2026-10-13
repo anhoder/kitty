@@ -2403,7 +2403,8 @@ _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
     self = [super initWithContentRect:contentRect styleMask:style backing:backingStoreType defer:NO];
     if (self != nil) {
         glfw_window = initWindow;
-        self.tabbingMode = NSWindowTabbingModeDisallowed;
+        extern bool native_tabs_enabled;
+        self.tabbingMode = native_tabs_enabled ? NSWindowTabbingModeAutomatic : NSWindowTabbingModeDisallowed;
         NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
         [center addObserver:self selector:@selector(screenParametersDidChange:) name:NSApplicationDidChangeScreenParametersNotification object:nil];
     }
@@ -4132,6 +4133,41 @@ glfwCocoaSetWindowLevel(GLFWwindow *w, const char *level_spec) {
     @autoreleasepool {
         _GLFWwindow *window = (_GLFWwindow *)w;
         apply_ns_window_layer(window, level_spec);
+    }
+}
+
+
+bool native_tabs_enabled = false;
+
+GLFWAPI void
+glfwCocoaEnableNativeTabs(bool enable) {
+    native_tabs_enabled = enable;
+}
+
+GLFWAPI void
+glfwCocoaMergeWindowIntoTabs(GLFWwindow *w, GLFWwindow *parent_w) {
+    @autoreleasepool {
+        if (!w || !parent_w) return;
+        NSWindow *window = ((_GLFWwindow *)w)->ns.object;
+        NSWindow *parent = ((_GLFWwindow *)parent_w)->ns.object;
+        if (window && parent && window != parent) {
+            [parent addTabbedWindow:window ordered:NSWindowAbove];
+        }
+    }
+}
+
+GLFWAPI unsigned long
+glfwCocoaGetTabGroupParentOSWindowID(GLFWwindow *w) {
+    @autoreleasepool {
+        _GLFWwindow *window = (_GLFWwindow *)w;
+        if (!window || !window->ns.object) return 0;
+        NSArray<NSWindow *> *tabbedWindows = [window->ns.object tabbedWindows];
+        if (!tabbedWindows || tabbedWindows.count == 0) return 0;
+        NSWindow *firstTab = tabbedWindows[0];
+        for (_GLFWwindow *q = _glfw.windowListHead; q; q = q->next) {
+            if (q->ns.object == firstTab) return q->id;
+        }
+        return 0;
     }
 }
 

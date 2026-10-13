@@ -1123,6 +1123,9 @@ class Parser:
     def macos_menubar_title_max_length(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['macos_menubar_title_max_length'] = positive_int(val)
 
+    def macos_native_tabs(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['macos_native_tabs'] = to_bool(val)
+
     def macos_ns_window_layer(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['macos_ns_window_layer'] = str(val)
 

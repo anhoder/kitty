@@ -469,6 +469,10 @@ class Boss:
         if effective_config_error:
             self.misc_config_errors.append(effective_config_error)
 
+
+    def native_tabs_enabled(self) -> bool:
+        return is_macos and get_options().macos_native_tabs
+
     def startup_first_child(self, os_window_id: int | None, startup_sessions: Iterable[Session] = ()) -> None:
         si = startup_sessions or create_sessions(get_options(), self.args, default_session=get_options().startup_session)
         focused_os_window = wid = 0
@@ -500,6 +504,7 @@ class Boss:
         override_title: str | None = None,
         x: int | None = None,
         y: int | None = None,
+        tab_group_parent_os_window_id: int | None = None,
     ) -> int:
         if os_window_id is None:
             size_data = get_os_window_sizing_data(opts_for_size or get_options(), startup_session)
@@ -519,6 +524,7 @@ class Boss:
                     disallow_override_title=bool(wtitle),
                     x=x,
                     y=y,
+                    tab_group_parent_os_window_id=tab_group_parent_os_window_id,
                 )
         else:
             wname = self.args.name or self.args.cls or appname
@@ -3145,14 +3151,33 @@ class Boss:
             return tm.set_active_tab(tab)
         return False
 
+    def _cycle_os_window(self, delta: int) -> None:
+        # In native tabs mode each kitty tab is an OS window, so tab navigation
+        # means cycling the OS windows in the tab group.
+        if len(self.os_window_map) <= 1:
+            return
+        ids = tuple(sorted(self.os_window_map.keys()))
+        current = current_focused_os_window_id() or last_focused_os_window_id()
+        try:
+            idx = ids.index(current)
+        except ValueError:
+            idx = 0
+        self.focus_os_window(ids[(idx + delta) % len(ids)], if_needed_only=False)
+
     @ac('tab', 'Make the next tab active')
     def next_tab(self) -> None:
+        if self.native_tabs_enabled():
+            self._cycle_os_window(1)
+            return
         tm = self.active_tab_manager_with_dispatch
         if tm is not None:
             tm.next_tab()
 
     @ac('tab', 'Make the previous tab active')
     def previous_tab(self) -> None:
+        if self.native_tabs_enabled():
+            self._cycle_os_window(-1)
+            return
         tm = self.active_tab_manager_with_dispatch
         if tm is not None:
             tm.next_tab(-1)
@@ -3356,7 +3381,30 @@ class Boss:
             cmd.append(arg)
         return SpecialWindow(cmd, stdin, cwd_from=cwd_from)
 
+    def _new_native_tab(self, args: SpecialWindowInstance | Iterable[str], cwd_from: CwdRequest | None = None) -> Tab | None:
+        # With native macOS tabs each kitty tab is its own OS window; macOS
+        # groups them into one window with the system tab bar.
+        special_window = None
+        if isinstance(args, SpecialWindowInstance):
+            special_window = args
+        else:
+            args = tuple(args)
+            if args:
+                special_window = self.args_to_special_window(args, cwd_from=cwd_from)
+        parent_id = current_focused_os_window_id() or last_focused_os_window_id()
+        if parent_id not in self.os_window_map:
+            parent_id = next(iter(self.os_window_map), 0)
+        if not parent_id:
+            parent_id = self.add_os_window()
+        os_window_id = self.add_os_window(tab_group_parent_os_window_id=parent_id)
+        tm = self.os_window_map.get(os_window_id)
+        if tm is None:
+            return None
+        return tm.new_tab(special_window=special_window, cwd_from=cwd_from)
+
     def _new_tab(self, args: SpecialWindowInstance | Iterable[str], cwd_from: CwdRequest | None = None, as_neighbor: bool = False) -> Tab | None:
+        if self.native_tabs_enabled():
+            return self._new_native_tab(args, cwd_from)
         special_window = None
         if isinstance(args, SpecialWindowInstance):
             special_window = args

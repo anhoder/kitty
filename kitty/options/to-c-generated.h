@@ -4,6 +4,7 @@
 #include "to-c.h"
 
 
+
 static void
 convert_from_python_font_size(PyObject *val, Options *opts) {
     opts->font_size = PyFloat_AsDouble(val);
@@ -1396,6 +1397,19 @@ convert_from_opts_macos_titlebar_color(PyObject *py_opts, Options *opts) {
 }
 
 static void
+convert_from_python_macos_native_tabs(PyObject *val, Options *opts) {
+    opts->macos_native_tabs = PyObject_IsTrue(val);
+}
+
+static void
+convert_from_opts_macos_native_tabs(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "macos_native_tabs");
+    if (ret == NULL) return;
+    convert_from_python_macos_native_tabs(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
 convert_from_python_macos_option_as_alt(PyObject *val, Options *opts) {
     opts->macos_option_as_alt = PyLong_AsUnsignedLong(val);
 }
@@ -1792,6 +1806,8 @@ convert_opts_from_python_opts(PyObject *py_opts, Options *opts) {
     convert_from_opts_wayland_titlebar_color(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_macos_titlebar_color(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_macos_native_tabs(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_macos_option_as_alt(py_opts, opts);
     if (PyErr_Occurred()) return false;

@@ -35,6 +35,16 @@ profile:
 app:
 	python3 setup.py kitty.app $(VVAL)
 
+# Build a standalone macOS app bundle using the same packaging path as CI.
+# Set SLANGC when slangc is installed somewhere other than ~/.local/slang/bin.
+macos-app: FORCE
+	@test "$$(uname -s)" = Darwin || { echo 'macos-app requires macOS' >&2; exit 1; }
+	SLANGC="$${SLANGC:-$$HOME/.local/slang/bin/slangc}" python3 setup.py build --verbose $(VVAL)
+	SLANGC="$${SLANGC:-$$HOME/.local/slang/bin/slangc}" $(MAKE) FAIL_WARN=1 docs
+	SLANGC="$${SLANGC:-$$HOME/.local/slang/bin/slangc}" python3 setup.py kitty.app --update-check-interval=0 $(VVAL)
+	kitty.app/Contents/MacOS/kitty +runpy "from kitty.constants import *; print(kitty_exe())"
+	codesign --force --deep --sign - kitty.app
+
 linux-package: FORCE
 	rm -rf linux-package
 	python3 setup.py linux-package
@@ -68,4 +78,4 @@ prepare-for-cross-compile: clean all
 
 cross-compile:
 	python3 setup.py linux-package --skip-code-generation
-	
+

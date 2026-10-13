@@ -14,7 +14,7 @@ from .cli import parse_args
 from .cli_stub import LaunchCLIOptions
 from .clipboard import set_clipboard_string, set_primary_selection
 from .constants import is_wayland
-from .fast_data_types import add_timer, get_boss, get_options, get_os_window_title, patch_color_profiles
+from .fast_data_types import add_timer, current_focused_os_window_id, get_boss, get_options, get_os_window_title, last_focused_os_window_id, patch_color_profiles
 from .options.utils import env as parse_env
 from .tabs import Tab, TabManager
 from .types import DockSpec, LayerShellConfig, OverlayType, dock_edges, parse_dock_spec, run_once
@@ -536,7 +536,7 @@ def parse_os_window_position(position: str | None) -> tuple[int | None, int | No
 
 def tab_for_window(boss: Boss, opts: LaunchCLIOptions, target_tab: Tab | None, next_to: Window | None, add_to_session: str) -> Tab:
 
-    def create_tab(tm: TabManager | None = None) -> Tab:
+    def create_tab(tm: TabManager | None = None, tab_group_parent_os_window_id: int | None = None) -> Tab:
         if tm is None:
             if opts.type == 'os-panel':
                 oswid = boss.add_os_panel(layer_shell_config_from_panel_opts(opts.os_panel), opts.os_window_class, opts.os_window_name)
@@ -549,6 +549,7 @@ def tab_for_window(boss: Boss, opts: LaunchCLIOptions, target_tab: Tab | None, n
                     override_title=opts.os_window_title or None,
                     x=x,
                     y=y,
+                    tab_group_parent_os_window_id=tab_group_parent_os_window_id,
                 )
             tm = boss.os_window_map[oswid]
         tab = tm.new_tab(empty_tab=True, location=opts.location, title=opts.tab_title or '')
@@ -557,6 +558,13 @@ def tab_for_window(boss: Boss, opts: LaunchCLIOptions, target_tab: Tab | None, n
 
     if opts.type == 'tab':
         tm = boss.active_tab_manager
+        if boss.native_tabs_enabled():
+            # With native tabs each kitty tab is its own OS window, joined into
+            # the focused window's tab group by macOS.
+            parent_id = current_focused_os_window_id() or last_focused_os_window_id()
+            if parent_id not in boss.os_window_map:
+                parent_id = next(iter(boss.os_window_map), 0)
+            return create_tab(None, tab_group_parent_os_window_id=parent_id or None)
         if next_to is not None and (tab := next_to.tabref()) is not None and (qtm := tab.tab_manager_ref()) is not None:
             tm = qtm
         if target_tab is not None:

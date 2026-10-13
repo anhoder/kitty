@@ -395,6 +395,7 @@ option_names = (
     'macos_fullscreen_ignore_safe_area_insets',
     'macos_hide_from_tasks',
     'macos_menubar_title_max_length',
+    'macos_native_tabs',
     'macos_ns_window_layer',
     'macos_option_as_alt',
     'macos_quit_when_last_window_closed',
@@ -618,6 +619,7 @@ class Options:
     macos_fullscreen_ignore_safe_area_insets: bool = False
     macos_hide_from_tasks: bool = False
     macos_menubar_title_max_length: int = 0
+    macos_native_tabs: bool = False
     macos_ns_window_layer: str = 'unset'
     macos_option_as_alt: int = 0
     macos_quit_when_last_window_closed: bool = False
