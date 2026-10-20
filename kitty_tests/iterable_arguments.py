@@ -19,7 +19,9 @@ class IterableArgumentsTest(BaseTest):
                 for values in ((), ('/bin/echo', 'hello')):
                     with self.subTest(method=method, container=container, values=values):
                         tm = SimpleNamespace(new_tab=Mock())
-                        boss = SimpleNamespace(active_window=None, os_window_map={1: tm}, active_tab_manager=tm, add_os_window=Mock(return_value=1))
+                        boss = SimpleNamespace(
+                            active_window=None, os_window_map={1: tm}, active_tab_manager=tm, add_os_window=Mock(return_value=1),
+                            native_tabs_enabled=Mock(return_value=False))
                         boss.args_to_special_window = partial(Boss.args_to_special_window, boss)
                         with (
                             patch('kitty.boss.get_options'),
@@ -36,7 +38,8 @@ class IterableArgumentsTest(BaseTest):
     def test_special_window_arguments_are_preserved(self):
         special = SpecialWindow(['/bin/echo', 'hello'])
         tm = SimpleNamespace(new_tab=Mock())
-        boss = SimpleNamespace(os_window_map={1: tm}, active_tab_manager=tm, add_os_window=Mock(return_value=1))
+        boss = SimpleNamespace(
+            os_window_map={1: tm}, active_tab_manager=tm, add_os_window=Mock(return_value=1), native_tabs_enabled=Mock(return_value=False))
         with (
             patch('kitty.boss.get_options'),
             patch('kitty.boss.create_sessions', return_value=iter((SimpleNamespace(),))) as sessions,
