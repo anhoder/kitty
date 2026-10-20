@@ -92,10 +92,12 @@ from .fast_data_types import (
     current_focused_os_window_id,
     current_os_window,
     destroy_global_data,
+    fire_custom_shader_event,
     focus_os_window,
     get_boss,
     get_options,
     get_os_window_size,
+    get_os_window_title,
     get_tab_being_dragged,
     get_window_being_dragged,
     glfw_get_monitor_workarea,
@@ -420,6 +422,7 @@ class Boss:
         self.window_for_dispatch: Window | None = None
         self.primary_selection = Clipboard(ClipboardType.primary_selection)
         self.update_check_started = False
+        self.snapshot_saved_for_logout = ''
         self.peer_data_map: dict[int, dict[str, Sequence[str]] | None] = {}
         self.background_process_death_notify_map: dict[int, Callable[[int, Exception | None], None]] = {}
         self.encryption_key = EllipticCurveKey()
@@ -428,6 +431,7 @@ class Boss:
         self.update_check_process: Optional['PopenType[bytes]'] = None
         self.window_id_map: WeakValueDictionary[int, Window] = WeakValueDictionary()
         self.color_settings_at_startup: dict[str, Color | None] = {k: opts[k] for k in opts if isinstance(opts[k], Color) or k in nullable_colors}
+        self.transparent_background_colors_at_startup = opts.transparent_background_colors
         self.current_visual_select: VisualSelect | None = None
         # A list of events received so far that are potentially part of a sequence keybinding.
         self.cached_values = cached_values
@@ -513,6 +517,8 @@ class Boss:
             wtitle = override_title or getattr(startup_session, 'os_window_title', None) or self.args.title
             window_state = window_state or getattr(startup_session, 'os_window_state', None)
             wstate = parse_os_window_state(window_state) if window_state is not None else None
+            if x is None and y is None and startup_session is not None and startup_session.os_window_position is not None and not is_wayland():
+                x, y = startup_session.os_window_position
             with startup_notification_handler(do_notify=startup_id is not None, startup_id=startup_id) as pre_show_callback:
                 os_window_id = create_os_window(
                     initial_window_size_func(size_data, self.cached_values),
@@ -1545,6 +1551,7 @@ class Boss:
 
             run_update_check(get_options().update_check_interval * 60 * 60)
             self.update_check_started = True
+        self.monitor_desktop_session_if_needed()
         if opts.auto_reload_config >= 0 and not hasattr(self, 'config_reload_watcher_process') and opts.all_config_paths:
             self.config_reload_watcher_process = subprocess.Popen(
                 [kitten_exe(), '__watch_conf__', str(os.getpid()), str(int(opts.auto_reload_config * 1000))] + list(opts.all_config_paths),
@@ -1882,7 +1889,7 @@ class Boss:
         tab: Tab,
         callback: Callable[[Tab | None, Window | None], None],
         choose_msg: str,
-        only_window_ids: Container[int] = (),
+        only_window_ids: Container[int] | None = None,
         reactivate_prev_tab: bool = False,
     ) -> None:
         import string
@@ -1907,7 +1914,7 @@ class Boss:
         fmap = get_name_to_functional_number_map()
         alphanumerics = get_options().visual_window_select_characters
         for idx, window in tab.windows.iter_windows_with_number(only_visible=True):
-            if only_window_ids and window.id not in only_window_ids:
+            if only_window_ids is not None and window.id not in only_window_ids:
                 continue
             ac = KeyDefinition(definition=f'visual_window_select_action_trigger {window.id}')
             if idx >= len(alphanumerics):
@@ -1963,11 +1970,11 @@ class Boss:
             ev = WindowSystemMouseEvent(in_tab_bar, window_id, action, modifiers, button, currently_pressed_button, x, y)
             self.mouse_handler(ev)
 
-    def select_window_in_tab_using_overlay(self, tab: Tab, msg: str, only_window_ids: Container[int] = ()) -> Window | None:
+    def select_window_in_tab_using_overlay(self, tab: Tab, msg: str, only_window_ids: Container[int] | None = None) -> Window | None:
         windows: list[tuple[int | None, str]] = []
         selectable_windows: list[tuple[int, str]] = []
         for i, w in tab.windows.iter_windows_with_number(only_visible=False):
-            if only_window_ids and w.id not in only_window_ids:
+            if only_window_ids is not None and w.id not in only_window_ids:
                 windows.append((None, f'Current window: {w.title}' if w is self.active_window else w.title))
             else:
                 windows.append((w.id, w.title))
@@ -2107,7 +2114,11 @@ class Boss:
             try:
                 actions = get_options().alias_map.resolve_aliases(action_definition, MapType.MAP if dispatch_type == 'KeyPress' else MapType.MOUSE_MAP)
             except Exception as e:
-                self.show_error('Failed to parse action', f'{action_definition}\n{e}')
+                # str() of a KeyError is the repr of its message, so use the message directly
+                msg = e.args[0] if isinstance(e, KeyError) and e.args else str(e)
+                if raise_error:
+                    raise ValueError(f'Failed to parse action: {action_definition}: {msg}') from e
+                self.show_error('Failed to parse action', f'{action_definition}\n{msg}')
                 return True
             if actions:
                 window_for_dispatch = window_for_dispatch or self.window_for_dispatch
@@ -2488,7 +2499,9 @@ class Boss:
         needs_confirmation = x != 0 and num >= abs(x)
         if not needs_confirmation:
             if not self._call_on_quit_watchers({'confirmed': True}):
+                set_application_quit_request(NO_CLOSE_REQUESTED)
                 return
+            self.save_session_if_logging_out()
             set_application_quit_request(IMPERATIVE_CLOSE_REQUESTED)
             return
         if current_application_quit_request() == CLOSE_BEING_CONFIRMED:
@@ -2504,6 +2517,7 @@ class Boss:
                         return
             return
         if not self._call_on_quit_watchers({'confirmed': False}):
+            set_application_quit_request(NO_CLOSE_REQUESTED)
             return
         msg = msg or _('It has {} windows.').format(num)
         w = self.confirm(_('Are you sure you want to quit kitty?') + ' ' + msg, self.handle_quit_confirmation, window=active_window, title=_('Quit kitty?'))
@@ -2516,7 +2530,53 @@ class Boss:
             if not self._call_on_quit_watchers({'confirmed': True}):
                 set_application_quit_request(NO_CLOSE_REQUESTED)
                 return
+            self.save_session_if_logging_out()
         set_application_quit_request(IMPERATIVE_CLOSE_REQUESTED if confirmed else NO_CLOSE_REQUESTED)
+
+    def save_session_if_logging_out(self) -> None:
+        from .logout_session import is_logout_in_progress
+
+        if is_logout_in_progress():
+            self.save_session_at_logout()
+
+    def save_session_at_logout(self) -> str:
+        from .logout_session import save_session_at_logout
+        from .main import is_panel_kitten
+
+        if get_options().restore_session_after_logout and not is_panel_kitten():
+            try:
+                return save_session_at_logout(self)
+            except Exception:
+                import traceback
+
+                log_error('Failed to save the session at logout with error:\n' + traceback.format_exc())
+        return ''
+
+    def monitor_desktop_session_if_needed(self) -> None:
+        # On Linux, kitty is not asked to quit when the user logs out, so it uses the desktop portal to find out when the session is
+        # about to end. Does nothing if already monitoring and tries again if monitoring failed, for example, because the portal was
+        # not running.
+        from .main import is_panel_kitten
+
+        if is_macos or not get_options().restore_session_after_logout or is_panel_kitten():
+            return
+        from .fast_data_types import dbus_monitor_session_state
+
+        dbus_monitor_session_state(self.on_desktop_session_state_changed)
+
+    def on_desktop_session_state_changed(self, state: int) -> None:
+        from .logout_session import DESKTOP_SESSION_QUERY_END, DESKTOP_SESSION_RUNNING, delete_snapshot
+
+        if state == DESKTOP_SESSION_QUERY_END:
+            # The session will end once this returns, unless some other application cancels it
+            self.snapshot_saved_for_logout = self.save_session_at_logout()
+        elif state == DESKTOP_SESSION_RUNNING and self.snapshot_saved_for_logout:
+            # The logout was cancelled, so kitty keeps running and the snapshot must not be restored by another kitty instance
+            path, self.snapshot_saved_for_logout = self.snapshot_saved_for_logout, ''
+            try:
+                delete_snapshot(path)
+            except OSError as e:
+                log_error(f'Failed to delete the session saved for a cancelled logout in {path}. Error: {e}')
 
     def notify_on_os_window_death(self, address: str) -> None:
         import socket
@@ -2835,6 +2895,36 @@ class Boss:
         if errors:
             load_shader_programs.custom_shader_errors = []
             self.show_error(_('Failed to load custom shaders'), '\n\n'.join(errors))
+
+    @ac(
+        'misc',
+        """
+        Send an event to the :doc:`custom shaders <custom-shaders>`
+
+        Groups in the custom shader pipeline that use the event as
+        :code:`user:name` in their :code:`animation_start`, :code:`animation_stop`
+        or :code:`animation_toggle` directives respond to it. By default the
+        event is sent only to the active OS window, use :code:`all` to send it
+        to all OS windows. For example::
+
+            # Start the animation of groups that have: animation_start user:find-cursor
+            map f1 shader_event find-cursor
+            # Toggle groups that have: animation_toggle user:notch in all OS windows
+            map f2 shader_event notch all
+        """,
+    )
+    def shader_event(self, name: str, scope: str = 'active') -> None:
+        os_window_id = 0
+        if scope != 'all':
+            if self.window_for_dispatch:
+                tm = self.active_tab_manager_with_dispatch
+                os_window_id = tm.os_window_id if tm else 0
+            else:
+                os_window_id = current_os_window() or 0
+            if not os_window_id:
+                return
+        if not fire_custom_shader_event(name, os_window_id):
+            log_error(f'The custom shader pipeline does not use the event user:{name}, ignoring')
 
     @ac('mk', 'Create a new marker')
     def create_marker(self) -> None:
@@ -3602,6 +3692,7 @@ class Boss:
                 w.report_color_scheme_preference_if_wanted()
             w.refresh(reload_all_gpu_data=True)
         load_shader_programs.recompile_if_needed()
+        self.monitor_desktop_session_if_needed()
 
     @ac(
         'misc',
@@ -4004,7 +4095,7 @@ class Boss:
         ct = self.active_tab_manager_with_dispatch
         for osw_id, tm in self.os_window_map.items():
             if tm is not ct and tm.active_tab:
-                items.append((osw_id, tm.active_tab.title))
+                items.append((osw_id, get_os_window_title(osw_id, True) or tm.active_tab.effective_title))
         items.append(('new', 'New OS Window'))
         w = self.window_for_dispatch or self.active_window
         target_tab = w.tabref() if w else None

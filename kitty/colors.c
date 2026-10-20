@@ -428,8 +428,11 @@ patch_color_profiles(PyObject *module UNUSED, PyObject *args) {
     PyObject *spec, *transparent_background_colors, *profiles, *v;
     ColorProfile *self;
     int change_configured;
-    if (!PyArg_ParseTuple(args, "O!O!O!p", &PyDict_Type, &spec, &PyTuple_Type, &transparent_background_colors, &PyTuple_Type, &profiles, &change_configured))
+    if (!PyArg_ParseTuple(args, "O!OO!p", &PyDict_Type, &spec, &transparent_background_colors, &PyTuple_Type, &profiles, &change_configured)) return NULL;
+    if (transparent_background_colors != Py_None && !PyTuple_Check(transparent_background_colors)) {
+        PyErr_SetString(PyExc_TypeError, "transparent_background_colors must be a tuple or None");
         return NULL;
+    }
     char key[32] = {0};
     bool has_null_values = false;
     for (size_t i = 0; i < arraysz(FG_BG_256); i++) {
@@ -476,10 +479,13 @@ patch_color_profiles(PyObject *module UNUSED, PyObject *args) {
     S(visual_bell_color, visual_bell_color);
 #undef SI
 #undef S
-    for (Py_ssize_t i = 0; i < PyTuple_GET_SIZE(profiles); i++) {
-        self = (ColorProfile *)PyTuple_GET_ITEM(profiles, i);
-        set_transparent_background_colors(self->overriden_transparent_colors, transparent_background_colors);
-        if (change_configured) set_transparent_background_colors(self->configured_transparent_colors, transparent_background_colors);
+    // None means the transparent colors were not specified, so leave them unchanged
+    if (transparent_background_colors != Py_None) {
+        for (Py_ssize_t i = 0; i < PyTuple_GET_SIZE(profiles); i++) {
+            self = (ColorProfile *)PyTuple_GET_ITEM(profiles, i);
+            set_transparent_background_colors(self->overriden_transparent_colors, transparent_background_colors);
+            if (change_configured) set_transparent_background_colors(self->configured_transparent_colors, transparent_background_colors);
+        }
     }
 
     if (has_null_values) {
@@ -534,6 +540,15 @@ colorprofile_to_color(const ColorProfile *self, DynamicColor entry, DynamicColor
         case COLOR_IS_SPECIAL: return entry;
     }
     return entry;
+}
+
+// Resolve to an actual RGB color, using fallback for special colors, that
+// is colors that depend on the cell they are used in.
+static color_type
+resolved_dynamic_color(const ColorProfile *self, DynamicColor overridden, DynamicColor configured, color_type fallback) {
+    DynamicColor ans = colorprofile_to_color(self, overridden, configured);
+    if (ans.type == COLOR_IS_INDEX) ans = colorprofile_to_color(self, ans, ans);
+    return ans.type == COLOR_IS_RGB ? (color_type)ans.rgb : fallback;
 }
 
 color_type
@@ -708,6 +723,24 @@ copy_color_table_to_buffer(ColorProfile *self, color_type *buf, int offset, size
     }
     for (i = 0; i < arraysz(self->mark_foregrounds); i++) {
         *buf = self->mark_foregrounds[i];
+        buf += stride;
+    }
+    // Copy the special colors used by indexed color images, these must be in
+    // the order defined in the graphics protocol documentation.
+    const color_type fg = resolved_dynamic_color(self, self->overridden.default_fg, self->configured.default_fg, OPT(foreground));
+    const color_type bg = resolved_dynamic_color(self, self->overridden.default_bg, self->configured.default_bg, OPT(background));
+    const color_type specials[NUM_INDEXED_IMAGE_SPECIAL_COLORS] = {
+        bg,
+        fg,
+        resolved_dynamic_color(self, self->overridden.highlight_bg, self->configured.highlight_bg, fg),
+        resolved_dynamic_color(self, self->overridden.highlight_fg, self->configured.highlight_fg, bg),
+        resolved_dynamic_color(self, self->overridden.cursor_color, self->configured.cursor_color, fg),
+        resolved_dynamic_color(self, self->overridden.cursor_text_color, self->configured.cursor_text_color, bg),
+        OPT(url_color),
+        fg, // reserved
+    };
+    for (i = 0; i < arraysz(specials); i++) {
+        *buf = specials[i];
         buf += stride;
     }
     self->dirty = false;

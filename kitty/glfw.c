@@ -1264,7 +1264,11 @@ request_drop_status_update(OSWindow *osw) {
 
 static void
 application_close_requested_callback(int flags) {
-    if (flags) {
+    if (flags & GLFW_APPLICATION_CLOSE_LOGOUT) {
+        global_state.logout_quit.requested = true;
+        global_state.logout_quit.at = monotonic();
+    }
+    if (flags & GLFW_APPLICATION_CLOSE_FATAL_ERROR) {
         global_state.quit_request = IMPERATIVE_CLOSE_REQUESTED;
         global_state.has_pending_closes = true;
         request_tick_callback();
@@ -1887,8 +1891,17 @@ static bool
 intercept_cocoa_fullscreen(GLFWwindow *w) {
     if (!set_callback_window(w)) return false;
     if (!OPT(macos_traditional_fullscreen)) {
+        OSWindow *osw = global_state.callback_os_window;
+        const bool is_fullscreen = is_os_window_fullscreen(osw);
+        if (!is_fullscreen) {
+            // Remember the geometry from before macOS makes the window fullscreen, as do_toggle_fullscreen() does
+            glfwGetWindowSize(w, &osw->before_fullscreen.w, &osw->before_fullscreen.h);
+            glfwGetWindowPos(w, &osw->before_fullscreen.x, &osw->before_fullscreen.y);
+            osw->before_fullscreen.was_maximized = glfwGetWindowAttrib(w, GLFW_MAXIMIZED);
+            osw->before_fullscreen.is_set = true;
+        }
         // In non traditional fullscreen macOS forces the window to opaque
-        global_state.callback_os_window->background_opacity.os_forces_opaque = !is_os_window_fullscreen(global_state.callback_os_window);
+        osw->background_opacity.os_forces_opaque = !is_fullscreen;
         return false;
     }
     // macOS Split View uses Cocoa fullscreen internally, so the window
@@ -2211,13 +2224,26 @@ set_window_creation_error(bool is_panel) {
     }
 }
 
+static bool
+is_visible_on_a_monitor(int x, int y, int width, int height) {
+    int count = 0;
+    GLFWmonitor **monitors = glfwGetMonitors(&count);
+    if (count <= 0 || !monitors) return true;
+    for (int i = 0; i < count; i++) {
+        int mx, my, mw, mh;
+        glfwGetMonitorWorkarea(monitors[i], &mx, &my, &mw, &mh);
+        if (x < mx + mw && mx < x + width && y < my + mh && my < y + height) return true;
+    }
+    return false;
+}
+
 static PyObject *
 create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     int x = INT_MIN, y = INT_MIN, window_state = WINDOW_NORMAL, disallow_override_title = 0;
     unsigned long tab_group_parent_os_window_id = 0;
-    char *title, *wm_class_class, *wm_class_name;
-    PyObject *optional_window_state = NULL, *load_programs = NULL, *get_window_size, *pre_show_callback, *optional_x = NULL, *optional_y = NULL,
-             *layer_shell_config = NULL, *optional_tab_parent = NULL;
+    char *wm_class_class, *wm_class_name;
+    PyObject *title, *optional_window_state = NULL, *load_programs = NULL, *get_window_size, *pre_show_callback, *optional_x = NULL, *optional_y = NULL,
+                     *layer_shell_config = NULL, *optional_tab_parent = NULL;
     static const char *kwlist[] = {
         "get_window_size",
         "pre_show_callback",
@@ -2235,7 +2261,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     if (!PyArg_ParseTupleAndKeywords(
             args,
             kw,
-            "OOsss|OOOOpOO",
+            "OOUss|OOOOpOO",
             (char **)kwlist,
             &get_window_size,
             &pre_show_callback,
@@ -2250,6 +2276,8 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
             &layer_shell_config,
             &optional_tab_parent))
         return NULL;
+    const char *title_utf8 = PyUnicode_AsUTF8(title);
+    if (!title_utf8) return NULL;
     GLFWLayerShellConfig *lsc = NULL, lsc_stack = {0};
     if (optional_tab_parent && optional_tab_parent != Py_None) {
         if (!PyLong_Check(optional_tab_parent)) {
@@ -2425,7 +2453,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         initial_window_size_py_callback = get_window_size;
     }
     glfwGetError(NULL); // clear any stale error
-    GLFWwindow *glfw_window = glfwCreateWindow(width, height, title, NULL, temp_window ? temp_window : common_context, lsc);
+    GLFWwindow *glfw_window = glfwCreateWindow(width, height, title_utf8, NULL, temp_window ? temp_window : common_context, lsc);
     initial_window_size_py_callback = NULL;
     if (temp_window) {
         glfwDestroyWindow(temp_window);
@@ -2454,7 +2482,8 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     PyObject *pret = PyObject_CallFunction(pre_show_callback, "N", native_window_handle(glfw_window));
     if (pret == NULL) return NULL;
     Py_DECREF(pret);
-    if (x != INT_MIN && y != INT_MIN) glfwSetWindowPos(glfw_window, x, y);
+    // Ignore positions that are not on any monitor, for example, because the monitor was disconnected
+    if (x != INT_MIN && y != INT_MIN && is_visible_on_a_monitor(x, y, width, height)) glfwSetWindowPos(glfw_window, x, y);
     if (!global_state.is_apple && !global_state.is_wayland && window_state != WINDOW_HIDDEN) glfwShowWindow(glfw_window, false);
     if (global_state.is_wayland || global_state.is_apple) {
         float n_xscale, n_yscale;
@@ -2483,6 +2512,8 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     OSWindow *w = add_os_window();
     w->handle = glfw_window;
     w->disallow_title_changes = disallow_override_title;
+    // A fixed title is never synced from the active window, so store it here
+    if (disallow_override_title) w->window_title = Py_NewRef(title);
     if (lsc != NULL) {
         w->is_layer_shell = true;
         w->hide_on_focus_loss = lsc->hide_on_focus_loss;
@@ -2690,6 +2721,32 @@ dbus_user_notification_activated(uint32_t notification_id, int type, const char 
         case -1: stype = "capabilities"; break;
     }
     send_dbus_notification_event_to_python(stype, nid, action);
+}
+
+static PyObject *dbus_session_state_callback = NULL;
+
+static void
+dbus_session_state_changed(uint32_t state) {
+    if (dbus_session_state_callback) {
+        RAII_PyObject(ret, PyObject_CallFunction(dbus_session_state_callback, "k", (unsigned long)state));
+        if (!ret) PyErr_Print();
+    }
+}
+
+static PyObject *
+dbus_monitor_session_state(PyObject *self UNUSED, PyObject *callback) {
+    if (!PyCallable_Check(callback)) {
+        PyErr_SetString(PyExc_TypeError, "callback must be callable");
+        return NULL;
+    }
+    if (!glfwDBusMonitorSessionState) {
+        PyErr_SetString(PyExc_RuntimeError, "Failed to load glfwDBusMonitorSessionState, did you call glfw_init?");
+        return NULL;
+    }
+    Py_CLEAR(dbus_session_state_callback);
+    dbus_session_state_callback = Py_NewRef(callback);
+    if (glfwDBusMonitorSessionState(dbus_session_state_changed)) Py_RETURN_TRUE;
+    Py_RETURN_FALSE;
 }
 #endif
 
@@ -3143,6 +3200,29 @@ change_os_window_state(PyObject *self UNUSED, PyObject *args) {
     }
     change_state_for_os_window(w, state);
     Py_RETURN_NONE;
+}
+
+static PyObject *
+get_os_window_geometry(PyObject *self UNUSED, PyObject *args) {
+    // The geometry needed to re-create the OS Window, for fullscreen windows this is the geometry from before they were made fullscreen
+    id_type wid;
+    if (!PyArg_ParseTuple(args, "K", &wid)) return NULL;
+    OSWindow *w = os_window_for_id(wid);
+    if (!w || !w->handle || w->is_layer_shell) Py_RETURN_NONE;
+    int x = 0, y = 0, width = 0, height = 0, state = WINDOW_NORMAL;
+    glfwGetWindowSize(w->handle, &width, &height);
+    if (!global_state.is_wayland) glfwGetWindowPos(w->handle, &x, &y);
+    if (is_os_window_fullscreen(w)) {
+        state = WINDOW_FULLSCREEN;
+        if (w->before_fullscreen.is_set) {
+            width = w->before_fullscreen.w;
+            height = w->before_fullscreen.h;
+            x = w->before_fullscreen.x;
+            y = w->before_fullscreen.y;
+        }
+    } else if (glfwGetWindowAttrib(w->handle, GLFW_ICONIFIED)) state = WINDOW_MINIMIZED;
+    else if (glfwGetWindowAttrib(w->handle, GLFW_MAXIMIZED)) state = WINDOW_MAXIMIZED;
+    return Py_BuildValue("{si si si si si}", "x", x, "y", y, "width", width, "height", height, "state", state);
 }
 
 void
@@ -4029,6 +4109,7 @@ static PyMethodDef module_methods[] = {
     METHODB(toggle_fullscreen, METH_VARARGS),
     METHODB(toggle_maximized, METH_VARARGS),
     METHODB(change_os_window_state, METH_VARARGS),
+    METHODB(get_os_window_geometry, METH_VARARGS),
     METHODB(glfw_window_hint, METH_VARARGS),
     METHODB(x11_display, METH_NOARGS),
     METHODB(wayland_compositor_data, METH_NOARGS),
@@ -4040,6 +4121,7 @@ static PyMethodDef module_methods[] = {
 #ifndef __APPLE__
     METHODB(dbus_close_notification, METH_VARARGS),
     METHODB(dbus_set_notification_callback, METH_O),
+    METHODB(dbus_monitor_session_state, METH_O),
     {"dbus_send_notification", (PyCFunction)(void (*)(void))(dbus_send_notification), METH_KEYWORDS | METH_VARARGS, NULL},
 #else
     {"cocoa_recreate_global_menu", (PyCFunction)py_recreate_global_menu, METH_NOARGS, ""},
@@ -4073,6 +4155,7 @@ cleanup_glfw(void) {
     Py_CLEAR(edge_spacing_func);
 #ifndef __APPLE__
     Py_CLEAR(dbus_notification_callback);
+    Py_CLEAR(dbus_session_state_callback);
     release_freetype_render_context(bold_render_ctx);
     release_freetype_render_context(normal_render_ctx);
 #endif

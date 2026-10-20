@@ -3279,12 +3279,13 @@ report_device_status(Screen *self, unsigned int which, bool private) {
             x = self->cursor->x;
             y = self->cursor->y;
             if (x >= self->columns) {
-                if (y < self->lines - 1) {
+                // A wrap at the bottom margin scrolls the region, leaving the cursor on the same row
+                if (y < self->lines - 1 && y != self->margin_bottom) {
                     x = 0;
                     y++;
                 } else x--;
             }
-            if (self->modes.mDECOM) y -= MAX(y, self->margin_top);
+            if (self->modes.mDECOM) y -= MIN(y, self->margin_top);
             // 1-based indexing
             int sz = snprintf(buf, sizeof(buf) - 1, "%s%u;%uR", (private ? "?" : ""), y + 1, x + 1);
             if (sz > 0) write_escape_code_to_child(self, ESC_CSI, buf);
@@ -7033,6 +7034,11 @@ cursor_at_prompt(Screen *self, PyObject *args UNUSED) {
 }
 
 static PyObject *
+cursor_prompt_line(Screen *self, PyObject *args UNUSED) {
+    return PyLong_FromLong(screen_cursor_at_a_shell_prompt(self));
+}
+
+static PyObject *
 ime_text_around_cursor(Screen *self, PyObject *a UNUSED) {
     char *before, *after;
     if (!screen_ime_text_around_cursor(self, &before, &after)) return PyErr_NoMemory();
@@ -7115,6 +7121,36 @@ test_parse_written_data(Screen *screen, PyObject *args) {
     if (!PyArg_ParseTuple(args, "|O", &pd.dump_callback)) return NULL;
     if (pd.dump_callback && pd.dump_callback != Py_None) parse_worker_dump(screen, &pd, true);
     else parse_worker(screen, &pd, true);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+restore_scrollback(Screen *self, PyObject *data) {
+    // Parse previously saved output as though it came from the child. Must only be called before the child is allowed to run,
+    // as the I/O thread must be the only writer to the parser buffer while the child is running.
+    RAII_PY_BUFFER(buf);
+    if (PyObject_GetBuffer(data, &buf, PyBUF_SIMPLE) != 0) return NULL;
+    const uint8_t *src = buf.buf;
+    size_t remaining = buf.len;
+    ParseData pd = {.now = monotonic()};
+    while (remaining) {
+        size_t space = 0;
+        uint8_t *dest = vt_parser_create_write_buffer_if_none(self->vt_parser, &space);
+        if (!dest) {
+            PyErr_SetString(PyExc_RuntimeError, "Cannot restore scrollback as the child is already writing to the screen");
+            return NULL;
+        }
+        const size_t sz = MIN(space, remaining);
+        if (sz) memcpy(dest, src, sz);
+        vt_parser_commit_write(self->vt_parser, sz);
+        if (!sz) {
+            PyErr_SetString(PyExc_RuntimeError, "Cannot restore scrollback as there is no space in the parser buffer");
+            return NULL;
+        }
+        src += sz;
+        remaining -= sz;
+        parse_worker(self, &pd, true);
+    }
     Py_RETURN_NONE;
 }
 
@@ -7218,6 +7254,8 @@ static PyMethodDef methods[] = {
     METHODB(test_commit_write_buffer, METH_VARARGS),
     METHODB(test_parse_written_data, METH_VARARGS),
     METHODB(test_draw_overlay_line, METH_VARARGS),
+    METHODB(restore_scrollback, METH_O),
+    METHODB(cursor_prompt_line, METH_NOARGS),
     MND(overlay_line_start, METH_NOARGS) MND(line_edge_colors, METH_NOARGS) MND(ime_text_around_cursor, METH_NOARGS) MND(line, METH_O)
         MND(dump_lines_with_attrs, METH_VARARGS) MND(cpu_cells, METH_VARARGS)
             MND(cursor_at_prompt, METH_NOARGS){"visual_line", (PyCFunction)pyvisual_line, METH_VARARGS, ""},

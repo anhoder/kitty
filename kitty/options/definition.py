@@ -2364,7 +2364,10 @@ opt(
 The maximum number of cells that can be used to render the text in a tab.
 A value of zero means that no limit is applied. For vertical tab bars, kitty
 uses a default sidebar width sized for about twenty title cells when this is
-left unset.
+left unset. When it is set, the sidebar is made just wide enough to fit titles
+of this length along with the decorations drawn by :opt:`tab_bar_style`. With
+the :code:`fade` style, use fewer values in :opt:`tab_fade` for a narrower
+sidebar.
 """,
 )
 
@@ -3167,6 +3170,26 @@ relative paths are interpreted with respect to the kitty config directory.
 Environment variables in the path are expanded. Changing this option by
 reloading the config is not supported. Note that if kitty is invoked with command line
 arguments specifying a command to run, this option is ignored.
+""",
+)
+
+opt(
+    'restore_session_after_logout',
+    'no',
+    option_type='to_bool',
+    long_text="""
+If enabled, when you log out, restart or shut down the computer while kitty is running,
+kitty saves its current state as a :ref:`session <sessions>`, including the size, position
+and state of every :term:`OS Window <os_window>` and the scrollback of every window. The next
+time kitty is started, it restores that session, instead of using :opt:`startup_session`.
+If several kitty instances were running, each is restored as a separate kitty instance, with the
+command line arguments and environment it originally had. Programs that were running in windows,
+other than the shell, are not started again. The saved session is used only once, and only when
+kitty is started without :option:`kitty --session` or a command to run. The saved state is deleted
+once it has been restored. On macOS, it is encrypted, with a key stored in your login keychain. Note
+that despite the encryption any process that runs as you can access the stored session data.
+On Linux, it is not encrypted and this requires a desktop portal that supports monitoring the
+session state. See :ref:`restore_after_logout` for details.
 """,
 )
 
@@ -4770,7 +4793,7 @@ require a full restart of kitty. Particularly, when changing shortcuts for
 actions located on the macOS global menu bar, a full restart is needed. You can
 also map a keybinding to load a different config file, for example::
 
-    map f5 load_config /path/to/alternative/kitty.conf
+    map f5 load_config_file /path/to/alternative/kitty.conf
 
 Note that all options from the original :file:`kitty.conf` are discarded, in
 other words the new configuration *replace* the old ones.
