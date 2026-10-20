@@ -254,6 +254,10 @@ Detailed list of changes
 - Fix kitty repeatedly calling ``on_quit`` watchers when a watcher aborts a quit
   requested by the OS, for example, via the macOS menu or Dock
 
+- macOS: Fix :ac:`next_tab` and :ac:`previous_tab` with
+  :opt:`macos_native_tabs` enabled cycling tabs in creation order instead of
+  the order the tabs appear in the native tab bar
+
 - Remote control: Fix ``kitten @ action --match`` ignoring the match and
   running the action on the active window (:iss:`10672`)
 

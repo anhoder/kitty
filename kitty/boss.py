@@ -111,6 +111,7 @@ from .fast_data_types import (
     mark_os_window_for_close,
     monitor_pid,
     monotonic,
+    native_tab_group_order,
     os_window_focus_counters,
     os_window_font_size,
     redirect_mouse_handling,
@@ -3246,8 +3247,13 @@ class Boss:
         # means cycling the OS windows in the tab group.
         if len(self.os_window_map) <= 1:
             return
-        ids = tuple(sorted(self.os_window_map.keys()))
         current = current_focused_os_window_id() or last_focused_os_window_id()
+        # macOS inserts newly created tabs next to the current one rather than at
+        # the end, so the OS window ids are not in tab bar order. Ask AppKit for
+        # the actual order of the tabs in the tab group containing current.
+        ids = tuple(q for q in (native_tab_group_order(current) or ()) if q in self.os_window_map)
+        if len(ids) <= 1:
+            ids = tuple(sorted(self.os_window_map.keys()))
         try:
             idx = ids.index(current)
         except ValueError:

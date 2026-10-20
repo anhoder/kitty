@@ -3065,6 +3065,54 @@ macos_cycle_through_os_windows(PyObject *self UNUSED, PyObject *backwards) {
     Py_RETURN_NONE;
 }
 
+static PyObject *
+native_tab_group_order(PyObject *self UNUSED, PyObject *os_window_id) {
+#ifdef __APPLE__
+    id_type osw_id = PyLong_AsUnsignedLongLong(os_window_id);
+    OSWindow *osw = os_window_for_id(osw_id);
+    if (!osw || !osw->handle) Py_RETURN_NONE;
+
+    // First call to get count
+    size_t count = glfwCocoaGetTabGroupWindowOrder(osw->handle, NULL, 0);
+    if (count == 0) Py_RETURN_NONE;
+
+    // Allocate buffer and get the GLFWwindow handles
+    GLFWwindow **handles = PyMem_Malloc(count * sizeof(GLFWwindow*));
+    if (!handles) return PyErr_NoMemory();
+
+    size_t actual = glfwCocoaGetTabGroupWindowOrder(osw->handle, handles, count);
+    PyObject *result = PyTuple_New(actual);
+    if (!result) {
+        PyMem_Free(handles);
+        return NULL;
+    }
+
+    // Convert GLFWwindow handles to OS window IDs
+    for (size_t i = 0; i < actual; i++) {
+        id_type id = 0;
+        for (size_t j = 0; j < global_state.num_os_windows; j++) {
+            if (global_state.os_windows[j].handle == handles[i]) {
+                id = global_state.os_windows[j].id;
+                break;
+            }
+        }
+        PyObject *item = PyLong_FromUnsignedLongLong(id);
+        if (!item) {
+            PyMem_Free(handles);
+            Py_DECREF(result);
+            return NULL;
+        }
+        PyTuple_SET_ITEM(result, i, item);
+    }
+
+    PyMem_Free(handles);
+    return result;
+#else
+    (void)os_window_id;
+    Py_RETURN_NONE;
+#endif
+}
+
 
 static PyObject *
 cocoa_hide_app(PYNOARG) {
@@ -4103,6 +4151,7 @@ static PyMethodDef module_methods[] = {
     METHODB(get_clipboard_mime, METH_VARARGS),
     METHODB(toggle_secure_input, METH_NOARGS),
     METHODB(macos_cycle_through_os_windows, METH_O),
+    METHODB(native_tab_group_order, METH_O),
     METHODB(get_content_scale_for_window, METH_NOARGS),
     METHODB(ring_bell, METH_VARARGS),
     METHODB(request_attention, METH_VARARGS),

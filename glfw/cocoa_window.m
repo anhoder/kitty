@@ -4183,6 +4183,29 @@ glfwCocoaGetTabGroupParentOSWindowID(GLFWwindow *w) {
     }
 }
 
+// Fills out with the GLFWwindow handles of all windows in the same macOS tab
+// group as w, in the order they appear in the native tab bar. Returns the
+// total number of windows in the group, which can be larger than out_sz.
+GLFWAPI size_t
+glfwCocoaGetTabGroupWindowOrder(GLFWwindow *w, GLFWwindow **out, size_t out_sz) {
+    @autoreleasepool {
+        _GLFWwindow *window = (_GLFWwindow *)w;
+        if (!window || !window->ns.object) return 0;
+        NSArray<NSWindow *> *tabbedWindows = [window->ns.object tabbedWindows];
+        if (!tabbedWindows || tabbedWindows.count == 0) return 0;
+        size_t count = 0;
+        for (NSWindow *tab in tabbedWindows) {
+            for (_GLFWwindow *q = _glfw.windowListHead; q; q = q->next) {
+                if (q->ns.object == tab) {
+                    if (out && count < out_sz) out[count] = (GLFWwindow*)q;
+                    count++;
+                    break;
+                }
+            }
+        }
+        return count;
+    }
+}
 
 GLFWAPI void
 glfwCocoaSetWindowChrome(

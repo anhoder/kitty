@@ -524,6 +524,9 @@ load_glfw(const char* path) {
     *(void **) (&glfwCocoaMergeWindowIntoTabs_impl) = dlsym(handle, "glfwCocoaMergeWindowIntoTabs");
     if (glfwCocoaMergeWindowIntoTabs_impl == NULL) dlerror(); // clear error indicator
 
+    *(void **) (&glfwCocoaGetTabGroupWindowOrder_impl) = dlsym(handle, "glfwCocoaGetTabGroupWindowOrder");
+    if (glfwCocoaGetTabGroupWindowOrder_impl == NULL) dlerror(); // clear error indicator
+
     *(void **) (&glfwGetPrimarySelectionString_impl) = dlsym(handle, "glfwGetPrimarySelectionString");
     if (glfwGetPrimarySelectionString_impl == NULL) dlerror(); // clear error indicator
 

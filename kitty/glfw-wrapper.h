@@ -2617,6 +2617,10 @@ typedef void (*glfwCocoaMergeWindowIntoTabs_func)(GLFWwindow*, GLFWwindow*);
 GFW_EXTERN glfwCocoaMergeWindowIntoTabs_func glfwCocoaMergeWindowIntoTabs_impl;
 #define glfwCocoaMergeWindowIntoTabs glfwCocoaMergeWindowIntoTabs_impl
 
+typedef size_t (*glfwCocoaGetTabGroupWindowOrder_func)(GLFWwindow*, GLFWwindow**, size_t);
+GFW_EXTERN glfwCocoaGetTabGroupWindowOrder_func glfwCocoaGetTabGroupWindowOrder_impl;
+#define glfwCocoaGetTabGroupWindowOrder glfwCocoaGetTabGroupWindowOrder_impl
+
 typedef const char* (*glfwGetPrimarySelectionString_func)(GLFWwindow*);
 GFW_EXTERN glfwGetPrimarySelectionString_func glfwGetPrimarySelectionString_impl;
 #define glfwGetPrimarySelectionString glfwGetPrimarySelectionString_impl
