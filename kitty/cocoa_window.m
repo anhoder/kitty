@@ -278,6 +278,7 @@ PENDING(reload_config, RELOAD_CONFIG)
 PENDING(toggle_macos_secure_keyboard_entry, TOGGLE_MACOS_SECURE_KEYBOARD_ENTRY)
 PENDING(macos_cycle_through_os_windows, MACOS_CYCLE_THROUGH_OS_WINDOWS)
 PENDING(macos_cycle_through_os_windows_backwards, MACOS_CYCLE_THROUGH_OS_WINDOWS_BACKWARDS)
+PENDING(toggle_macos_tab_overview, TOGGLE_MACOS_TAB_OVERVIEW)
 PENDING(search_scrollback, SEARCH_SCROLLBACK)
 PENDING(toggle_fullscreen, TOGGLE_FULLSCREEN)
 PENDING(open_kitty_website, OPEN_KITTY_WEBSITE)
@@ -294,6 +295,11 @@ PENDING(copy_or_noop, COPY_OR_NOOP)
     } else if (item.action == @selector(toggle_fullscreen:)) {
         item.title = ([NSApp currentSystemPresentationOptions] & NSApplicationPresentationFullScreen) ? @"Exit Full Screen" : @"Enter Full Screen";
         if (![NSApp keyWindow]) return NO;
+    } else if (item.action == @selector(toggle_macos_tab_overview:)) {
+        // The overview only exists with native tabs on and at least two tabs
+        // in the key window's tab group.
+        NSWindow *window = [NSApp keyWindow];
+        if (!OPT(macos_native_tabs) || !window || [window tabbedWindows].count < 2) return NO;
     } else if (item.action == @selector(minimize_macos_window:)) {
         NSWindow *window = [NSApp keyWindow];
         if (!window || window.miniaturized || [NSApp currentSystemPresentationOptions] & NSApplicationPresentationFullScreen) return NO;
@@ -350,7 +356,7 @@ typedef struct {
     GlobalShortcut toggle_macos_secure_keyboard_entry, toggle_fullscreen, open_kitty_website;
     GlobalShortcut hide_macos_app, hide_macos_other_apps, minimize_macos_window, quit, search_scrollback;
     GlobalShortcut macos_cycle_through_os_windows, macos_cycle_through_os_windows_backwards;
-    GlobalShortcut paste_from_clipboard, copy_or_noop;
+    GlobalShortcut paste_from_clipboard, copy_or_noop, toggle_macos_tab_overview;
 } GlobalShortcuts;
 static GlobalShortcuts global_shortcuts;
 
@@ -377,6 +383,7 @@ cocoa_set_global_shortcut(PyObject *self UNUSED, PyObject *args) {
     else Q(quit); else Q(search_scrollback);
     else Q(macos_cycle_through_os_windows); else Q(macos_cycle_through_os_windows_backwards);
     else Q(paste_from_clipboard); else Q(copy_or_noop);
+    else Q(toggle_macos_tab_overview);
 #undef Q
     if (gs == NULL) {
         PyErr_SetString(PyExc_KeyError, "Unknown shortcut name");
@@ -887,6 +894,7 @@ cocoa_create_global_menu(void) {
     [windowMenu addItem:[NSMenuItem separatorItem]];
     MENU_ITEM(windowMenu, @"Show Previous Tab", previous_tab);
     MENU_ITEM(windowMenu, @"Show Next Tab", next_tab);
+    MENU_ITEM(windowMenu, @"Show All Tabs", toggle_macos_tab_overview);
     [[windowMenu addItemWithTitle:@"Move Tab to New Window" action:@selector(detach_tab:) keyEquivalent:@""] setTarget:global_menu_target];
 
     [windowMenu addItem:[NSMenuItem separatorItem]];

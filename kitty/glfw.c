@@ -3115,6 +3115,19 @@ native_tab_group_order(PyObject *self UNUSED, PyObject *os_window_id) {
 
 
 static PyObject *
+toggle_macos_tab_overview(PyObject *self UNUSED, PyObject *os_window_id) {
+#ifdef __APPLE__
+    id_type osw_id = PyLong_AsUnsignedLongLong(os_window_id);
+    if (PyErr_Occurred()) return NULL;
+    OSWindow *osw = os_window_for_id(osw_id);
+    if (osw && osw->handle) glfwCocoaToggleTabOverview(osw->handle);
+#else
+    (void)os_window_id;
+#endif
+    Py_RETURN_NONE;
+}
+
+static PyObject *
 cocoa_hide_app(PYNOARG) {
 #ifdef __APPLE__
     cocoa_hide();
@@ -4152,6 +4165,7 @@ static PyMethodDef module_methods[] = {
     METHODB(toggle_secure_input, METH_NOARGS),
     METHODB(macos_cycle_through_os_windows, METH_O),
     METHODB(native_tab_group_order, METH_O),
+    METHODB(toggle_macos_tab_overview, METH_O),
     METHODB(get_content_scale_for_window, METH_NOARGS),
     METHODB(ring_bell, METH_VARARGS),
     METHODB(request_attention, METH_VARARGS),

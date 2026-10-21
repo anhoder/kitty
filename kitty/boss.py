@@ -132,6 +132,7 @@ from .fast_data_types import (
     start_drag_with_data,
     thread_write,
     toggle_fullscreen,
+    toggle_macos_tab_overview,
     toggle_maximized,
     toggle_os_window_visibility,
     toggle_secure_input,
@@ -594,6 +595,19 @@ class Boss:
     def all_tabs(self) -> Iterator[Tab]:
         for tm in self.all_tab_managers:
             yield from tm
+
+    @property
+    def tabs_in_display_order(self) -> Iterator[Tab]:
+        # Same tabs as all_tabs, but with macos_native_tabs ordered by the native
+        # tab bar rather than by OS window creation order.
+        if not self.native_tabs_enabled():
+            yield from self.all_tabs
+            return
+        current = current_focused_os_window_id() or last_focused_os_window_id()
+        for os_window_id in self._native_tab_group_os_window_ids(current):
+            tm = self.os_window_map.get(os_window_id)
+            if tm is not None:
+                yield from tm
 
     @property
     def all_windows(self) -> Iterator[Window]:
@@ -1511,6 +1525,23 @@ class Boss:
     @ac('misc', 'Cycle through OS windows backwards on macOS')
     def macos_cycle_through_os_windows_backwards(self) -> None:
         macos_cycle_through_os_windows(True)
+
+    @ac(
+        'tab',
+        """
+        Toggle the macOS native tab overview (Show All Tabs)
+
+        Only works when :opt:`macos_native_tabs` is enabled, since the overview is
+        drawn by macOS for its own tab bar. Has no effect when the current tab group
+        contains a single tab.
+        """,
+    )
+    def toggle_macos_tab_overview(self) -> None:
+        if not self.native_tabs_enabled():
+            return
+        osw_id = current_focused_os_window_id() or last_focused_os_window_id()
+        if osw_id:
+            toggle_macos_tab_overview(osw_id)
 
     @ac('misc', 'Hide macOS kitty application')
     def hide_macos_app(self) -> None:
@@ -3237,10 +3268,26 @@ class Boss:
             tm.goto_tab(tab_num - 1)
 
     def set_active_tab(self, tab: Tab) -> bool:
-        tm = self.active_tab_manager
-        if tm is not None:
-            return tm.set_active_tab(tab)
-        return False
+        # Resolve the tab manager that actually owns tab rather than assuming it
+        # belongs to the focused OS window. With macos_native_tabs every tab is
+        # its own OS window, so the two differ for all but the current tab.
+        tm = tab.tab_manager_ref() or self.active_tab_manager
+        if tm is None:
+            return False
+        if not tm.set_active_tab(tab):
+            return False
+        if current_focused_os_window_id() != tab.os_window_id:
+            self.focus_os_window(tab.os_window_id, False)
+        return True
+
+    def _native_tab_group_os_window_ids(self, current: int) -> tuple[int, ...]:
+        # macOS inserts newly created tabs next to the current one rather than at
+        # the end, so the OS window ids are not in tab bar order. Ask AppKit for
+        # the actual order of the tabs in the tab group containing current.
+        ids = tuple(q for q in (native_tab_group_order(current) or ()) if q in self.os_window_map)
+        if len(ids) <= 1:
+            ids = tuple(sorted(self.os_window_map.keys()))
+        return ids
 
     def _cycle_os_window(self, delta: int) -> None:
         # In native tabs mode each kitty tab is an OS window, so tab navigation
@@ -3248,12 +3295,7 @@ class Boss:
         if len(self.os_window_map) <= 1:
             return
         current = current_focused_os_window_id() or last_focused_os_window_id()
-        # macOS inserts newly created tabs next to the current one rather than at
-        # the end, so the OS window ids are not in tab bar order. Ask AppKit for
-        # the actual order of the tabs in the tab group containing current.
-        ids = tuple(q for q in (native_tab_group_order(current) or ()) if q in self.os_window_map)
-        if len(ids) <= 1:
-            ids = tuple(sorted(self.os_window_map.keys()))
+        ids = self._native_tab_group_os_window_ids(current)
         try:
             idx = ids.index(current)
         except ValueError:
@@ -4009,7 +4051,7 @@ class Boss:
         ct = w.tabref() if w else None
         self.choose_entry(
             'Choose a tab to switch to',
-            ((None, f'Current tab: {format_tab_title(t)}') if t is ct else (t.id, format_tab_title(t)) for t in self.all_tabs),
+            ((None, f'Current tab: {format_tab_title(t)}') if t is ct else (t.id, format_tab_title(t)) for t in self.tabs_in_display_order),
             chosen,
         )
 

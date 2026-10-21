@@ -1092,6 +1092,7 @@ if is_macos:
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=10, key=115), options=KeyMapOptions(when_focus_on='', new_mode='', mode='', on_unknown='beep', on_action='keep', timeout=None, allow_fallback=(KeyFallbackType.shifted, KeyFallbackType.alternate)), definition='toggle_macos_secure_keyboard_entry'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=8, key=96), definition='macos_cycle_through_os_windows'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=9, key=96), definition='macos_cycle_through_os_windows_backwards'))
+    defaults.map.append(KeyDefinition(trigger=SingleKey(mods=9, key=92), definition='toggle_macos_tab_overview'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=12, key=32), definition='kitten unicode_input'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=8, key=44), definition='edit_config_file'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=10, key=114), definition='clear_terminal reset active'))

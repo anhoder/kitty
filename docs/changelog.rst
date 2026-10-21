@@ -258,6 +258,18 @@ Detailed list of changes
   :opt:`macos_native_tabs` enabled cycling tabs in creation order instead of
   the order the tabs appear in the native tab bar
 
+- macOS: Add :ac:`toggle_macos_tab_overview` to show the native tab overview
+  ("Show All Tabs") when :opt:`macos_native_tabs` is enabled, mapped to
+  :kbd:`cmd+shift+\\` by default and available from the Window menu
+
+- Fix :ac:`select_tab` silently doing nothing when the chosen tab belongs to
+  another OS window, which with :opt:`macos_native_tabs` enabled was every tab
+  except the current one
+
+- macOS: Fix :ac:`select_tab` listing tabs in creation order instead of the
+  order they appear in the native tab bar when :opt:`macos_native_tabs` is
+  enabled
+
 - Remote control: Fix ``kitten @ action --match`` ignoring the match and
   running the action on the active window (:iss:`10672`)
 

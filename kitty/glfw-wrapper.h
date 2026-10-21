@@ -2621,6 +2621,10 @@ typedef size_t (*glfwCocoaGetTabGroupWindowOrder_func)(GLFWwindow*, GLFWwindow**
 GFW_EXTERN glfwCocoaGetTabGroupWindowOrder_func glfwCocoaGetTabGroupWindowOrder_impl;
 #define glfwCocoaGetTabGroupWindowOrder glfwCocoaGetTabGroupWindowOrder_impl
 
+typedef void (*glfwCocoaToggleTabOverview_func)(GLFWwindow*);
+GFW_EXTERN glfwCocoaToggleTabOverview_func glfwCocoaToggleTabOverview_impl;
+#define glfwCocoaToggleTabOverview glfwCocoaToggleTabOverview_impl
+
 typedef const char* (*glfwGetPrimarySelectionString_func)(GLFWwindow*);
 GFW_EXTERN glfwGetPrimarySelectionString_func glfwGetPrimarySelectionString_impl;
 #define glfwGetPrimarySelectionString glfwGetPrimarySelectionString_impl

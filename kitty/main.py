@@ -213,6 +213,7 @@ def set_cocoa_global_shortcuts(opts: Options) -> dict[str, SingleKey]:
             'toggle_fullscreen',
             'macos_cycle_through_os_windows',
             'macos_cycle_through_os_windows_backwards',
+            'toggle_macos_tab_overview',
             'hide_macos_app',
             'hide_macos_other_apps',
             'minimize_macos_window',

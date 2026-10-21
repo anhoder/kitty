@@ -101,6 +101,7 @@ def generate_wrappers(glfw_header: str) -> None:
     void glfwCocoaEnableNativeTabs(bool enable)
     void glfwCocoaMergeWindowIntoTabs(GLFWwindow *window, GLFWwindow *parent)
     size_t glfwCocoaGetTabGroupWindowOrder(GLFWwindow *window, GLFWwindow **out, size_t out_sz)
+    void glfwCocoaToggleTabOverview(GLFWwindow *window)
     const char* glfwGetPrimarySelectionString(GLFWwindow* window, void)
     int glfwGetNativeKeyForName(const char* key_name, int case_sensitive)
     void glfwRequestWaylandFrameEvent(GLFWwindow *handle, unsigned long long id, GLFWwaylandframecallbackfunc callback)

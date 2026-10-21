@@ -4207,6 +4207,22 @@ glfwCocoaGetTabGroupWindowOrder(GLFWwindow *w, GLFWwindow **out, size_t out_sz) 
     }
 }
 
+// Toggles the native macOS tab overview ("Show All Tabs") for the tab group
+// containing w. No-op unless w is part of a tab group with more than one
+// window, since the overview is meaningless for a lone tab.
+GLFWAPI void
+glfwCocoaToggleTabOverview(GLFWwindow *w) {
+    @autoreleasepool {
+        _GLFWwindow *window = (_GLFWwindow *)w;
+        if (!window || !window->ns.object) return;
+        NSWindowTabGroup *group = [window->ns.object tabGroup];
+        if (!group || group.windows.count < 2) return;
+        // Drive the property directly rather than -[NSWindow toggleTabOverview:]
+        // so that the result does not depend on keyWindow/the responder chain.
+        group.overviewVisible = !group.isOverviewVisible;
+    }
+}
+
 GLFWAPI void
 glfwCocoaSetWindowChrome(
     GLFWwindow *w,

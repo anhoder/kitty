@@ -4642,6 +4642,11 @@ map(
 
 map('macOS Cycle through OS Windows', 'macos_cycle_through_os_windows cmd+` macos_cycle_through_os_windows', only='macos')
 map('macOS Cycle through OS Windows backwards', 'macos_cycle_through_os_windows_backwards cmd+shift+` macos_cycle_through_os_windows_backwards', only='macos')
+map(
+    'macOS Show All Tabs',
+    'toggle_macos_tab_overview cmd+shift+backslash toggle_macos_tab_overview',
+    only='macos',
+)
 
 map(
     'Unicode input',

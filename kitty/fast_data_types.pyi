@@ -884,6 +884,9 @@ def macos_cycle_through_os_windows(backwards: bool) -> None:
 def native_tab_group_order(os_window_id: int) -> tuple[int, ...] | None:
     pass
 
+def toggle_macos_tab_overview(os_window_id: int) -> None:
+    pass
+
 def start_profiler(path: str) -> None:
     pass
 
