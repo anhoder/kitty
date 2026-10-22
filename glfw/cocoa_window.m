@@ -4156,14 +4156,28 @@ glfwCocoaEnableNativeTabs(bool enable) {
     native_tabs_enabled = enable;
 }
 
+static void
+request_window_resize(_GLFWwindow *window) {
+    if (!window || !window->ns.delegate) return;
+    NSNotification *notification = [NSNotification notificationWithName:NSWindowDidResizeNotification object:window->ns.object];
+    [window->ns.delegate performSelector:@selector(windowDidResize:) withObject:notification afterDelay:0];
+}
+
 GLFWAPI void
 glfwCocoaMergeWindowIntoTabs(GLFWwindow *w, GLFWwindow *parent_w) {
     @autoreleasepool {
         if (!w || !parent_w) return;
-        NSWindow *window = ((_GLFWwindow *)w)->ns.object;
-        NSWindow *parent = ((_GLFWwindow *)parent_w)->ns.object;
-        if (window && parent && window != parent) {
-            [parent addTabbedWindow:window ordered:NSWindowAbove];
+        _GLFWwindow *window = (_GLFWwindow *)w;
+        _GLFWwindow *parent_window = (_GLFWwindow *)parent_w;
+        NSWindow *child = window->ns.object;
+        NSWindow *parent = parent_window->ns.object;
+        if (child && parent && child != parent) {
+            [parent addTabbedWindow:child ordered:NSWindowAbove];
+            // AppKit updates the tab bar and content frame on the next run-loop
+            // iteration. Refresh both windows after that update so the native
+            // tab bar cannot overlap the terminal content.
+            request_window_resize(parent_window);
+            request_window_resize(window);
         }
     }
 }

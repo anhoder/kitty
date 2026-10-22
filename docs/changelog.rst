@@ -269,6 +269,8 @@ Detailed list of changes
 - macOS: Fix :ac:`select_tab` listing tabs in creation order instead of the
   order they appear in the native tab bar when :opt:`macos_native_tabs` is
   enabled
+- macOS: Fix the native tab bar overlapping terminal content when creating a
+  tab while the window is fullscreen with :opt:`macos_native_tabs` enabled
 
 - Remote control: Fix ``kitten @ action --match`` ignoring the match and
   running the action on the active window (:iss:`10672`)
