@@ -363,6 +363,27 @@ def resize_window(func: str, rest: str) -> FuncArgsType:
     return func, args
 
 
+@func_with_args('resize_window_edge')
+def resize_window_edge(func: str, rest: str) -> FuncArgsType:
+    vals = rest.strip().split(maxsplit=1)
+    if not vals:
+        log_error('resize_window_edge needs an edge (left/right/top/bottom/up/down), using default')
+        return func, ['left', 1]
+    edge = vals[0].lower()
+    # Support up/down aliases for consistency with move_window and neighboring_window
+    edge = {'up': 'top', 'down': 'bottom'}.get(edge, edge)
+    if edge not in ('left', 'right', 'top', 'bottom'):
+        log_error(f'Invalid edge specification: {vals[0]}, must be left/right/top/bottom/up/down')
+        edge = 'left'
+    increment = 1
+    if len(vals) == 2:
+        try:
+            increment = int(vals[1])
+        except Exception:
+            log_error(f'Invalid increment specification: {vals[1]}')
+    return func, [edge, increment]
+
+
 @func_with_args('move_window')
 def move_window(func: str, rest: str) -> FuncArgsType:
     rest = rest.lower()

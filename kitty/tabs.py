@@ -61,6 +61,7 @@ from .fast_data_types import (
 )
 from .layout.base import DragOverlayMode, Layout
 from .layout.interface import all_layouts, create_layout_object_for, evict_cached_layouts
+from .layout.splits import Splits
 from .progress import ProgressState
 from .tab_bar import TabBar, TabBarData, WindowDropTarget, apply_title_template
 from .types import DockSpec, ac
@@ -781,6 +782,54 @@ class Tab:  # {{{
         if w is not None and self.resize_window_by(w.id, increment, is_horizontal) is not None:
             if get_options().enable_audio_bell:
                 ring_bell(self.os_window_id)
+
+    @ac(
+        'win',
+        """
+        Resize the active window by moving one of its edges in the :ref:`Splits <splits_layout>` layout
+
+        Unlike :ac:`resize_window`, which grows or shrinks the active window along an axis and
+        lets the layout decide which neighbour yields space, this moves a named edge of the
+        active window, keeping other dividers on the same axis in place::
+
+            map ctrl+cmd+left  resize_window_edge left 1
+            map ctrl+cmd+right resize_window_edge right 1
+            map ctrl+cmd+up    resize_window_edge up 1
+            map ctrl+cmd+down  resize_window_edge down 1
+
+        The direction names both the edge to move and the way it travels, matching the edge mode
+        of :ac:`start_resizing_window`: :code:`left` moves the left edge leftwards, :code:`right`
+        moves the right edge rightwards. So a positive increment always grows the active window
+        on that side. The direction is one of :code:`left`, :code:`right`, :code:`top`,
+        :code:`bottom`, :code:`up` (alias for :code:`top`) or :code:`down` (alias for
+        :code:`bottom`). The optional second argument is the number of cells (defaults to 1).
+        Outer edges (window against the frame) have no divider, so moving them is a no-op that
+        rings the bell if :opt:`enable_audio_bell` is set.
+        """,
+    )
+    def resize_window_edge(self, direction: str, increment: int = 1) -> None:
+        w = self.active_window
+        layout = self.current_layout
+        moved = False
+        if w is not None and isinstance(layout, Splits) and increment:
+            # The direction is a travel direction, as in the edge mode of
+            # :ac:`start_resizing_window`: moving the edge on that side when it has a divider
+            # matches selecting it there, and falling back to the opposite edge of the same axis
+            # matches that mode auto-selecting a sole internal edge. The fallback is per axis,
+            # so unlike that mode it still acts when the other axis also has a divider.
+            if direction in ('left', 'right'):
+                candidates = ('left', 'right') if direction == 'left' else ('right', 'left')
+            else:
+                candidates = ('top', 'bottom') if direction == 'top' else ('bottom', 'top')
+            sign = -1 if direction in ('left', 'top') else 1
+            for edge in candidates:
+                if layout.pair_for_window_edge(self.windows, w.id, edge) is not None:
+                    moved = layout.modify_size_of_window_edge(self.windows, w.id, edge, sign * increment)
+                    if moved:
+                        self.relayout()
+                    break
+        if not moved and get_options().enable_audio_bell:
+            ring_bell(self.os_window_id)
 
     @ac('win', 'Reset window sizes undoing any dynamic resizing of windows')
     def reset_window_sizes(self) -> None:
