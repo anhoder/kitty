@@ -68,6 +68,7 @@ typedef bool (*GLFWhandleurlopen)(const char *);
 typedef void (*GLFWapplicationwillfinishlaunchingfun)(bool);
 typedef bool (*GLFWcocoatogglefullscreenfun)(GLFWwindow *);
 typedef void (*GLFWcocoarenderframefun)(GLFWwindow *);
+typedef void (*GLFWcocoanewtabfun)(GLFWwindow *);
 
 typedef VkFlags VkMacOSSurfaceCreateFlagsMVK;
 typedef VkFlags VkMetalSurfaceCreateFlagsEXT;

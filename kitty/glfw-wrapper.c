@@ -530,6 +530,9 @@ load_glfw(const char* path) {
     *(void **) (&glfwCocoaToggleTabOverview_impl) = dlsym(handle, "glfwCocoaToggleTabOverview");
     if (glfwCocoaToggleTabOverview_impl == NULL) dlerror(); // clear error indicator
 
+    *(void **) (&glfwCocoaSetNewTabCallback_impl) = dlsym(handle, "glfwCocoaSetNewTabCallback");
+    if (glfwCocoaSetNewTabCallback_impl == NULL) dlerror(); // clear error indicator
+
     *(void **) (&glfwGetPrimarySelectionString_impl) = dlsym(handle, "glfwGetPrimarySelectionString");
     if (glfwGetPrimarySelectionString_impl == NULL) dlerror(); // clear error indicator
 

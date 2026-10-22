@@ -239,6 +239,31 @@ update_secure_input_menu_bar_indicator(BOOL enabled) {
 }
 @end
 
+@interface WindowMenuDelegate : NSObject <NSMenuDelegate>
+@end
+
+@implementation WindowMenuDelegate
+- (void)menuNeedsUpdate:(NSMenu *)menu {
+    // AppKit injects selectPreviousTab:, selectNextTab:, moveTabToNewWindow:,
+    // toggleTabOverview: when allowsAutomaticWindowTabbing=YES (we need it YES
+    // for mergeAllWindows:/toggleTabBar: to work). Remove those injected
+    // duplicates; kitty has its own versions with shortcuts from kitty.conf.
+    static const char *injected[] = {"selectPreviousTab:", "selectNextTab:", "moveTabToNewWindow:", "toggleTabOverview:"};
+    NSMutableArray<NSMenuItem *> *to_remove = [NSMutableArray array];
+    for (NSMenuItem *item in menu.itemArray) {
+        if (!item.action) continue;
+        const char *sel_name = sel_getName(item.action);
+        for (size_t i = 0; i < arraysz(injected); i++) {
+            if (strcmp(sel_name, injected[i]) == 0) {
+                [to_remove addObject:item];
+                break;
+            }
+        }
+    }
+    for (NSMenuItem *item in to_remove) [menu removeItem:item];
+}
+@end
+
 
 @interface GlobalMenuTarget : NSObject
 + (GlobalMenuTarget *)shared_instance;
@@ -896,9 +921,18 @@ cocoa_create_global_menu(void) {
     MENU_ITEM(windowMenu, @"Show Next Tab", next_tab);
     MENU_ITEM(windowMenu, @"Show All Tabs", toggle_macos_tab_overview);
     [[windowMenu addItemWithTitle:@"Move Tab to New Window" action:@selector(detach_tab:) keyEquivalent:@""] setTarget:global_menu_target];
+    // These two have no kitty equivalent, so use AppKit's implementations. They
+    // need allowsAutomaticWindowTabbing to stay on, which also makes AppKit
+    // inject its own copies of the four items above; WindowMenuDelegate strips
+    // those duplicates when the menu opens.
+    [windowMenu addItemWithTitle:@"Merge All Windows" action:@selector(mergeAllWindows:) keyEquivalent:@""];
+    [windowMenu addItemWithTitle:@"Show Tab Bar" action:@selector(toggleTabBar:) keyEquivalent:@""];
 
     [windowMenu addItem:[NSMenuItem separatorItem]];
     MENU_ITEM(windowMenu, @"Enter Full Screen", toggle_fullscreen);
+    static WindowMenuDelegate *window_menu_delegate = nil;
+    if (!window_menu_delegate) window_menu_delegate = [[WindowMenuDelegate alloc] init];
+    windowMenu.delegate = window_menu_delegate;
     [NSApp setWindowsMenu:windowMenu];
     [windowMenu release];
 

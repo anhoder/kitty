@@ -262,6 +262,14 @@ Detailed list of changes
   ("Show All Tabs") when :opt:`macos_native_tabs` is enabled, mapped to
   :kbd:`cmd+shift+\\` by default and available from the Window menu
 
+- macOS: Add the "+" button to the native tab bar when :opt:`macos_native_tabs`
+  is enabled, so new tabs can be created by clicking it, by double clicking
+  empty tab bar space or from the tab overview
+
+- macOS: Fix the Window menu containing a duplicate set of tab entries (Show
+  Previous/Next Tab, Show All Tabs, Move Tab to New Window, plus unusable Merge
+  All Windows and Hide Tab Bar items) added by macOS alongside kitty's own
+
 - Fix :ac:`select_tab` silently doing nothing when the chosen tab belongs to
   another OS window, which with :opt:`macos_native_tabs` enabled was every tab
   except the current one

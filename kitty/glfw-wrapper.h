@@ -1937,6 +1937,7 @@ typedef bool (* GLFWhandleurlopen)(const char*);
 typedef void (* GLFWapplicationwillfinishlaunchingfun)(bool);
 typedef bool (* GLFWcocoatogglefullscreenfun)(GLFWwindow*);
 typedef void (* GLFWcocoarenderframefun)(GLFWwindow*);
+typedef void (* GLFWcocoanewtabfun)(GLFWwindow*);
 typedef void (*GLFWwaylandframecallbackfunc)(unsigned long long id);
 typedef void (*GLFWDBusnotificationcreatedfun)(unsigned long long, uint32_t, void*);
 typedef void (*GLFWDBusnotificationactivatedfun)(uint32_t, int, const char*);
@@ -2624,6 +2625,10 @@ GFW_EXTERN glfwCocoaGetTabGroupWindowOrder_func glfwCocoaGetTabGroupWindowOrder_
 typedef void (*glfwCocoaToggleTabOverview_func)(GLFWwindow*);
 GFW_EXTERN glfwCocoaToggleTabOverview_func glfwCocoaToggleTabOverview_impl;
 #define glfwCocoaToggleTabOverview glfwCocoaToggleTabOverview_impl
+
+typedef GLFWcocoanewtabfun (*glfwCocoaSetNewTabCallback_func)(GLFWcocoanewtabfun);
+GFW_EXTERN glfwCocoaSetNewTabCallback_func glfwCocoaSetNewTabCallback_impl;
+#define glfwCocoaSetNewTabCallback glfwCocoaSetNewTabCallback_impl
 
 typedef const char* (*glfwGetPrimarySelectionString_func)(GLFWwindow*);
 GFW_EXTERN glfwGetPrimarySelectionString_func glfwGetPrimarySelectionString_impl;

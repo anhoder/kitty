@@ -2434,6 +2434,15 @@ _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
     else [super performMiniaturize:sender];
 }
 
+// Implementing this selector is what makes AppKit draw the "+" button at the
+// right end of the native tab bar. It is also sent for the "New Tab" item in
+// the tab overview and when the user double clicks empty tab bar space.
+- (void)newWindowForTab:(id)sender {
+    (void)sender;
+    extern GLFWcocoanewtabfun new_tab_callback;
+    if (glfw_window && new_tab_callback) new_tab_callback((GLFWwindow *)glfw_window);
+}
+
 - (NSRect)constrainFrameRect:(NSRect)frameRect toScreen:(nullable NSScreen *)screen {
     if (glfw_window && glfw_window->ns.suppress_frame_constraints) return frameRect;
     return [super constrainFrameRect:frameRect toScreen:screen];
@@ -4154,6 +4163,17 @@ bool native_tabs_enabled = false;
 GLFWAPI void
 glfwCocoaEnableNativeTabs(bool enable) {
     native_tabs_enabled = enable;
+}
+
+// Called when the native tab bar's "+" button, its tab overview equivalent or a
+// double click on empty tab bar space asks for a new tab.
+GLFWcocoanewtabfun new_tab_callback = NULL;
+
+GLFWAPI GLFWcocoanewtabfun
+glfwCocoaSetNewTabCallback(GLFWcocoanewtabfun callback) {
+    GLFWcocoanewtabfun previous = new_tab_callback;
+    new_tab_callback = callback;
+    return previous;
 }
 
 static void

@@ -1887,6 +1887,14 @@ on_application_reopen(int has_visible_windows) {
     return false;
 }
 
+// Sent by AppKit when the native tab bar's "+" button is used. The clicked tab
+// group's window is made key before the action is delivered, so the NEW_TAB
+// action creates the tab in the right tab group.
+static void
+on_cocoa_new_tab(GLFWwindow *w UNUSED) {
+    set_cocoa_pending_action(NEW_TAB, NULL);
+}
+
 static bool
 intercept_cocoa_fullscreen(GLFWwindow *w) {
     if (!set_callback_window(w)) return false;
@@ -2348,6 +2356,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
 #ifdef __APPLE__
         cocoa_set_activation_policy(OPT(macos_hide_from_tasks) || lsc != NULL);
         glfwCocoaEnableNativeTabs(OPT(macos_native_tabs));
+        glfwCocoaSetNewTabCallback(on_cocoa_new_tab);
         glfwWindowHint(GLFW_COCOA_GRAPHICS_SWITCHING, true);
         glfwSetApplicationShouldHandleReopen(on_application_reopen);
         glfwSetApplicationWillFinishLaunching(cocoa_application_lifecycle_event);

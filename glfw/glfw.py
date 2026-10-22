@@ -102,6 +102,7 @@ def generate_wrappers(glfw_header: str) -> None:
     void glfwCocoaMergeWindowIntoTabs(GLFWwindow *window, GLFWwindow *parent)
     size_t glfwCocoaGetTabGroupWindowOrder(GLFWwindow *window, GLFWwindow **out, size_t out_sz)
     void glfwCocoaToggleTabOverview(GLFWwindow *window)
+    GLFWcocoanewtabfun glfwCocoaSetNewTabCallback(GLFWcocoanewtabfun callback)
     const char* glfwGetPrimarySelectionString(GLFWwindow* window, void)
     int glfwGetNativeKeyForName(const char* key_name, int case_sensitive)
     void glfwRequestWaylandFrameEvent(GLFWwindow *handle, unsigned long long id, GLFWwaylandframecallbackfunc callback)
@@ -158,6 +159,7 @@ typedef bool (* GLFWhandleurlopen)(const char*);
 typedef void (* GLFWapplicationwillfinishlaunchingfun)(bool);
 typedef bool (* GLFWcocoatogglefullscreenfun)(GLFWwindow*);
 typedef void (* GLFWcocoarenderframefun)(GLFWwindow*);
+typedef void (* GLFWcocoanewtabfun)(GLFWwindow*);
 typedef void (*GLFWwaylandframecallbackfunc)(unsigned long long id);
 typedef void (*GLFWDBusnotificationcreatedfun)(unsigned long long, uint32_t, void*);
 typedef void (*GLFWDBusnotificationactivatedfun)(uint32_t, int, const char*);
