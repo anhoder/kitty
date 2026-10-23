@@ -1657,7 +1657,16 @@ render_a_bar(const UIRenderData *ui, WindowBarData *bar, PyObject *title, bool a
         if (!title) return 0;
         snprintf(titlebuf, arraysz(titlebuf), " %s", PyUnicode_AsUTF8(title));
         if (!draw_window_title(
-                ui->os_window->fonts_data->font_sz_in_pts, ui->os_window->fonts_data->logical_dpi_y, titlebuf, fg, bg, bar->buf, bar_width, bar_height, NULL))
+                ui->os_window->fonts_data->font_sz_in_pts,
+                ui->os_window->fonts_data->logical_dpi_y,
+                titlebuf,
+                NULL,
+                fg,
+                bg,
+                bar->buf,
+                bar_width,
+                bar_height,
+                NULL))
             return 0;
         Py_CLEAR(bar->last_drawn_title_object_id);
         bar->last_drawn_title_object_id = Py_NewRef(title);
@@ -1732,6 +1741,161 @@ draw_hyperlink_target(const UIRenderData *ui) {
     PyObject *ref = Py_NewRef(bd->last_drawn_title_object_id); // render_a_bar clears bd->last_drawn_title_object_id
     render_a_bar(ui, &window->title_bar_data, bd->last_drawn_title_object_id, along_bottom);
     Py_DECREF(ref);
+}
+
+static bool
+has_window_title_watermark(const OSWindow *os_window, Window *w) {
+    if (OPT(window_title_watermark) == WATERMARK_NONE || w == NULL) return false;
+    if (!w->title || !PyUnicode_Check(w->title) || !PyUnicode_GET_LENGTH(w->title)) return false;
+    if (OPT(window_title_watermark_opacity) <= 0.f) return false;
+    const int min_windows = OPT(window_title_watermark_min_windows);
+    if (min_windows < 1) return false;
+    return (int)os_window->num_visible_windows_in_active_tab >= min_windows;
+}
+
+// Rasterize the window title into an 8-bit coverage mask, cached on the
+// window. Returns false if nothing can be drawn.
+static bool
+ensure_watermark_mask(const UIRenderData *ui, size_t text_height, size_t max_width, float opacity, const char *family) {
+    Window *w = ui->window;
+    const char *cached_family = w->watermark.rendered_for_family;
+    const bool same_family = (family == NULL) == (cached_family == NULL) && (family == NULL || strcmp(family, cached_family) == 0);
+    if (w->watermark.mask && w->watermark.rendered_for_title == w->title && w->watermark.text_height == text_height && w->watermark.max_width == max_width &&
+        w->watermark.opacity == opacity && same_family)
+        return w->watermark.width > 0 && w->watermark.height > 0;
+
+    free(w->watermark.mask);
+    w->watermark.mask = NULL;
+    w->watermark.width = w->watermark.height = 0;
+    Py_CLEAR(w->watermark.rendered_for_title);
+
+    // draw_window_title() writes pre-multiplied RGBA. Rendering opaque white
+    // text on a fully transparent background makes the alpha channel of each
+    // pixel exactly the glyph coverage at that pixel, which is what we want
+    // for an alpha mask. Both the FreeType and CoreText backends put alpha in
+    // byte 3 of each pixel on little endian machines.
+    uint8_t *rgba = calloc(4u * max_width, text_height);
+    if (!rgba) return false;
+    size_t actual_width = max_width;
+    const double font_sz_pts = ui->os_window->fonts_data->font_sz_in_pts * OPT(window_title_watermark_font_size);
+    if (!draw_window_title(
+            font_sz_pts,
+            ui->os_window->fonts_data->logical_dpi_y,
+            PyUnicode_AsUTF8(w->title),
+            family,
+            0xFFFFFFFF,
+            0x00000000,
+            rgba,
+            max_width,
+            text_height,
+            &actual_width) ||
+        actual_width < 1) {
+        free(rgba);
+        return false;
+    }
+    // The glyphs are vertically centred within text_height and horizontally
+    // packed into actual_width columns. Trim the empty rows above and below the
+    // glyphs so that the mask is exactly the inked area, otherwise positioning
+    // the watermark against a window edge leaves a gap of unpredictable size.
+    size_t first_row = text_height, last_row = 0;
+    for (size_t y = 0; y < text_height; y++) {
+        const uint8_t *row = rgba + 4 * y * actual_width;
+        for (size_t x = 0; x < actual_width; x++) {
+            if (row[4 * x + 3]) {
+                if (y < first_row) first_row = y;
+                last_row = y;
+                break;
+            }
+        }
+    }
+    if (first_row > last_row) { // nothing was inked
+        free(rgba);
+        return false;
+    }
+    const size_t mask_height = last_row - first_row + 1;
+    uint8_t *mask = malloc(actual_width * mask_height);
+    if (!mask) {
+        free(rgba);
+        return false;
+    }
+    for (size_t i = 0; i < actual_width * mask_height; i++) mask[i] = (uint8_t)(rgba[4 * (i + first_row * actual_width) + 3] * opacity);
+    free(rgba);
+    w->watermark.mask = mask;
+    w->watermark.width = actual_width;
+    w->watermark.height = mask_height;
+    w->watermark.text_height = text_height;
+    w->watermark.max_width = max_width;
+    w->watermark.opacity = opacity;
+    free(w->watermark.rendered_for_family);
+    w->watermark.rendered_for_family = family ? strdup(family) : NULL;
+    w->watermark.rendered_for_title = Py_NewRef(w->title);
+    return true;
+}
+
+static void
+draw_window_title_watermark(const UIRenderData *ui) {
+    if (!has_window_title_watermark(ui->os_window, ui->window)) return;
+    // Inset the watermark from the window edges by one cell width on every
+    // side. Cell width is used for the vertical inset too, because cell height
+    // is typically about twice the width, which makes a one cell vertical gap
+    // look much larger than the horizontal one.
+    const unsigned margin = ui->cell_width;
+    if (ui->screen_width <= 2 * margin || ui->screen_height <= 2 * margin) return;
+    const size_t max_width = ui->screen_width - 2 * margin;
+    size_t text_height = (size_t)(ui->cell_height * MAX(0.f, OPT(window_title_watermark_font_size)));
+    text_height = MIN(text_height, ui->screen_height - 2 * margin);
+    if (text_height < 4 || max_width < 4) return;
+    const float opacity = MIN(1.f, MAX(0.f, OPT(window_title_watermark_opacity)));
+    if (!ensure_watermark_mask(ui, text_height, max_width, opacity, OPT(window_title_watermark_font_family))) return;
+
+    const unsigned wm_width = (unsigned)ui->window->watermark.width, wm_height = (unsigned)ui->window->watermark.height;
+    const unsigned x_margin = margin, y_margin = margin;
+    const unsigned x_center = (ui->screen_width - wm_width) / 2, x_far = ui->screen_width - wm_width - x_margin;
+    const unsigned y_center = (ui->screen_height - wm_height) / 2, y_far = ui->screen_height - wm_height - y_margin;
+    unsigned x = x_center, y = y_center; // y measured from the top of the window
+    switch (OPT(window_title_watermark)) {
+        case WATERMARK_NONE: return;
+        case WATERMARK_TOP_LEFT:
+            x = x_margin;
+            y = y_margin;
+            break;
+        case WATERMARK_TOP: y = y_margin; break;
+        case WATERMARK_TOP_RIGHT:
+            x = x_far;
+            y = y_margin;
+            break;
+        case WATERMARK_LEFT: x = x_margin; break;
+        case WATERMARK_CENTER: break;
+        case WATERMARK_RIGHT: x = x_far; break;
+        case WATERMARK_BOTTOM_LEFT:
+            x = x_margin;
+            y = y_far;
+            break;
+        case WATERMARK_BOTTOM: y = y_far; break;
+        case WATERMARK_BOTTOM_RIGHT:
+            x = x_far;
+            y = y_far;
+            break;
+    }
+
+    ImageRenderData *ird = load_alpha_mask_texture(wm_width, wm_height, ui->window->watermark.mask);
+    gpu_data_for_image(ird, -1, 1, 1, -1);
+    bind_program(GRAPHICS_ALPHA_MASK_PROGRAM);
+    glUniform1i(program_uniform_location(GRAPHICS_ALPHA_MASK_PROGRAM, "image"), GRAPHICS_UNIT);
+    // window_title_watermark_color is encoded by color_with_special_values():
+    // zero means "none", i.e. use the window foreground, otherwise the color is
+    // in the upper 24 bits.
+    const color_type configured_color = OPT(window_title_watermark_color);
+    const color_type fg =
+        configured_color ? configured_color >> 8
+                         : colorprofile_to_color(
+                               ui->screen->color_profile, ui->screen->color_profile->overridden.default_fg, ui->screen->color_profile->configured.default_fg)
+                               .rgb;
+    color_vec3(program_uniform_location(GRAPHICS_ALPHA_MASK_PROGRAM, "amask_fg"), fg);
+    glUniform4f(program_uniform_location(GRAPHICS_ALPHA_MASK_PROGRAM, "amask_bg_premult"), 0.f, 0.f, 0.f, 0.f);
+    save_viewport_using_top_left_origin(ui->screen_left + x, ui->screen_top + y, wm_width, wm_height, ui->full_framebuffer_height);
+    draw_graphics(GRAPHICS_ALPHA_MASK_PROGRAM, ird, 0, 1, 1.f);
+    restore_viewport();
 }
 
 static bool
@@ -2120,8 +2284,9 @@ draw_window_logo(const UIRenderData *ui) {
 
 bool
 screen_needs_rendering_in_layers(OSWindow *os_window, Window *w, Screen *screen) {
-    const bool has_ui = w && ((screen->start_visual_bell_at | screen->start_drag_overlay_at) || has_scrollbar(w, screen) || has_progress_bar(screen) ||
-                              has_hyperlink_target(os_window, w, screen) || has_window_number(w, screen) || w->window_logo.id);
+    const bool has_ui =
+        w && ((screen->start_visual_bell_at | screen->start_drag_overlay_at) || has_scrollbar(w, screen) || has_progress_bar(screen) ||
+              has_hyperlink_target(os_window, w, screen) || has_window_number(w, screen) || has_window_title_watermark(os_window, w) || w->window_logo.id);
     GraphicsManager *grman = screen->paused_rendering.expires_at && screen->paused_rendering.grman ? screen->paused_rendering.grman : screen->grman;
     return has_ui || grman_has_images(grman);
 }
@@ -2431,6 +2596,7 @@ draw_cells_with_layers(const UIRenderData *ui, ssize_t vao_idx) {
     draw_progress_bar(ui);
     draw_scrollbar(ui);
     draw_hyperlink_target(ui);
+    draw_window_title_watermark(ui);
     draw_window_number(ui);
 }
 

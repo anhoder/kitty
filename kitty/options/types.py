@@ -43,6 +43,7 @@ choices_for_underline_hyperlinks = typing.Literal['hover', 'always', 'never']
 choices_for_window_logo_position = choices_for_placement_strategy
 choices_for_window_title_bar = typing.Literal['top', 'bottom']
 choices_for_window_title_bar_align = typing.Literal['left', 'center', 'right']
+choices_for_window_title_watermark = typing.Literal['none', 'top-left', 'top', 'top-right', 'left', 'center', 'right', 'bottom-left', 'bottom', 'bottom-right']
 
 option_names = (
     'action_alias',
@@ -529,6 +530,12 @@ option_names = (
     'window_title_bar_inactive_foreground',
     'window_title_bar_min_windows',
     'window_title_template',
+    'window_title_watermark',
+    'window_title_watermark_color',
+    'window_title_watermark_font_family',
+    'window_title_watermark_font_size',
+    'window_title_watermark_min_windows',
+    'window_title_watermark_opacity',
 )
 
 
@@ -746,6 +753,12 @@ class Options:
     window_title_bar_inactive_foreground: kitty.fast_data_types.Color | None = None
     window_title_bar_min_windows: int = 0
     window_title_template: str = '{fmt.fg.red}{bell_symbol}{activity_symbol}{fmt.fg.window}{progress_percent}{title}'
+    window_title_watermark: choices_for_window_title_watermark = 'none'
+    window_title_watermark_color: int = 0
+    window_title_watermark_font_family: str | None = None
+    window_title_watermark_font_size: float = 1.0
+    window_title_watermark_min_windows: int = 2
+    window_title_watermark_opacity: float = 0.4
     action_alias: dict[str, str] = {}
     detect_url_regex: dict[str, str] = {}
     env: dict[str, str] = {}

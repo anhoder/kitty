@@ -1083,6 +1083,23 @@ def scrollbar_color(x: str) -> int:
     return color_with_special_values(x, {'foreground': 0, 'selection_background': 1}, 'Ignoring invalid scroll bar color: {x}')
 
 
+def watermark_color(x: str) -> int:
+    # Encoded as an int rather than a nullable Color because nullable colors
+    # are reset by theme application when the theme does not mention them.
+    return color_with_special_values(x, {'none': 0}, 'Ignoring invalid window title watermark color: {x}')
+
+
+def watermark_font_family(x: str) -> str | None:
+    # Family names commonly contain spaces, so allow them to be quoted, as
+    # tab_title_template does.
+    x = x.strip()
+    for q in '\'"':
+        if len(x) > 1 and x.startswith(q) and x.endswith(q):
+            x = x[1:-1]
+            break
+    return None if x == 'none' else x
+
+
 def macos_titlebar_color(x: str) -> int:
     x = x.strip('"')
     if x == 'light':

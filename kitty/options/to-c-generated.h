@@ -1111,6 +1111,84 @@ convert_from_opts_window_title_bar_inactive_background(PyObject *py_opts, Option
 }
 
 static void
+convert_from_python_window_title_watermark(PyObject *val, Options *opts) {
+    opts->window_title_watermark = watermark_position(val);
+}
+
+static void
+convert_from_opts_window_title_watermark(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "window_title_watermark");
+    if (ret == NULL) return;
+    convert_from_python_window_title_watermark(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
+convert_from_python_window_title_watermark_opacity(PyObject *val, Options *opts) {
+    opts->window_title_watermark_opacity = PyFloat_AsFloat(val);
+}
+
+static void
+convert_from_opts_window_title_watermark_opacity(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "window_title_watermark_opacity");
+    if (ret == NULL) return;
+    convert_from_python_window_title_watermark_opacity(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
+convert_from_python_window_title_watermark_font_size(PyObject *val, Options *opts) {
+    opts->window_title_watermark_font_size = PyFloat_AsFloat(val);
+}
+
+static void
+convert_from_opts_window_title_watermark_font_size(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "window_title_watermark_font_size");
+    if (ret == NULL) return;
+    convert_from_python_window_title_watermark_font_size(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
+convert_from_python_window_title_watermark_color(PyObject *val, Options *opts) {
+    opts->window_title_watermark_color = PyLong_AsUnsignedLong(val);
+}
+
+static void
+convert_from_opts_window_title_watermark_color(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "window_title_watermark_color");
+    if (ret == NULL) return;
+    convert_from_python_window_title_watermark_color(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
+convert_from_python_window_title_watermark_font_family(PyObject *val, Options *opts) {
+    window_title_watermark_font_family(val, opts);
+}
+
+static void
+convert_from_opts_window_title_watermark_font_family(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "window_title_watermark_font_family");
+    if (ret == NULL) return;
+    convert_from_python_window_title_watermark_font_family(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
+convert_from_python_window_title_watermark_min_windows(PyObject *val, Options *opts) {
+    opts->window_title_watermark_min_windows = PyLong_AsLong(val);
+}
+
+static void
+convert_from_opts_window_title_watermark_min_windows(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "window_title_watermark_min_windows");
+    if (ret == NULL) return;
+    convert_from_python_window_title_watermark_min_windows(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
 convert_from_python_tab_bar_edge(PyObject *val, Options *opts) {
     opts->tab_bar_edge = PyLong_AsLong(val);
 }
@@ -1762,6 +1840,18 @@ convert_opts_from_python_opts(PyObject *py_opts, Options *opts) {
     convert_from_opts_window_title_bar_inactive_foreground(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_window_title_bar_inactive_background(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_window_title_watermark(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_window_title_watermark_opacity(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_window_title_watermark_font_size(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_window_title_watermark_color(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_window_title_watermark_font_family(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_window_title_watermark_min_windows(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_tab_bar_edge(py_opts, opts);
     if (PyErr_Occurred()) return false;

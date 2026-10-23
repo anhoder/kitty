@@ -1789,7 +1789,7 @@ drag_start(Window *w) {
                     }
                     size_t actual_width = max_width;
                     bool ok = draw_window_title(
-                        adjusted_font_sz, ydpi, (const char *)img.data, fg_color, bg_color, render_buf, max_width, render_height, &actual_width);
+                        adjusted_font_sz, ydpi, (const char *)img.data, NULL, fg_color, bg_color, render_buf, max_width, render_height, &actual_width);
                     if (!ok || actual_width < 1) {
                         free(render_buf);
                         break;
@@ -2686,6 +2686,11 @@ destroy_fake_window_contents(Window *w) {
     Py_CLEAR(w->url_target_bar_data.last_drawn_title_object_id);
     free(w->url_target_bar_data.buf);
     w->url_target_bar_data.buf = NULL;
+    Py_CLEAR(w->watermark.rendered_for_title);
+    free(w->watermark.mask);
+    w->watermark.mask = NULL;
+    free(w->watermark.rendered_for_family);
+    w->watermark.rendered_for_family = NULL;
     // render_data.vao_idx is -1 so release_gpu_resources_for_window is safe, but we skip it
     // since we never allocated those resources.
 }

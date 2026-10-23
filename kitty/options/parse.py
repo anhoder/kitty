@@ -24,8 +24,8 @@ from kitty.options.utils import (
     tab_font_style, tab_separator, tab_title_template, tab_title_wrap, text_fg_override_threshold,
     titlebar_color, to_cursor_shape, to_cursor_unfocused_shape, to_font_size, to_layout_names,
     to_modifiers, transparent_background_colors, underline_exclusion, url_prefixes, url_style,
-    visual_bell_duration, visual_window_select_characters, window_border_width, window_logo_scale,
-    window_size
+    visual_bell_duration, visual_window_select_characters, watermark_color, watermark_font_family,
+    window_border_width, window_logo_scale, window_size
 )
 
 
@@ -1614,6 +1614,29 @@ class Parser:
 
     def window_title_template(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['window_title_template'] = tab_title_template(val)
+
+    def window_title_watermark(self, val: str, ans: dict[str, typing.Any]) -> None:
+        val = val.lower()
+        if val not in self.choices_for_window_title_watermark:
+            raise ValueError(f"The value {val} is not a valid choice for window_title_watermark")
+        ans["window_title_watermark"] = val
+
+    choices_for_window_title_watermark = frozenset(('none', 'top-left', 'top', 'top-right', 'left', 'center', 'right', 'bottom-left', 'bottom', 'bottom-right'))
+
+    def window_title_watermark_color(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['window_title_watermark_color'] = watermark_color(val)
+
+    def window_title_watermark_font_family(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['window_title_watermark_font_family'] = watermark_font_family(val)
+
+    def window_title_watermark_font_size(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['window_title_watermark_font_size'] = positive_float(val)
+
+    def window_title_watermark_min_windows(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['window_title_watermark_min_windows'] = positive_int(val)
+
+    def window_title_watermark_opacity(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['window_title_watermark_opacity'] = unit_float(val)
 
     def x11_hide_window_decorations(self, val: str, ans: dict[str, typing.Any]) -> None:
         deprecated_hide_window_decorations_aliases('x11_hide_window_decorations', val, ans)

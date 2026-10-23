@@ -82,9 +82,8 @@ cleanup(RenderCtx *ctx) {
 void
 set_main_face_family(FreeTypeRenderCtx ctx_, const char *family, bool bold, bool italic) {
     RenderCtx *ctx = (RenderCtx *)ctx_;
-    if ((family == main_face_family.name || (main_face_family.name && strcmp(family, main_face_family.name) == 0)) && main_face_family.bold == bold &&
-        main_face_family.italic == italic)
-        return;
+    const bool same_name = family == main_face_family.name || (family && main_face_family.name && strcmp(family, main_face_family.name) == 0);
+    if (same_name && main_face_family.bold == bold && main_face_family.italic == italic) return;
     cleanup(ctx);
     main_face_family.name = family ? strdup(family) : NULL;
     main_face_family.bold = bold;

@@ -98,6 +98,12 @@ typedef struct Options {
     color_type scrollbar_handle_color, scrollbar_track_color;
     ProgressBarPosition progress_bar;
 
+    WatermarkPosition window_title_watermark;
+    float window_title_watermark_opacity, window_title_watermark_font_size;
+    color_type window_title_watermark_color;
+    int window_title_watermark_min_windows;
+    char *window_title_watermark_font_family;
+
     float text_contrast, text_gamma_adjustment;
     bool text_old_gamma;
 
@@ -320,6 +326,16 @@ typedef struct Window {
     monotonic_t last_drag_scroll_at;
     uint32_t last_special_key_pressed;
     WindowBarData title_bar_data, url_target_bar_data;
+    // Cache for the window title watermark: an 8-bit coverage mask of the
+    // rendered title text, re-rasterized only when the title, its pixel size
+    // or the available width changes.
+    struct {
+        uint8_t *mask;
+        size_t width, height, text_height, max_width;
+        float opacity;
+        char *rendered_for_family;
+        PyObject *rendered_for_title;
+    } watermark;
     id_type redirect_keys_to_overlay;
     struct {
         bool enabled;
@@ -586,6 +602,10 @@ typedef struct OSWindow {
     } indirect_output;
     uint32_t persist_texture_id, persist_fbo_id, persist_texture_generation;
     unsigned int active_tab, num_tabs, capacity, last_active_tab, last_num_tabs, last_active_window_id;
+    // Number of visible windows in the active tab, as counted by the most
+    // recent prepare_to_render_os_window(). Used by UI overlays whose
+    // visibility depends on how many windows are on screen.
+    unsigned int num_visible_windows_in_active_tab;
     bool focused_at_last_render, needs_render, needs_layers, input_held;
     unsigned keep_rendering_till_swap;
     WindowRenderData tab_bar_render_data;
@@ -835,7 +855,8 @@ const char *format_mods(unsigned mods);
 void dispatch_pending_clicks(id_type, void *);
 void send_pending_click_to_window(Window *, int);
 void get_platform_dependent_config_values(void *glfw_window);
-bool draw_window_title(double, double, const char *text, color_type fg, color_type bg, uint8_t *output_buf, size_t width, size_t height, size_t *actual_width);
+bool draw_window_title(
+    double, double, const char *text, const char *family, color_type fg, color_type bg, uint8_t *output_buf, size_t width, size_t height, size_t *actual_width);
 uint8_t *draw_single_ascii_char(const char ch, size_t *result_width, size_t *result_height);
 bool is_os_window_fullscreen(OSWindow *);
 void update_ime_focus(OSWindow *osw, bool focused);

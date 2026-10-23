@@ -1453,6 +1453,7 @@ draw_window_title(
     double font_sz_pts UNUSED,
     double ydpi UNUSED,
     const char *text,
+    const char *family,
     color_type fg,
     color_type bg,
     uint8_t *output_buf,
@@ -1462,11 +1463,11 @@ draw_window_title(
     static char buf[2048];
     strip_csi_(text, buf, arraysz(buf));
     if (actual_width) {
-        size_t text_w = cocoa_text_width_for_single_line(buf, height);
+        size_t text_w = cocoa_text_width_for_single_line(buf, height, family);
         if (text_w > 0 && text_w < width) width = text_w;
         *actual_width = width;
     }
-    return cocoa_render_line_of_text(buf, fg, bg, output_buf, width, height);
+    return cocoa_render_line_of_text(buf, fg, bg, output_buf, width, height, family);
 }
 
 
@@ -1480,6 +1481,11 @@ draw_single_ascii_char(const char ch, size_t *result_width, size_t *result_heigh
 #else
 
 static FreeTypeRenderCtx bold_render_ctx = NULL, normal_render_ctx = NULL;
+// A separate context for rendering with a caller specified family, so that
+// switching families does not keep tearing down and rebuilding the faces in
+// the contexts used for all other UI text.
+static FreeTypeRenderCtx family_render_ctx = NULL;
+static char *family_render_ctx_family = NULL;
 
 static FreeTypeRenderCtx
 freetype_render_ctx(bool bold) {
@@ -1492,6 +1498,27 @@ freetype_render_ctx(bool bold) {
         }
     }
     return *which;
+}
+
+// Returns a context whose main face is family. family must be non-NULL.
+static FreeTypeRenderCtx
+freetype_render_ctx_for_family(const char *family) {
+    if (!family_render_ctx) {
+        family_render_ctx = create_freetype_render_context(family, false, false);
+        if (!family_render_ctx) {
+            if (PyErr_Occurred()) PyErr_Print();
+            return NULL;
+        }
+        free(family_render_ctx_family);
+        family_render_ctx_family = strdup(family);
+        return family_render_ctx;
+    }
+    if (!family_render_ctx_family || strcmp(family_render_ctx_family, family) != 0) {
+        set_main_face_family(family_render_ctx, family, false, false);
+        free(family_render_ctx_family);
+        family_render_ctx_family = strdup(family);
+    }
+    return family_render_ctx;
 }
 
 static bool
@@ -1525,9 +1552,18 @@ draw_text_callback(
 
 bool
 draw_window_title(
-    double font_sz_pts, double ydpi, const char *text, color_type fg, color_type bg, uint8_t *output_buf, size_t width, size_t height, size_t *actual_width) {
+    double font_sz_pts,
+    double ydpi,
+    const char *text,
+    const char *family,
+    color_type fg,
+    color_type bg,
+    uint8_t *output_buf,
+    size_t width,
+    size_t height,
+    size_t *actual_width) {
     FreeTypeRenderCtx ctx;
-    if (!(ctx = freetype_render_ctx(false))) return false;
+    if (!(ctx = family ? freetype_render_ctx_for_family(family) : freetype_render_ctx(false))) return false;
     static char buf[2048];
     strip_csi_(text, buf, arraysz(buf));
     unsigned px_sz = (unsigned)(font_sz_pts * ydpi / 72.);
@@ -3956,7 +3992,7 @@ draw_single_line_of_text(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
     RAII_PyObject(ans, PyBytes_FromStringAndSize(NULL, buf_sz));
     if (!ans) return NULL;
     size_t actual_width = width;
-    if (!draw_window_title(font_sz_pts, ydpi, text, fg, bg, (uint8_t *)PyBytes_AS_STRING(ans), width, height, max_width ? &actual_width : NULL)) {
+    if (!draw_window_title(font_sz_pts, ydpi, text, NULL, fg, bg, (uint8_t *)PyBytes_AS_STRING(ans), width, height, max_width ? &actual_width : NULL)) {
         if (!PyErr_Occurred()) PyErr_SetString(PyExc_RuntimeError, "Failed to render text");
         return NULL;
     }

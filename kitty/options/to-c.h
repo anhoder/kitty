@@ -101,6 +101,23 @@ progress_bar(PyObject *src) {
     return PROGRESS_BAR_BOTTOM;
 }
 
+static inline WatermarkPosition
+watermark_position(PyObject *src) {
+    const char *q = PyUnicode_AsUTF8(src);
+    if (!q) return WATERMARK_NONE;
+    if (strcmp(q, "none") == 0) return WATERMARK_NONE;
+    if (strcmp(q, "top-left") == 0) return WATERMARK_TOP_LEFT;
+    if (strcmp(q, "top") == 0) return WATERMARK_TOP;
+    if (strcmp(q, "top-right") == 0) return WATERMARK_TOP_RIGHT;
+    if (strcmp(q, "left") == 0) return WATERMARK_LEFT;
+    if (strcmp(q, "center") == 0) return WATERMARK_CENTER;
+    if (strcmp(q, "right") == 0) return WATERMARK_RIGHT;
+    if (strcmp(q, "bottom-left") == 0) return WATERMARK_BOTTOM_LEFT;
+    if (strcmp(q, "bottom") == 0) return WATERMARK_BOTTOM;
+    if (strcmp(q, "bottom-right") == 0) return WATERMARK_BOTTOM_RIGHT;
+    return WATERMARK_NONE;
+}
+
 static inline unsigned
 undercurl_style(PyObject *x) {
     RAII_PyObject(thick, PyUnicode_FromString("thick"));
@@ -234,6 +251,12 @@ background_images(PyObject *src, Options *opts) {
 static inline void
 bell_path(PyObject *src, Options *opts) {
     STR_SETTER(bell_path);
+}
+
+static inline void
+window_title_watermark_font_family(PyObject *src, Options *opts) {
+    // src is None for "no family" (use the system UI font), else the family name
+    STR_SETTER(window_title_watermark_font_family);
 }
 
 static inline void
@@ -756,5 +779,6 @@ free_allocs_in_options(Options *opts) {
     F(bell_theme);
     F(macos_ns_window_layer);
     F(default_window_logo);
+    F(window_title_watermark_font_family);
 #undef F
 }

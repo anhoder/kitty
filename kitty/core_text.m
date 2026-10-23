@@ -1016,14 +1016,53 @@ end:
 }
 
 static bool
-ensure_ui_font(size_t in_height) {
+ensure_ui_font(size_t in_height, const char *family) {
     static size_t for_height = 0;
+    static char *for_family = NULL;
+    const bool family_changed = (family == NULL) != (for_family == NULL) || (family && for_family && strcmp(family, for_family) != 0);
     if (system_ui_font) {
-        if (for_height == in_height) return true;
+        if (for_height == in_height && !family_changed) return true;
         CFRelease(system_ui_font);
+        system_ui_font = NULL;
     }
-    system_ui_font = CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, 0.f, NULL);
+    if (family) {
+        // CTFontCreateWithName() expects a PostScript name and silently
+        // substitutes Helvetica for anything it cannot resolve. Match on the
+        // family name instead and verify the result, so that an unresolvable
+        // family falls back to the system UI font rather than to Helvetica.
+        CFStringRef wanted = CFStringCreateWithCString(NULL, family, kCFStringEncodingUTF8);
+        if (wanted) {
+            CFDictionaryRef attrs = CFDictionaryCreate(
+                kCFAllocatorDefault,
+                (const void *[]){kCTFontFamilyNameAttribute},
+                (const void *[]){wanted},
+                1,
+                &kCFTypeDictionaryKeyCallBacks,
+                &kCFTypeDictionaryValueCallBacks);
+            if (attrs) {
+                CTFontDescriptorRef desc = CTFontDescriptorCreateWithAttributes(attrs);
+                if (desc) {
+                    CTFontRef candidate = CTFontCreateWithFontDescriptor(desc, 0.f, NULL);
+                    if (candidate) {
+                        CFStringRef got = CTFontCopyFamilyName(candidate);
+                        if (got && CFStringCompare(got, wanted, kCFCompareCaseInsensitive) == kCFCompareEqualTo) system_ui_font = candidate;
+                        else CFRelease(candidate);
+                        if (got) CFRelease(got);
+                    }
+                    CFRelease(desc);
+                }
+                CFRelease(attrs);
+            }
+            CFRelease(wanted);
+        }
+        if (!system_ui_font) log_error("Could not find a font with family name: %s for the window title watermark", family);
+    }
+    // Fall back to the system UI font when no family was requested or the
+    // requested one could not be resolved.
+    if (!system_ui_font) system_ui_font = CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, 0.f, NULL);
     if (!system_ui_font) return false;
+    free(for_family);
+    for_family = family ? strdup(family) : NULL;
     CGFloat line_height = MAX(1, floor(CTFontGetAscent(system_ui_font) + CTFontGetDescent(system_ui_font) + MAX(0, CTFontGetLeading(system_ui_font)) + 0.5));
     CGFloat pts_per_px = CTFontGetSize(system_ui_font) / line_height;
     CGFloat desired_size = in_height * pts_per_px;
@@ -1038,13 +1077,14 @@ ensure_ui_font(size_t in_height) {
 }
 
 bool
-cocoa_render_line_of_text(const char *text, const color_type fg, const color_type bg, uint8_t *rgba_output, const size_t width, const size_t height) {
+cocoa_render_line_of_text(
+    const char *text, const color_type fg, const color_type bg, uint8_t *rgba_output, const size_t width, const size_t height, const char *family) {
     CGColorSpaceRef color_space = CGColorSpaceCreateDeviceRGB();
     if (color_space == NULL) return false;
     CGContextRef ctx = CGBitmapContextCreate(rgba_output, width, height, 8, 4 * width, color_space, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrderDefault);
     CGColorSpaceRelease(color_space);
     if (ctx == NULL) return false;
-    if (!ensure_ui_font(height)) return false;
+    if (!ensure_ui_font(height, family)) return false;
 
     CGContextSetShouldAntialias(ctx, true);
     CGContextSetShouldSmoothFonts(ctx, true); // sub-pixel antialias
@@ -1105,9 +1145,9 @@ cocoa_render_line_of_text(const char *text, const color_type fg, const color_typ
 }
 
 size_t
-cocoa_text_width_for_single_line(const char *text, const size_t height) {
+cocoa_text_width_for_single_line(const char *text, const size_t height, const char *family) {
     if (!text || !text[0]) return 0;
-    if (!ensure_ui_font(height)) return 0;
+    if (!ensure_ui_font(height, family)) return 0;
     NSAttributedString *str = [[NSAttributedString alloc] initWithString:@(text) attributes:@{(NSString *)kCTFontAttributeName : (__bridge id)system_ui_font}];
     if (!str) return 0;
     CTLineRef line = CTLineCreateWithAttributedString((CFAttributedStringRef)str);
@@ -1121,7 +1161,7 @@ cocoa_text_width_for_single_line(const char *text, const size_t height) {
 
 uint8_t *
 render_single_ascii_char_as_mask(const char ch, size_t *result_width, size_t *result_height) {
-    if (!ensure_ui_font(*result_height)) {
+    if (!ensure_ui_font(*result_height, NULL)) {
         PyErr_SetString(PyExc_RuntimeError, "failed to create UI font");
         return NULL;
     }

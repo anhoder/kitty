@@ -929,6 +929,13 @@ prepare_to_render_os_window(
     *all_windows_have_same_bg = true;
     *num_visible_windows = 0;
     color_type first_window_bg = 0;
+    // Counted up-front because UI overlays drawn during this render, such as
+    // the window title watermark, need to know how many windows are visible to
+    // decide whether they are drawn at all.
+    os_window->num_visible_windows_in_active_tab = 0;
+    for (unsigned int i = 0; i < tab->num_windows; i++) {
+        if (tab->windows[i].visible && tab->windows[i].render_data.screen) os_window->num_visible_windows_in_active_tab++;
+    }
     os_window->needs_layers = os_window->needs_layers || (OPT(cursor_trail) && tab->cursor_trail.needs_render);
     for (unsigned int i = 0; i < tab->num_windows; i++) {
         Window *w = tab->windows + i;

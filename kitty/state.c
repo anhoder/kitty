@@ -441,6 +441,11 @@ destroy_window(Window *w) {
     Py_CLEAR(w->url_target_bar_data.last_drawn_title_object_id);
     free(w->url_target_bar_data.buf);
     w->url_target_bar_data.buf = NULL;
+    Py_CLEAR(w->watermark.rendered_for_title);
+    free(w->watermark.mask);
+    w->watermark.mask = NULL;
+    free(w->watermark.rendered_for_family);
+    w->watermark.rendered_for_family = NULL;
     release_gpu_resources_for_window(w);
     if (w->window_logo.id) {
         decref_window_logo(global_state.all_window_logos, w->window_logo.id);

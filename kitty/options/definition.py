@@ -2185,6 +2185,83 @@ the corresponding tab bar color (:code:`inactive_tab_background`) when set to :c
 
 opt('window_title_bar_align', 'center', choices=('left', 'center', 'right'), long_text='Horizontal alignment of the text in window title bars.')
 
+opt(
+    'window_title_watermark',
+    'none',
+    ctype='watermark_position',
+    choices=('none', 'top-left', 'top', 'top-right', 'left', 'center', 'right', 'bottom-left', 'bottom', 'bottom-right'),
+    long_text="""
+Draw the window title as a watermark overlaid on the window contents, at the
+specified position. Unlike :opt:`window_title_bar_min_windows` this does not
+consume a line of the window, instead the text floats above the window
+contents. A value of :code:`none` disables the watermark. Use
+:opt:`window_title_watermark_opacity` to control how obtrusive it is and
+:opt:`window_title_watermark_font_size` to control its size.
+""",
+)
+
+opt(
+    'window_title_watermark_opacity',
+    '0.4',
+    option_type='unit_float',
+    ctype='float',
+    long_text="""
+The opacity of the :opt:`window_title_watermark`, zero being fully transparent
+and one fully opaque.
+""",
+)
+
+opt(
+    'window_title_watermark_font_size',
+    '1.0',
+    option_type='positive_float',
+    ctype='float',
+    long_text="""
+The size of the :opt:`window_title_watermark` text in units of cell height. So
+:code:`1.0` makes the watermark the same height as a line of terminal text and
+:code:`3.0` makes it three times as tall.
+""",
+)
+
+opt(
+    'window_title_watermark_color',
+    'none',
+    option_type='watermark_color',
+    ctype='uint',
+    long_text="""
+The color of the :opt:`window_title_watermark` text. The default value of
+:code:`none` means use the foreground color of the window.
+""",
+)
+
+opt(
+    'window_title_watermark_font_family',
+    'none',
+    option_type='watermark_font_family',
+    ctype='!window_title_watermark_font_family',
+    long_text="""
+The font family used to draw the :opt:`window_title_watermark`. A value of
+:code:`none` means use the font kitty uses for other UI text such as window
+title bars, which is the system UI font. Set it to a family name, for example
+:code:`Fira Code`, to draw the watermark in that font. Family names containing
+spaces may be quoted. If the family cannot be found, the system UI font is
+used and a warning is printed.
+""",
+)
+
+opt(
+    'window_title_watermark_min_windows',
+    '2',
+    option_type='positive_int',
+    ctype='int',
+    long_text="""
+The minimum number of visible windows in a tab before the
+:opt:`window_title_watermark` is drawn. A value of :code:`1` means always draw
+it, :code:`2` or more means draw it only when at least that many windows are
+visible. Analogous to :opt:`window_title_bar_min_windows`.
+""",
+)
+
 egr()  # }}}
 
 
