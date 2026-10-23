@@ -160,6 +160,91 @@ class TestSlang(BaseTest):
         ]
         self.ae(simulate_custom_shader_animation(p, ticks), expected)
 
+    def test_custom_shader_active_layout(self):
+        from kitty.fast_data_types import simulate_custom_shader_animation
+
+        def pipeline(*groups: str):
+            lines = []
+            for g in groups:
+                lines.append('startgroup')
+                lines.extend(g.splitlines())
+                lines.append('shaders sample')
+                lines.append('endgroup')
+            return parse_pipeline_definition(lines, 'test')
+
+        def run(p, ticks):
+            return simulate_custom_shader_animation(p, ticks)
+
+        # Parsing
+        self.ae(pipeline('active_layout stack|grid')['groups'][0]['active_layout'], ('stack', 'grid'))
+        self.ae(pipeline('active_layout any')['groups'][0]['active_layout'], ())
+        self.ae(pipeline('')['groups'][0]['active_layout'], ())
+        for bad in ('active_layout stac', 'active_layout stack|nope', 'active_layout stack:bias=70'):
+            self.assertRaises(ValueError, pipeline, bad)
+        self.assertRaises(ValueError, pipeline, '', 'active_layout stack\nattach')
+        # Without events of their own such groups stay on while the layout matches, however long that is
+        self.ae(pipeline('active_layout stack')['groups'][0]['animation_end_duration'], 0)
+        self.assertRaises(ValueError, pipeline, 'active_layout stack\nanimation_stop 100')
+        self.ae(pipeline('active_layout stack\nanimation_start user:s')['groups'][0]['animation_end_duration'], -1)
+
+        # A group with only active_layout follows the layout of the active tab
+        p = pipeline('active_layout stack|grid', '')
+        ticks = [((), 'tall'), ((), 'stack'), ((), 'stack'), ((), 'grid'), ((), 'tall'), ((), 'stack')]
+        expected = [
+            (False, True),
+            (True, True),
+            (True, True),
+            (True, True),  # moving between matching layouts keeps it on
+            (False, True),
+            (True, True),
+        ]
+        self.ae(run(p, ticks), expected)
+        # Nothing but time passing, here far longer than cursor_stop_blinking_after, does not turn it off
+        self.ae(run(p, [((), 'stack')] + [()] * 50)[-1], (True, True))
+
+        # With events of its own, the layout is an extra condition
+        p = pipeline('active_layout stack\nanimation_start user:on\nanimation_stop user:off', '')
+        ticks = [
+            ((), 'tall'),
+            (('user:on',), 'tall'),  # wrong layout, so the event is ignored
+            ((), 'stack'),  # entering the layout does not start it by itself
+            (('user:on',), 'stack'),
+            ((), 'stack'),
+            ((), 'tall'),  # leaving the layout always stops it
+            (('user:on',), 'tall'),
+            (('user:on',), 'stack'),
+        ]
+        expected = [(False, True), (False, True), (False, True), (True, True), (True, True), (False, True), (False, True), (True, True)]
+        self.ae(run(p, ticks), expected)
+        # layout-change as the start event starts the group when the layout begins to match
+        p = pipeline('active_layout stack\nanimation_start layout-change\nanimation_stop never', '')
+        ticks = [((), 'tall'), ((), 'stack'), ((), 'stack'), ((), 'tall'), ((), 'stack')]
+        expected = [(False, True), (True, True), (True, True), (False, True), (True, True)]
+        self.ae(run(p, ticks), expected)
+        # and layout-change fires for the very first layout set, so a pipeline loaded
+        # into a tab that already uses the layout shows its effect
+        self.ae(run(pipeline('active_layout stack', ''), [((), 'stack')])[0], (True, True))
+
+        # No active tab layout, such as before Python sets one, matches nothing
+        self.ae(run(pipeline('active_layout stack', ''), [()]), [(False, True)])
+        # The static, permanent marking from the docs: on for as long as the
+        # layout matches, however long that is, and free while it sits there.
+        p = pipeline('active_layout stack\nanimation_step 0')
+        ticks = [((), 'tall'), ((), 'stack')] + [()] * 60 + [((), 'tall')] + [()] * 3
+        states = [s[0] for s in run(p, ticks)]
+        frames = simulate_custom_shader_animation(p, ticks, needs_render=True)
+        self.assertFalse(states[0])
+        # On from the moment the layout matches and never turning itself off,
+        # including well past cursor_stop_blinking_after
+        self.assertTrue(all(states[1:62]), 'the brackets must stay on while the layout matches')
+        # Drawn once when it turns on, then no redraws until the layout changes
+        self.assertTrue(frames[1])
+        self.assertFalse(any(frames[2:62]), 'a static group must not keep redrawing')
+        # Off once the layout stops matching, with a final frame to clear it
+        self.assertFalse(states[62])
+        self.assertTrue(frames[62])
+        self.assertFalse(any(frames[63:]))
+
     def test_custom_shader_animation_progress(self):
         from kitty.fast_data_types import simulate_custom_shader_animation
 
@@ -877,6 +962,25 @@ float f() { static const float SCAN = 2; return SCAN; }
                     build_custom_shader_pipeline_glsl(pipeline, cache_dir=cache_dir)
                 except Exception as e:
                     failures.append(f'{name}.pipeline: {e}')
+            clear_caches()
+            # viewfinder-brackets has a branch behind a var that no builtin
+            # pipeline sets, and a color documented as overridable
+            try:
+                build_custom_shader_pipeline_glsl(
+                    parse_pipeline_definition(
+                        [
+                            'startgroup',
+                            'var bool SHOW_ICON = true',
+                            'var float3 COLOR = float3(0.0, 0.8, 1.0)',
+                            'shaders viewfinder-brackets',
+                            'endgroup',
+                        ],
+                        'brackets',
+                    ),
+                    cache_dir=cache_dir,
+                )
+            except Exception as e:
+                failures.append(f'viewfinder-brackets with SHOW_ICON and COLOR: {e}')
             clear_caches()
 
         if failures:

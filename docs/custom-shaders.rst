@@ -449,6 +449,49 @@ Directives inside a group:
     sync. Its own ``animation_curve``, ``animation_duration`` and
     ``animation_reverse`` are ignored.
 
+``active_layout <name>[|<name> …]``
+    Restrict this group to the named :doc:`layouts </layouts>`, so that it
+    draws only while the active tab uses one of them. Names are separated by
+    ``|``, for example ``active_layout stack|grid``. The default, ``any``,
+    places no restriction. Layout options are ignored, so ``tall`` matches
+    ``tall:bias=70`` as well.
+
+    A group with only ``active_layout`` turns on and off with the layout.
+    Adding ``animation_start`` or ``animation_toggle`` makes those events
+    control the group as usual, with the layout acting as an extra condition:
+    the events turn the group on only while the layout matches, and leaving
+    the layout always turns it off. Use ``animation_start layout-change`` to
+    have the group start animating at the moment the layout starts matching.
+    Cannot be combined with ``attach``; attach to the restricted group
+    instead.
+
+    For example, to mark the active window while the tab uses the stack
+    layout, which is how a window is "zoomed" with :ac:`toggle_layout`, save
+    the following as :file:`shaders/stack-marker.pipeline` in the kitty config
+    directory, set ``custom_shaders stack-marker`` and add ``map ctrl+alt+z
+    toggle_layout stack`` in :file:`kitty.conf`::
+
+        startgroup
+            active_layout stack
+            animation_step 0
+            shaders viewfinder-brackets
+        endgroup
+
+    The ``viewfinder-brackets`` shader that ships with kitty draws brackets in
+    the corners of the active window. They appear as soon as the tab uses the
+    stack layout, including when switching to a tab that already does, stay
+    for as long as it uses it, and disappear when it leaves. Which layout
+    counts as zoomed is up to you, kitty itself has no such notion.
+
+    ``animation_step 0`` keeps it free: the brackets are drawn when the layout
+    starts matching and not redrawn until something else changes the screen.
+    The shader has more settings, such as colors and sizes, explained at the
+    top of the :repo_file:`shader file
+    <kitty/shaders/custom/viewfinder-brackets.slang>`. Override them with
+    ``var``, for example ``var bool SHOW_ICON = true`` or ``var float3 COLOR =
+    float3(0.0, 0.8, 1.0)``. Colors are in linear RGB, which is not what the
+    hex colors in :file:`kitty.conf` use.
+
 .. _named_textures:
 
 Named textures
@@ -608,6 +651,11 @@ be combined with ``|`` — any one of them will trigger the action.
    * - ``cursor-trail-stop``
      - The cursor trail stops moving. Typically used as an ``animation_stop``
        event paired with ``cursor-trail-move`` as the start event.
+
+   * - ``layout-change``
+     - The layout of the active tab changes, including when switching to a tab
+       that uses a different layout. Prefer the ``active_layout`` directive
+       when all you need is to restrict a group to some layouts.
 
    * - ``user:<name>``
      - Sent by the :ac:`shader_event` action, typically from a mapping, see

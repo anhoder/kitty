@@ -770,6 +770,19 @@ pyset_borders_rects(PyObject *self UNUSED, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static PyObject *
+pyset_tab_layout_name(PyObject *self UNUSED, PyObject *args) {
+    id_type os_window_id, tab_id;
+    const char *name;
+    if (!PyArg_ParseTuple(args, "KKs", &os_window_id, &tab_id, &name)) return NULL;
+    WITH_TAB(os_window_id, tab_id)
+    // Truncation only costs an active_layout directive its match, see
+    // MAX_LAYOUT_NAME_LEN.
+    snprintf(tab->layout_name, sizeof(tab->layout_name), "%s", name);
+    END_WITH_TAB
+    Py_RETURN_NONE;
+}
+
 
 static unsigned
 vertical_tab_bar_cols(const OSWindow *os_window, long margin_outer, long margin_inner) {
@@ -2170,6 +2183,7 @@ static PyMethodDef module_methods[] = {
     MW(swap_tabs, METH_VARARGS),
     MW(reorder_tabs, METH_VARARGS),
     MW(set_borders_rects, METH_VARARGS),
+    MW(set_tab_layout_name, METH_VARARGS),
     MW(set_tab_bar_render_data, METH_VARARGS),
     MW(set_window_title_bar_render_data, METH_VARARGS),
     MW(set_window_render_data, METH_VARARGS),

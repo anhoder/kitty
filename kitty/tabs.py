@@ -54,6 +54,7 @@ from .fast_data_types import (
     set_active_window,
     set_redirect_keys_to_overlay,
     set_tab_being_dragged,
+    set_tab_layout_name,
     set_window_being_dragged,
     start_drag_with_data,
     swap_tabs,
@@ -340,6 +341,7 @@ class Tab:  # {{{
             cl.set_owner(self.os_window_id, self.id)
             self.current_layout: Layout = cl
             self._current_layout_name = clname
+            set_tab_layout_name(self.os_window_id, self.id, cl.name)
             self.mark_tab_bar_dirty()
         for window in other_tab.windows:
             detach_window(other_tab.os_window_id, other_tab.id, window.id)
@@ -357,6 +359,7 @@ class Tab:  # {{{
         self.current_layout = self.create_layout_object(layout_name)
         self._current_layout_name = layout_name
         self._used_layouts[layout_name] = self.current_layout
+        set_tab_layout_name(self.os_window_id, self.id, self.current_layout.name)
         self.mark_tab_bar_dirty()
 
     def startup(self, session_tab: SessionTab) -> None:

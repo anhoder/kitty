@@ -1044,6 +1044,7 @@ prepare_to_render_os_window(
             events |= (1u << SHADER_ANIM_EVENT_TAB_CHANGE) | (1u << SHADER_ANIM_EVENT_WINDOW_FOCUS_IN) | (1u << SHADER_ANIM_EVENT_WINDOW_FOCUS_OUT);
         if (*active_window_id && *active_window_id != os_window->last_active_window_id)
             events |= (1u << SHADER_ANIM_EVENT_WINDOW_FOCUS_IN) | (1u << SHADER_ANIM_EVENT_WINDOW_FOCUS_OUT);
+        events |= update_shader_anim_layout_name(os_window);
         const ShaderAnimState before = os_window->shader_anim;
         monotonic_t min_step = update_custom_shader_animations(events, now, os_window);
         os_window->shader_anim_event_registry = 0;

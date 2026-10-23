@@ -364,6 +364,12 @@ Detailed list of changes
   :ac:`shader_event` action, :code:`user:` animation events and the
   :code:`animation_toggle` pipeline directive, see :ref:`custom_shader_mappings` (:iss:`10667`)
 
+- Custom shaders: Add the :code:`active_layout` pipeline directive and the
+  :code:`layout-change` animation event to restrict shader groups to some
+  layouts, for example to mark the window for as long as a tab uses the stack
+  layout. The new :code:`viewfinder-brackets` shader draws brackets in the
+  corners of the active window, see :ref:`custom_shader_pipeline`
+
 - Fix cursor position reports returning the wrong row in origin mode (:pull:`10682`)
 
 - Add English and Spanish subtitles to the intro video shown at the top of the

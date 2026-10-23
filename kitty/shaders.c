@@ -489,6 +489,11 @@ typedef struct CustomShaderGroup {
     Animation *animation_curve;                  // parsed easing curve; NULL = no animation
     bool animation_curve_is_shared;              // true if animation_curve is owned by an earlier group
     bool attached;                               // true = always active when the preceding group is active
+    // Layouts this group is restricted to. When num_active_layouts is zero the
+    // group runs in every layout, otherwise it draws only while the active tab
+    // uses one of these layouts.
+    char active_layouts[MAX_ACTIVE_LAYOUTS_PER_GROUP][MAX_LAYOUT_NAME_LEN + 1];
+    size_t num_active_layouts;
 } CustomShaderGroup;
 
 typedef struct CustomShaderPipeline {
@@ -615,10 +620,29 @@ group_has_own_animation(const CustomShaderGroup *cg) {
     return (cg->animation_start_events | cg->animation_toggle_events) != 0;
 }
 
+// Whether the group is restricted to a set of layouts by active_layout
+static inline bool
+group_is_layout_gated(const CustomShaderGroup *cg) {
+    return cg->num_active_layouts != 0;
+}
+
+// Whether the active tab of the OS window uses one of the layouts the group is
+// restricted to. True for groups without an active_layout directive.
+static bool
+group_layout_matches(const CustomShaderGroup *cg, const OSWindow *os_window) {
+    if (!group_is_layout_gated(cg)) return true;
+    if (!os_window->num_tabs || os_window->active_tab >= os_window->num_tabs) return false;
+    const char *layout = os_window->tabs[os_window->active_tab].layout_name;
+    for (size_t i = 0; i < cg->num_active_layouts; i++) {
+        if (strcmp(cg->active_layouts[i], layout) == 0) return true;
+    }
+    return false;
+}
+
 // Whether the group runs only when the animation state machine says it is active
 static inline bool
 group_is_animated(const CustomShaderGroup *cg) {
-    return cg->attached || group_has_own_animation(cg);
+    return cg->attached || group_has_own_animation(cg) || group_is_layout_gated(cg);
 }
 
 // How long after starting the group stops by itself, zero if it does not
@@ -730,7 +754,7 @@ advance_stopped_group_animation(const CustomShaderGroup *cg, ShaderGroupAnimStat
 // of their predecessor.
 static bool
 group_is_initially_active(const CustomShaderGroup *cg, bool predecessor_is_active) {
-    return cg->attached ? predecessor_is_active : !group_has_own_animation(cg);
+    return cg->attached ? predecessor_is_active : !(group_has_own_animation(cg) || group_is_layout_gated(cg));
 }
 
 static bool
@@ -825,6 +849,10 @@ init_custom_programs(void) {
 void
 init_shader_animation_state(OSWindow *osw) {
     zero_at_ptr_count(osw->shader_group_anim, custom_shaders.end.num_groups);
+    // Forget the layout the previous pipeline last saw, so that layout-change
+    // fires on the first frame after loading and groups restricted by
+    // active_layout turn on if they match the current layout
+    osw->shader_anim_layout_name[0] = 0;
     bool prev_init = false, any_initially_active = false;
     for (size_t i = 0; i < custom_shaders.end.num_groups; i++) {
         const CustomShaderGroup *cg = &custom_shaders.end.groups[i];
@@ -838,6 +866,16 @@ init_shader_animation_state(OSWindow *osw) {
     osw->shader_anim.has_active_shaders = custom_shaders.count > 0 && any_initially_active;
     osw->shader_anim.min_step = MONOTONIC_T_MAX;
     osw->shader_anim.next_end_at = MONOTONIC_T_MAX;
+}
+
+// The layout-change event bit if the layout of the active tab has changed
+// since this function last ran for the OS window, zero otherwise.
+ShaderAnimEventMask
+update_shader_anim_layout_name(OSWindow *osw) {
+    const char *layout_name = osw->num_tabs && osw->active_tab < osw->num_tabs ? osw->tabs[osw->active_tab].layout_name : "";
+    if (strcmp(layout_name, osw->shader_anim_layout_name) == 0) return 0;
+    snprintf(osw->shader_anim_layout_name, sizeof(osw->shader_anim_layout_name), "%s", layout_name);
+    return 1u << SHADER_ANIM_EVENT_LAYOUT_CHANGE;
 }
 
 static const char *
@@ -860,6 +898,7 @@ shader_anim_event_mask_str(ShaderAnimEventMask mask) {
         {1u << SHADER_ANIM_EVENT_USER_IDLE, "user-idle"},
         {1u << SHADER_ANIM_EVENT_CURSOR_TRAIL_MOVE, "cursor-trail-move"},
         {1u << SHADER_ANIM_EVENT_CURSOR_TRAIL_STOP, "cursor-trail-stop"},
+        {1u << SHADER_ANIM_EVENT_LAYOUT_CHANGE, "layout-change"},
     };
     bool first = true;
     for (size_t i = 0; i < sizeof(events) / sizeof(events[0]); i++) {
@@ -914,7 +953,8 @@ update_custom_shader_animations(ShaderAnimEventMask event_mask, monotonic_t now,
         } else {
             const monotonic_t eff_dur = group_stop_duration(cg);
             ShaderGroupAnimState *s = os_window->shader_group_anim + i;
-            if (group_has_own_animation(cg)) {
+            const bool layout_matches = group_layout_matches(cg, os_window);
+            if (group_has_own_animation(cg) || group_is_layout_gated(cg)) {
                 advance_stopped_group_animation(cg, s, now, i);
                 // Whether the group is on, as opposed to off or playing in reverse or looping after being stopped
                 const bool was_on = s->active && !s->reverse_ends_at && !s->looping;
@@ -934,6 +974,16 @@ update_custom_shader_animations(ShaderAnimEventMask event_mask, monotonic_t now,
                 // takes precedence over simultaneous start and stop events.
                 if (event_mask & cg->animation_toggle_events) {
                     turn_on = !was_on && !hard_stop;
+                    turn_off = was_on;
+                }
+                // A group restricted to layouts and with no events of its own
+                // simply follows the layout it is restricted to.
+                if (group_is_layout_gated(cg) && !group_has_own_animation(cg)) turn_on = layout_matches && !was_on;
+                // Leaving those layouts always stops the group, whatever its
+                // events did this tick. active_layout cannot be combined with
+                // attach, so the attach block below cannot undo this.
+                if (!layout_matches) {
+                    turn_on = false;
                     turn_off = was_on;
                 }
                 if (turn_on) {
@@ -971,7 +1021,7 @@ update_custom_shader_animations(ShaderAnimEventMask event_mask, monotonic_t now,
                 min_step = MIN(min_step, cg->animation_step);
                 // Only track next_end for groups with own stop conditions; attached-only groups
                 // deactivate when their predecessor does (already tracked by the predecessor).
-                if (group_has_own_animation(cg)) {
+                if (group_has_own_animation(cg) || group_is_layout_gated(cg)) {
                     if (s->reverse_ends_at) next_end = MIN(next_end, s->reverse_ends_at);
                     else if (s->looping) next_end = MIN(next_end, s->ramp_started_at + group_ramp_duration(cg));
                     else if (eff_dur > 0) next_end = MIN(next_end, s->started_at + eff_dur);
@@ -3817,6 +3867,19 @@ transfer_pipeline_to_struct(PyObject *pg, CustomShaderPipeline *p) {
 
         PyObject *attached = PyDict_GetItemString(g, "attached");
         cg->attached = attached && PyObject_IsTrue(attached);
+
+        cg->num_active_layouts = 0;
+        PyObject *active_layout = PyDict_GetItemString(g, "active_layout");
+        if (is_seq(active_layout)) {
+            const Py_ssize_t num = PySequence_Fast_GET_SIZE(active_layout);
+            for (Py_ssize_t j = 0; j < num && cg->num_active_layouts < arraysz(cg->active_layouts); j++) {
+                PyObject *name = PySequence_Fast_GET_ITEM(active_layout, j);
+                if (!PyUnicode_Check(name)) continue;
+                const char *utf8 = PyUnicode_AsUTF8(name);
+                if (!utf8) return false;
+                snprintf(cg->active_layouts[cg->num_active_layouts++], MAX_LAYOUT_NAME_LEN + 1, "%s", utf8);
+            }
+        }
     }
     p->all_animation_start_events = 0;
     for (size_t i = 0; i < p->num_groups; i++) p->all_animation_start_events |= p->groups[i].animation_start_events | p->groups[i].animation_toggle_events;
@@ -4049,16 +4112,26 @@ pyfire_custom_shader_event(PyObject *self UNUSED, PyObject *args) {
 
 // Test only. Loads pipeline, a dict as sent by compile_program(), in place of
 // the current one and runs the animation state machine over an OS window, one
-// tick per item of ticks, each a sequence of event names, 10ms apart. Returns
-// the active state of every group after each tick, or if with_progress is
-// true, the animation_progress of active groups and None for inactive ones.
+// tick per item of ticks, 10ms apart. A tick is a sequence of event names, or
+// a pair of such a sequence and a layout name, to also set the layout of the
+// active tab, which fires layout-change through the same code path as
+// rendering does. Returns the active state of every group after each tick, or
+// if with_progress is true, the animation_progress of active groups and None
+// for inactive ones, or if needs_render is true, whether the shader layer
+// asked for a frame on each tick.
 static PyObject *
-pysimulate_custom_shader_animation(PyObject *self UNUSED, PyObject *args) {
+pysimulate_custom_shader_animation(PyObject *self UNUSED, PyObject *args, PyObject *kwargs) {
     PyObject *pipeline, *ticks;
-    int with_progress = 0;
-    if (!PyArg_ParseTuple(args, "O!O!|p", &PyDict_Type, &pipeline, &PyList_Type, &ticks, &with_progress)) return NULL;
+    int with_progress = 0, needs_render = 0;
+    static const char *kwlist[] = {"pipeline", "ticks", "with_progress", "needs_render", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!|pp", (char **)kwlist, &PyDict_Type, &pipeline, &PyList_Type, &ticks, &with_progress, &needs_render))
+        return NULL;
     RAII_ALLOC(OSWindow, osw, calloc(1, sizeof(OSWindow)));
     if (!osw) return PyErr_NoMemory();
+    RAII_ALLOC(Tab, tab, calloc(1, sizeof(Tab)));
+    if (!tab) return PyErr_NoMemory();
+    osw->tabs = tab;
+    osw->num_tabs = 1;
     const CustomShaderPipeline saved = custom_shaders.end;
     const size_t saved_count = custom_shaders.count;
     zero_at_ptr(&custom_shaders.end);
@@ -4070,12 +4143,31 @@ pysimulate_custom_shader_animation(PyObject *self UNUSED, PyObject *args) {
         monotonic_t now = monotonic();
         for (Py_ssize_t i = 0; ans && i < PyList_GET_SIZE(ticks); i++, now += ms_to_monotonic_t(10ll)) {
             PyObject *names = PyList_GET_ITEM(ticks, i);
+            // A (events, layout name) pair sets the layout of the active tab
+            PyObject *first = PyTuple_Check(names) && PyTuple_GET_SIZE(names) == 2 ? PyTuple_GET_ITEM(names, 0) : NULL;
+            if (first && (PyTuple_Check(first) || PyList_Check(first)) && PyUnicode_Check(PyTuple_GET_ITEM(names, 1))) {
+                const char *layout = PyUnicode_AsUTF8(PyTuple_GET_ITEM(names, 1));
+                if (!layout) {
+                    Py_CLEAR(ans);
+                    break;
+                }
+                snprintf(tab->layout_name, sizeof(tab->layout_name), "%s", layout);
+                names = PyTuple_GET_ITEM(names, 0);
+            }
             if (!PyTuple_Check(names) && !PyList_Check(names)) {
-                PyErr_SetString(PyExc_TypeError, "each tick must be a sequence of event names");
+                PyErr_SetString(PyExc_TypeError, "each tick must be a sequence of event names, optionally paired with a layout name");
                 Py_CLEAR(ans);
                 break;
             }
-            update_custom_shader_animations(parse_anim_event_sequence(names, &custom_shaders.end), now, osw);
+            ShaderAnimEventMask events = parse_anim_event_sequence(names, &custom_shaders.end);
+            events |= update_shader_anim_layout_name(osw);
+            const ShaderAnimState before = osw->shader_anim;
+            update_custom_shader_animations(events, now, osw);
+            if (needs_render) {
+                PyObject *v = custom_shader_needs_render(&before, &osw->shader_anim, events, now) ? Py_True : Py_False;
+                if (PyList_Append(ans, v) != 0) Py_CLEAR(ans);
+                continue;
+            }
             RAII_PyObject(states, PyTuple_New(custom_shaders.end.num_groups));
             if (!states) {
                 Py_CLEAR(ans);
@@ -4138,7 +4230,7 @@ static PyMethodDef module_methods[] = {
     MW(simulate_custom_shader_render_ticks, METH_VARARGS),
     MW(sample_pointer_map, METH_VARARGS),
     MW(fire_custom_shader_event, METH_VARARGS),
-    MW(simulate_custom_shader_animation, METH_VARARGS),
+    {"simulate_custom_shader_animation", (PyCFunction)(void (*)(void))pysimulate_custom_shader_animation, METH_VARARGS | METH_KEYWORDS, NULL},
 
     {NULL, NULL, 0, NULL} /* Sentinel */
 };
@@ -4197,6 +4289,7 @@ init_shaders(PyObject *module) {
     C(MAX_CUSTOM_SHADER_GROUPS);
     C(MAX_SHADER_ANIM_USER_EVENTS);
     C(MAX_SHADER_ANIM_USER_EVENT_NAME_LEN);
+    C(MAX_LAYOUT_NAME_LEN);
     C(POINTER_MAP_SIZE);
     C(GLSL_VERSION);
     C(GL_VERSION);

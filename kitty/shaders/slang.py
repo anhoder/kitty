@@ -1526,6 +1526,7 @@ SHADER_ANIMATION_EVENTS: frozenset[str] = frozenset(
         'user-idle',
         'cursor-trail-move',
         'cursor-trail-stop',
+        'layout-change',
     }
 )
 
@@ -1550,6 +1551,17 @@ def parse_animation_events(raw: str) -> tuple[str, ...]:
                 f' or {USER_ANIMATION_EVENT_PREFIX}<name> for events sent by the shader_event action'
             )
     return tuple(events)
+
+
+def parse_layout_names(raw: str) -> tuple[str, ...]:
+    # Imported lazily as kitty.layout imports a good deal of kitty
+    from kitty.layout.interface import all_layouts
+
+    names = tuple(raw.split('|'))
+    for name in names:
+        if name not in all_layouts:
+            raise ValueError(f'{name!r} is not a valid layout name; valid names: {", ".join(sorted(all_layouts))}')
+    return names
 
 
 def parse_css_animation_curve(spec: str) -> EasingFunction:
@@ -1637,6 +1649,8 @@ class Group(TypedDict):
     animation_reverse: int  # nanoseconds to play the animation in reverse when stopped; 0 = no, negative = same as animation_duration
     animation_loops: int  # times to play the animation forwards and in reverse, only used with animation_reverse
     attached: bool  # if True, this group is always active when the previous group is active
+    # Names of the layouts this group is restricted to; empty = every layout
+    active_layout: tuple[str, ...]
 
 
 class Pipeline(TypedDict):
@@ -1661,8 +1675,17 @@ def parse_pipeline_definition(lines: Iterable[str], pipeline_name: str, pipeline
     def commit_group() -> None:
         nonlocal current_group
         if current_group is not None:
-            if current_group['animation_toggle'] and not current_group['animation_start'] and not has_animation_stop:
-                # A group turned on and off by toggling should stay on until toggled off
+            if current_group['active_layout'] and current_group['attached']:
+                raise ValueError('active_layout cannot be combined with attach, attach to the active_layout group instead')
+            gate_only = bool(current_group['active_layout']) and not current_group['animation_start'] and not current_group['animation_toggle']
+            if gate_only and has_animation_stop and current_group['animation_end_duration']:
+                raise ValueError(
+                    'animation_stop with a duration is not useful for a group that has only active_layout, as the group turns straight back on while the'
+                    ' layout still matches; add animation_start or animation_toggle, or drop the duration'
+                )
+            if (current_group['animation_toggle'] or gate_only) and not current_group['animation_start'] and not has_animation_stop:
+                # A group turned on and off by toggling, or by the layout it is
+                # restricted to, should stay on until turned off again
                 current_group['animation_end_duration'] = 0
             if current_group['animation_loops'] > 1 and not current_group['animation_reverse']:
                 raise ValueError('animation_loops can only be used together with animation_reverse')
@@ -1687,6 +1710,7 @@ def parse_pipeline_definition(lines: Iterable[str], pipeline_name: str, pipeline
             'animation_reverse': 0,
             'animation_loops': 1,
             'attached': False,
+            'active_layout': (),
         }
 
     for line in lines:
@@ -1788,6 +1812,9 @@ def parse_pipeline_definition(lines: Iterable[str], pipeline_name: str, pipeline
                     if not 1 <= loops < 2**31:
                         raise ValueError(f'animation_loops must be a positive number, not: {loops}')
                     current_group['animation_loops'] = loops
+                case 'active_layout':
+                    val = ''.join(parts[1:]) if len(parts) > 1 else ''
+                    current_group['active_layout'] = () if not val or val == 'any' else parse_layout_names(val)
                 case 'attach':
                     current_group['attached'] = True
                 case 'endgroup':
@@ -1872,6 +1899,11 @@ def group_has_own_animation(group: Group) -> bool:
     return bool(group['animation_start'] or group['animation_toggle'])
 
 
+def group_is_conditionally_active(group: Group) -> bool:
+    "Whether the group is turned on and off by its own events or by the layout it is restricted to"
+    return group_has_own_animation(group) or bool(group['active_layout'])
+
+
 def group_moves_content(group: Group) -> bool:
     """Whether whatever the shaders in a group do to the content is visible on
     the whole screen for as long as the group is active, which is either always
@@ -1882,7 +1914,7 @@ def group_moves_content(group: Group) -> bool:
         and group['output_texture'] is NamedTexture.default
         and group['viewport_pos'] == (0, 0)
         and group['viewport_size'] == (1, 1)
-        and (not group_has_own_animation(group) or group['animation_end_duration'] == 0)
+        and (not group_is_conditionally_active(group) or group['animation_end_duration'] == 0)
     )
 
 
@@ -2016,7 +2048,7 @@ def build_custom_shader_pipeline_ir(pipeline: Pipeline, cache_dir: str, invocati
 
     def pointer_map_call(g: int, s: int) -> str:
         call = f'pos = {entry_point(g, s, "pointer_map")}(pos, csd);'
-        if group_has_own_animation(pipeline['groups'][g]):
+        if group_is_conditionally_active(pipeline['groups'][g]):
             # Applies only while the group is active
             call = f'if ((active_groups & {1 << g}u) != 0u) {call}'
         return call

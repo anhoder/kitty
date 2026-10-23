@@ -487,12 +487,25 @@ typedef struct CursorTrail {
     CursorMove history[CURSOR_TRAIL_HISTORY_SIZE]; // recent cursor moves that started a trail, most recent first
 } CursorTrail;
 
+// The longest layout name that is reported to custom shaders. Longer names are
+// truncated, which at worst makes an active_layout pipeline directive fail to
+// match.
+#define MAX_LAYOUT_NAME_LEN 63
+// The most layouts one custom shader group can be restricted to, must be at
+// least the number of layouts kitty has
+#define MAX_ACTIVE_LAYOUTS_PER_GROUP 8
+
 typedef struct Tab {
     id_type id;
     unsigned int active_window, num_windows, capacity;
     Window *windows;
     BorderRects border_rects;
     CursorTrail cursor_trail;
+    // Name of the layout currently used by this tab (Layout.name, without any
+    // layout options), set by Tab._set_current_layout() in tabs.py. Empty until
+    // Python has set a layout. Matched against the active_layout directive of
+    // custom shader pipeline groups.
+    char layout_name[MAX_LAYOUT_NAME_LEN + 1];
 } Tab;
 
 enum RENDER_STATE { RENDER_FRAME_NOT_REQUESTED, RENDER_FRAME_REQUESTED, RENDER_FRAME_READY };
@@ -572,6 +585,7 @@ typedef enum {
     SHADER_ANIM_EVENT_USER_IDLE,
     SHADER_ANIM_EVENT_CURSOR_TRAIL_MOVE,
     SHADER_ANIM_EVENT_CURSOR_TRAIL_STOP,
+    SHADER_ANIM_EVENT_LAYOUT_CHANGE,
     NUM_SHADER_ANIM_EVENTS
 } ShaderAnimationEvent;
 // Events named by the pipeline itself, with the user: prefix, and fired by the
@@ -667,6 +681,9 @@ typedef struct OSWindow {
         bool mapped_gesture, mapped_grabbed;
     } scroll;
     ShaderAnimEventMask shader_anim_event_registry;
+    // The layout of the active tab when the custom shader animations were last
+    // updated, to fire the layout-change event when it changes
+    char shader_anim_layout_name[MAX_LAYOUT_NAME_LEN + 1];
     id_type last_bell_window_id; // ID of the most recent window that received a bell event
     ShaderGroupAnimState shader_group_anim[MAX_CUSTOM_SHADER_GROUPS];
     ShaderAnimState shader_anim;
@@ -882,6 +899,7 @@ void free_buffered_keys(Window *w);
 bool screen_needs_rendering_in_layers(OSWindow *os_window, Window *w, Screen *screen);
 void setup_os_window_for_rendering(OSWindow *, Tab *, Window *, bool, monotonic_t);
 monotonic_t update_custom_shader_animations(ShaderAnimEventMask event_mask, monotonic_t now, OSWindow *os_window);
+ShaderAnimEventMask update_shader_anim_layout_name(OSWindow *os_window);
 void init_shader_animation_state(OSWindow *os_window);
 bool custom_shader_needs_render(const ShaderAnimState *before, const ShaderAnimState *after, ShaderAnimEventMask event_mask, monotonic_t now);
 void map_pointer_position(const OSWindow *os_window, double *x, double *y);

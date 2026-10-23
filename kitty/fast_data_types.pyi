@@ -51,6 +51,7 @@ SHM_NAME_MAX: int
 MAX_CUSTOM_SHADER_GROUPS: int
 MAX_SHADER_ANIM_USER_EVENTS: int
 MAX_SHADER_ANIM_USER_EVENT_NAME_LEN: int
+MAX_LAYOUT_NAME_LEN: int
 POINTER_MAP_SIZE: int
 MOUSE_SELECTION_LINE: int
 MOUSE_SELECTION_EXTEND: int
@@ -554,16 +555,31 @@ def sample_pointer_map(data: bytes, u: float, v: float) -> tuple[float, float]: 
 def fire_custom_shader_event(name: str, os_window_id: int = 0) -> bool: ...
 @overload
 def simulate_custom_shader_animation(
-    pipeline: Mapping[str, object], ticks: list[Sequence[str]], with_progress: Literal[False] = False
+    pipeline: Mapping[str, object],
+    ticks: list[Sequence[str] | tuple[Sequence[str], str]],
+    with_progress: Literal[False] = False,
+    needs_render: Literal[False] = False,
 ) -> list[tuple[bool, ...]]: ...
 @overload
 def simulate_custom_shader_animation(
-    pipeline: Mapping[str, object], ticks: list[Sequence[str]], with_progress: Literal[True]
+    pipeline: Mapping[str, object],
+    ticks: list[Sequence[str] | tuple[Sequence[str], str]],
+    with_progress: Literal[True],
+    needs_render: Literal[False] = False,
 ) -> list[tuple[float | None, ...]]: ...
+@overload
+def simulate_custom_shader_animation(
+    pipeline: Mapping[str, object],
+    ticks: list[Sequence[str] | tuple[Sequence[str], str]],
+    with_progress: bool = False,
+    *,
+    needs_render: Literal[True],
+) -> list[bool]: ...
 def set_os_window_chrome(os_window_id: int) -> bool:
     pass
 
 def set_borders_rects(os_window_id: int, tab_id: int, rects: list[Border]) -> None: ...
+def set_tab_layout_name(os_window_id: int, tab_id: int, name: str) -> None: ...
 def os_window_has_background_image(os_window_id: int) -> bool:
     pass
 
