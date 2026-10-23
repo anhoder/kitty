@@ -243,6 +243,7 @@ Detailed list of changes
   :opt:`window_title_watermark`. Unlike :opt:`window_title_bar_min_windows` it
   costs no line of the window. Its position, size, color, opacity and font
   family are configurable
+- Keep the window title watermark's font size fixed when the terminal font size changes.
 
 - Custom shaders: New :code:`cursor-trail-railgun`, :code:`cursor-trail-torpedo`
   and :code:`cursor-trail-pixiedust` shaders that make particles fly off the

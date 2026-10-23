@@ -1760,8 +1760,9 @@ ensure_watermark_mask(const UIRenderData *ui, size_t text_height, size_t max_wid
     Window *w = ui->window;
     const char *cached_family = w->watermark.rendered_for_family;
     const bool same_family = (family == NULL) == (cached_family == NULL) && (family == NULL || strcmp(family, cached_family) == 0);
+    const bool same_font_size = w->watermark.rendered_for_font_size == w->watermark.font_size;
     if (w->watermark.mask && w->watermark.rendered_for_text == w->watermark_text && w->watermark.text_height == text_height &&
-        w->watermark.max_width == max_width && w->watermark.opacity == opacity && same_family)
+        w->watermark.max_width == max_width && w->watermark.opacity == opacity && same_family && same_font_size)
         return w->watermark.width > 0 && w->watermark.height > 0;
 
     free(w->watermark.mask);
@@ -1777,7 +1778,7 @@ ensure_watermark_mask(const UIRenderData *ui, size_t text_height, size_t max_wid
     uint8_t *rgba = calloc(4u * max_width, text_height);
     if (!rgba) return false;
     size_t actual_width = max_width;
-    const double font_sz_pts = ui->os_window->fonts_data->font_sz_in_pts * OPT(window_title_watermark_font_size);
+    const double font_sz_pts = w->watermark.font_size_in_pts;
     if (!draw_window_title(
             font_sz_pts,
             ui->os_window->fonts_data->logical_dpi_y,
@@ -1829,21 +1830,33 @@ ensure_watermark_mask(const UIRenderData *ui, size_t text_height, size_t max_wid
     free(w->watermark.rendered_for_family);
     w->watermark.rendered_for_family = family ? strdup(family) : NULL;
     w->watermark.rendered_for_text = Py_NewRef(w->watermark_text);
+    w->watermark.rendered_for_font_size = w->watermark.font_size;
     return true;
 }
 
 static void
 draw_window_title_watermark(const UIRenderData *ui) {
     if (!has_window_title_watermark(ui->os_window, ui->window)) return;
+    // Resolve the configured size against the terminal font only when the
+    // watermark size setting changes. Subsequent terminal font changes must
+    // not resize an already configured watermark.
+    Window *w = ui->window;
+    const float font_size = MAX(0.f, OPT(window_title_watermark_font_size));
+    if (w->watermark.render_height == 0 || w->watermark.font_size != font_size) {
+        w->watermark.font_size = font_size;
+        w->watermark.font_size_in_pts = ui->os_window->fonts_data->font_sz_in_pts * font_size;
+        w->watermark.render_height = (size_t)(ui->cell_height * font_size);
+    }
     // Inset the watermark from the window edges by one cell width on every
     // side. Cell width is used for the vertical inset too, because cell height
     // is typically about twice the width, which makes a one cell vertical gap
-    // look much larger than the horizontal one.
-    const unsigned margin = ui->cell_width;
+    // look much larger than the horizontal one. Cache the initial pixel margin
+    // so changing the terminal font does not move edge-positioned watermarks.
+    if (w->watermark.margin == 0) w->watermark.margin = ui->cell_width;
+    const unsigned margin = w->watermark.margin;
     if (ui->screen_width <= 2 * margin || ui->screen_height <= 2 * margin) return;
     const size_t max_width = ui->screen_width - 2 * margin;
-    size_t text_height = (size_t)(ui->cell_height * MAX(0.f, OPT(window_title_watermark_font_size)));
-    text_height = MIN(text_height, ui->screen_height - 2 * margin);
+    size_t text_height = MIN(w->watermark.render_height, ui->screen_height - 2 * margin);
     if (text_height < 4 || max_width < 4) return;
     const float opacity = MIN(1.f, MAX(0.f, OPT(window_title_watermark_opacity)));
     if (!ensure_watermark_mask(ui, text_height, max_width, opacity, OPT(window_title_watermark_font_family))) return;
@@ -3696,6 +3709,7 @@ shader_anim_event_bit(const char *s, CustomShaderPipeline *p) {
     if (strcmp(s, "user-idle") == 0) return 1u << SHADER_ANIM_EVENT_USER_IDLE;
     if (strcmp(s, "cursor-trail-move") == 0) return 1u << SHADER_ANIM_EVENT_CURSOR_TRAIL_MOVE;
     if (strcmp(s, "cursor-trail-stop") == 0) return 1u << SHADER_ANIM_EVENT_CURSOR_TRAIL_STOP;
+    if (strcmp(s, "layout-change") == 0) return 1u << SHADER_ANIM_EVENT_LAYOUT_CHANGE;
     static const char user_prefix[] = "user:";
     if (strncmp(s, user_prefix, sizeof(user_prefix) - 1) == 0) {
         const char *name = s + sizeof(user_prefix) - 1;

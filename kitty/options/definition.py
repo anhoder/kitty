@@ -2217,9 +2217,9 @@ opt(
     option_type='positive_float',
     ctype='float',
     long_text="""
-The size of the :opt:`window_title_watermark` text in units of cell height. So
-:code:`1.0` makes the watermark the same height as a line of terminal text and
-:code:`3.0` makes it three times as tall.
+The size of the :opt:`window_title_watermark` text in units of cell height.
+The size is resolved when the watermark is first rendered or this setting
+changes, and remains fixed when the terminal font size changes.
 """,
 )
 

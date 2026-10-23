@@ -332,11 +332,13 @@ typedef struct Window {
     PyObject *watermark_text;
     // Cache for the window title watermark: an 8-bit coverage mask of the
     // rendered watermark text, re-rasterized only when the text, its pixel
-    // size or the available width changes.
+    // size, the available width, the font family, or the configured size changes.
     struct {
         uint8_t *mask;
-        size_t width, height, text_height, max_width;
-        float opacity;
+        size_t width, height, text_height, max_width, render_height;
+        unsigned margin;
+        float opacity, font_size, rendered_for_font_size;
+        double font_size_in_pts;
         char *rendered_for_family;
         PyObject *rendered_for_text;
     } watermark;
