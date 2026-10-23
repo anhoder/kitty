@@ -1638,6 +1638,9 @@ class Parser:
     def window_title_watermark_opacity(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['window_title_watermark_opacity'] = unit_float(val)
 
+    def window_title_watermark_template(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['window_title_watermark_template'] = tab_title_template(val)
+
     def x11_hide_window_decorations(self, val: str, ans: dict[str, typing.Any]) -> None:
         deprecated_hide_window_decorations_aliases('x11_hide_window_decorations', val, ans)
 

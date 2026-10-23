@@ -2686,7 +2686,8 @@ destroy_fake_window_contents(Window *w) {
     Py_CLEAR(w->url_target_bar_data.last_drawn_title_object_id);
     free(w->url_target_bar_data.buf);
     w->url_target_bar_data.buf = NULL;
-    Py_CLEAR(w->watermark.rendered_for_title);
+    Py_CLEAR(w->watermark_text);
+    Py_CLEAR(w->watermark.rendered_for_text);
     free(w->watermark.mask);
     w->watermark.mask = NULL;
     free(w->watermark.rendered_for_family);

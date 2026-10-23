@@ -1746,7 +1746,7 @@ draw_hyperlink_target(const UIRenderData *ui) {
 static bool
 has_window_title_watermark(const OSWindow *os_window, Window *w) {
     if (OPT(window_title_watermark) == WATERMARK_NONE || w == NULL) return false;
-    if (!w->title || !PyUnicode_Check(w->title) || !PyUnicode_GET_LENGTH(w->title)) return false;
+    if (!w->watermark_text || !PyUnicode_Check(w->watermark_text) || !PyUnicode_GET_LENGTH(w->watermark_text)) return false;
     if (OPT(window_title_watermark_opacity) <= 0.f) return false;
     const int min_windows = OPT(window_title_watermark_min_windows);
     if (min_windows < 1) return false;
@@ -1760,14 +1760,14 @@ ensure_watermark_mask(const UIRenderData *ui, size_t text_height, size_t max_wid
     Window *w = ui->window;
     const char *cached_family = w->watermark.rendered_for_family;
     const bool same_family = (family == NULL) == (cached_family == NULL) && (family == NULL || strcmp(family, cached_family) == 0);
-    if (w->watermark.mask && w->watermark.rendered_for_title == w->title && w->watermark.text_height == text_height && w->watermark.max_width == max_width &&
-        w->watermark.opacity == opacity && same_family)
+    if (w->watermark.mask && w->watermark.rendered_for_text == w->watermark_text && w->watermark.text_height == text_height &&
+        w->watermark.max_width == max_width && w->watermark.opacity == opacity && same_family)
         return w->watermark.width > 0 && w->watermark.height > 0;
 
     free(w->watermark.mask);
     w->watermark.mask = NULL;
     w->watermark.width = w->watermark.height = 0;
-    Py_CLEAR(w->watermark.rendered_for_title);
+    Py_CLEAR(w->watermark.rendered_for_text);
 
     // draw_window_title() writes pre-multiplied RGBA. Rendering opaque white
     // text on a fully transparent background makes the alpha channel of each
@@ -1781,7 +1781,7 @@ ensure_watermark_mask(const UIRenderData *ui, size_t text_height, size_t max_wid
     if (!draw_window_title(
             font_sz_pts,
             ui->os_window->fonts_data->logical_dpi_y,
-            PyUnicode_AsUTF8(w->title),
+            PyUnicode_AsUTF8(w->watermark_text),
             family,
             0xFFFFFFFF,
             0x00000000,
@@ -1828,7 +1828,7 @@ ensure_watermark_mask(const UIRenderData *ui, size_t text_height, size_t max_wid
     w->watermark.opacity = opacity;
     free(w->watermark.rendered_for_family);
     w->watermark.rendered_for_family = family ? strdup(family) : NULL;
-    w->watermark.rendered_for_title = Py_NewRef(w->title);
+    w->watermark.rendered_for_text = Py_NewRef(w->watermark_text);
     return true;
 }
 

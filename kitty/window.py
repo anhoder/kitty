@@ -1244,6 +1244,35 @@ class Window:
                 0,
             )
 
+    def update_watermark_text(self) -> None:
+        """Update the watermark text from template, including layout_name."""
+        from .progress import ProgressState
+        from .window_title_bar import WindowTitleData, render_watermark_text
+
+        progress_percent = ''
+        if self.progress.state is not ProgressState.unset:
+            if self.progress.state is ProgressState.indeterminate:
+                progress_percent = '[…] '
+            elif self.progress.percent > 0:
+                progress_percent = f'[{self.progress.percent}%] '
+
+        layout_name = ''
+        tab = self.tabref()
+        if tab is not None:
+            layout_name = tab.current_layout.name or ''
+
+        data = WindowTitleData(
+            title=self.title or '',
+            is_active=False,  # watermark doesn't depend on active state for color
+            window_id=self.id,
+            tab_id=self.tab_id,
+            needs_attention=self.needs_attention,
+            has_activity_since_last_focus=self.has_activity_since_last_focus,
+        )
+        text = render_watermark_text(data, progress_percent, layout_name)
+        from .fast_data_types import set_window_watermark_text
+        set_window_watermark_text(self.os_window_id, self.tab_id, self.id, text)
+
     def close(self) -> None:
         get_boss().mark_window_for_close(self)
 

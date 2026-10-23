@@ -536,6 +536,7 @@ option_names = (
     'window_title_watermark_font_size',
     'window_title_watermark_min_windows',
     'window_title_watermark_opacity',
+    'window_title_watermark_template',
 )
 
 
@@ -757,8 +758,9 @@ class Options:
     window_title_watermark_color: int = 0
     window_title_watermark_font_family: str | None = None
     window_title_watermark_font_size: float = 1.0
-    window_title_watermark_min_windows: int = 2
+    window_title_watermark_min_windows: int = 1
     window_title_watermark_opacity: float = 0.4
+    window_title_watermark_template: str = '{title}'
     action_alias: dict[str, str] = {}
     detect_url_regex: dict[str, str] = {}
     env: dict[str, str] = {}

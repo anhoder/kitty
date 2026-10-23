@@ -2250,8 +2250,30 @@ used and a warning is printed.
 )
 
 opt(
+    'window_title_watermark_template',
+    '"{title}"',
+    option_type='tab_title_template',
+    long_text="""
+A template to render the :opt:`window_title_watermark` text. Uses the same
+template syntax as :opt:`window_title_template` and supports the following
+variables: :code:`{title}`, :code:`{is_active}`, :code:`{bell_symbol}`,
+:code:`{activity_symbol}`, :code:`{progress_percent}`, :code:`{layout_name}`,
+:code:`{custom}` (from :code:`draw_window_title(data)` in
+:file:`window_title_bar.py`).
+
+Note that color formatting directives such as :code:`{fmt.fg.red}` are accepted
+but have no effect, as the watermark is rendered as a single-color alpha mask.
+The color is controlled by :opt:`window_title_watermark_color`.
+
+To show the current layout when zoomed (e.g., in stack layout)::
+
+    window_title_watermark_template "{title}{'  [' + layout_name.upper() + ']' if layout_name == 'stack' else ''}"
+""",
+)
+
+opt(
     'window_title_watermark_min_windows',
-    '2',
+    '1',
     option_type='positive_int',
     ctype='int',
     long_text="""

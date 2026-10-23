@@ -405,6 +405,14 @@ update_window_title(id_type os_window_id, id_type tab_id, id_type window_id, PyO
     END_WITH_WINDOW;
 }
 
+static void
+set_window_watermark_text(id_type os_window_id, id_type tab_id, id_type window_id, PyObject *text) {
+    WITH_WINDOW(os_window_id, tab_id, window_id)
+    Py_CLEAR(window->watermark_text);
+    if (text && PyUnicode_Check(text) && PyUnicode_GET_LENGTH(text)) window->watermark_text = Py_NewRef(text);
+    END_WITH_WINDOW;
+}
+
 void
 set_os_window_title_from_window(Window *w, OSWindow *os_window) {
     if (os_window->disallow_title_changes || os_window->title_is_overriden) return;
@@ -441,7 +449,8 @@ destroy_window(Window *w) {
     Py_CLEAR(w->url_target_bar_data.last_drawn_title_object_id);
     free(w->url_target_bar_data.buf);
     w->url_target_bar_data.buf = NULL;
-    Py_CLEAR(w->watermark.rendered_for_title);
+    Py_CLEAR(w->watermark_text);
+    Py_CLEAR(w->watermark.rendered_for_text);
     free(w->watermark.mask);
     w->watermark.mask = NULL;
     free(w->watermark.rendered_for_family);
@@ -2012,6 +2021,7 @@ PYWRAP1(buffer_keys_in_window) {
 }
 
 THREE_ID_OBJ(update_window_title)
+THREE_ID_OBJ(set_window_watermark_text)
 THREE_ID(remove_window)
 THREE_ID(detach_window)
 THREE_ID(attach_window)
@@ -2147,6 +2157,7 @@ static PyMethodDef module_methods[] = {
     MW(add_tab, METH_O),
     MW(add_window, METH_VARARGS),
     MW(update_window_title, METH_VARARGS),
+    MW(set_window_watermark_text, METH_VARARGS),
     MW(remove_tab, METH_VARARGS),
     MW(remove_window, METH_VARARGS),
     MW(detach_window, METH_VARARGS),

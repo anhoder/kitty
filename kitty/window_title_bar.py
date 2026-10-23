@@ -115,6 +115,45 @@ def _get_custom_draw_result(data: WindowTitleData) -> str | None:
         return None
 
 
+
+def render_watermark_text(data: WindowTitleData, progress_percent: str, layout_name: str) -> str:
+    """Evaluate window_title_watermark_template and strip SGR sequences.
+    
+    Returns empty string if template evaluation fails or if the result is empty.
+    """
+    import re
+    
+    opts = get_options()
+    template = opts.window_title_watermark_template
+    if not template:
+        return ''
+    
+    WindowTitleColorFormatter.is_active = data.is_active
+    
+    bell_symbol = opts.bell_on_tab if data.needs_attention else ''
+    activity_symbol = opts.tab_activity_symbol if data.has_activity_since_last_focus else ''
+    custom_result = _get_custom_draw_result(data)
+    
+    eval_locals = {
+        'title': data.title,
+        'is_active': data.is_active,
+        'fmt': WindowTitleFormatter,
+        'bell_symbol': bell_symbol,
+        'activity_symbol': activity_symbol,
+        'progress_percent': progress_percent,
+        'layout_name': layout_name,
+        'custom': custom_result or '',
+    }
+    try:
+        title = eval(_compile_template(template), {'__builtins__': safe_builtins}, eval_locals)
+        text = str(title)
+        # Strip SGR sequences: watermark is single-color alpha mask, formatting has no effect
+        text = re.sub(r'\x1b\[[0-9;:]*m', '', text)
+        return text
+    except Exception as e:
+        _report_template_failure(template, str(e))
+        return ''
+
 def clear_caches() -> None:
     load_custom_window_title_bar_module.clear_cached()
 

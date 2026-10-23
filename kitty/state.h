@@ -326,15 +326,19 @@ typedef struct Window {
     monotonic_t last_drag_scroll_at;
     uint32_t last_special_key_pressed;
     WindowBarData title_bar_data, url_target_bar_data;
+    // The text drawn as the window title watermark, rendered from
+    // window_title_watermark_template by Python. Distinct from title, as the
+    // template can include state not in the title, such as the layout name.
+    PyObject *watermark_text;
     // Cache for the window title watermark: an 8-bit coverage mask of the
-    // rendered title text, re-rasterized only when the title, its pixel size
-    // or the available width changes.
+    // rendered watermark text, re-rasterized only when the text, its pixel
+    // size or the available width changes.
     struct {
         uint8_t *mask;
         size_t width, height, text_height, max_width;
         float opacity;
         char *rendered_for_family;
-        PyObject *rendered_for_title;
+        PyObject *rendered_for_text;
     } watermark;
     id_type redirect_keys_to_overlay;
     struct {

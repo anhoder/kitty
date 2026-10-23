@@ -9,6 +9,14 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+
+- Add :opt:`window_title_watermark_template` to render the window title
+  watermark via template, exposing :code:`layout_name` to identify zoom mode
+  in single-visible-window layouts such as :code:`stack`. The default
+  :opt:`window_title_watermark_min_windows` is now :code:`1` (always show),
+  consistent with :opt:`tab_bar_min_tabs` and :opt:`window_title_bar_min_windows`
+  convention for "show in split mode" being the caller's choice via template
+
 Choose an edge when resizing [unreleased]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
