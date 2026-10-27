@@ -15,15 +15,14 @@ if TYPE_CHECKING:
 class SetFontSize(RemoteCommand):
     protocol_spec = __doc__ = """
     size+/float: The new font size in pts (a positive number). If absent is assumed to be zero which means reset to default.
-    all/bool: Boolean whether to change font size in the current window or all windows
+    all/bool: Boolean whether to change font size in the current pane or all windows
     increment_op/choices.+.-.*./: The string ``+``, ``-``, ``*`` or ``/`` to interpret size as an increment
     """
 
-    short_desc = 'Set the font size in the active top-level OS window'
+    short_desc = 'Set the font size in the current pane or all OS windows'
     desc = (
-        'Sets the font size to the specified size, in pts. Note'
-        ' that in kitty all sub-windows in the same OS window'
-        ' must have the same font size. A value of zero'
+        'Sets the font size to the specified size, in pts. By default this changes'
+        ' the current pane; with --all it changes all OS windows. A value of zero'
         ' resets the font size to default. Prefixing the value'
         ' with a :code:`+`, :code:`-`, :code:`*` or :code:`/` changes the font size by the specified'
         ' amount. Use -- before using - to have it not mistaken for a option. For example:'
@@ -33,7 +32,7 @@ class SetFontSize(RemoteCommand):
     options_spec = """\
 --all -a
 type=bool-set
-By default, the font size is only changed in the active OS window,
+By default, the font size is only changed in the current pane,
 this option will cause it to be changed in all OS windows. It also changes
 the font size for any newly created OS Windows in the future.
 """

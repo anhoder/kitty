@@ -2,7 +2,10 @@
 # License: GPL v3 Copyright: 2026, Kovid Goyal <kovid at kovidgoyal.net>
 
 
+import shlex
+
 from kitty.fast_data_types import Screen
+from kitty.constants import unserialize_launch_flag
 from kitty.os_window_size import WindowSize, WindowSizes, initial_window_size_func
 from kitty.session import get_os_window_sizing_data, parse_session
 
@@ -10,6 +13,17 @@ from .base import BaseTest, parse_bytes
 
 
 class TestSessions(BaseTest):
+    def test_window_font_size_override_session_state(self) -> None:
+        opts = self.set_options()
+        encoded = unserialize_launch_flag + '{"id": 7, "font_size_override": 15.5}'
+        (session,) = parse_session(f'launch {shlex.join((encoded,))}', opts)
+        self.ae(session.tabs[0].windows[0].font_size_override, 15.5)
+
+        # Session files written by older kitty versions have no override field.
+        old_encoded = unserialize_launch_flag + '{"id": 8}'
+        (session,) = parse_session(f'launch {shlex.join((old_encoded,))}', opts)
+        self.ae(session.tabs[0].windows[0].font_size_override, None)
+
     def test_session_size_overrides_remembered_size(self) -> None:
         opts = self.set_options({'remember_window_size': True})
         with_size, without_size = parse_session('os_window_size 1180 760\nlaunch\nnew_os_window\nlaunch', opts)

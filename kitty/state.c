@@ -392,6 +392,8 @@ add_window(id_type os_window_id, id_type tab_id, PyObject *title) {
     make_os_window_context_current(osw);
     zero_at_i(tab->windows, tab->num_windows);
     initialize_window(tab->windows + tab->num_windows, title, true);
+    tab->windows[tab->num_windows].fonts_data = osw->fonts_data;
+    tab->windows[tab->num_windows].font_size_in_pts = osw->fonts_data ? osw->fonts_data->font_sz_in_pts : 0;
     return tab->windows[tab->num_windows++].id;
     END_WITH_TAB;
     return 0;
@@ -486,12 +488,7 @@ remove_window(id_type os_window_id, id_type tab_id, id_type id) {
     END_WITH_TAB;
 }
 
-typedef struct {
-    unsigned int num_windows, capacity;
-    Window *windows;
-} DetachedWindows;
-
-static DetachedWindows detached_windows = {0};
+DetachedWindows detached_windows = {0};
 
 
 static void
@@ -529,9 +526,19 @@ resize_screen(OSWindow *os_window, Screen *screen, bool has_graphics) {
 }
 
 static void
+resize_screen_for_window(Window *w, Screen *screen, bool has_graphics) {
+    if (screen && w && w->fonts_data) {
+        screen->cell_size.width = w->fonts_data->fcm.cell_width;
+        screen->cell_size.height = w->fonts_data->fcm.cell_height;
+        screen_dirty_sprite_positions(screen);
+        if (has_graphics) screen_rescale_images(screen);
+    }
+}
+
+static void
 attach_window(id_type os_window_id, id_type tab_id, id_type id) {
     WITH_TAB(os_window_id, tab_id);
-    for (size_t i = 0; i < detached_windows.num_windows; i++) {
+    if (osw->fonts_data) for (size_t i = 0; i < detached_windows.num_windows; i++) {
         if (detached_windows.windows[i].id == id) {
             ensure_space_for(tab, windows, Window, tab->num_windows + 1, capacity, 1, true);
             Window *w = tab->windows + tab->num_windows++;
@@ -539,13 +546,32 @@ attach_window(id_type os_window_id, id_type tab_id, id_type id) {
             zero_at_i(detached_windows.windows, i);
             remove_i_from_array(detached_windows.windows, i, detached_windows.num_windows);
             make_os_window_context_current(osw);
+            if (w->font_size_override) {
+                FONTS_DATA_HANDLE pane_fonts = load_fonts_data(
+                    w->font_size_in_pts,
+                    osw->fonts_data->logical_dpi_x,
+                    osw->fonts_data->logical_dpi_y);
+                if (pane_fonts) {
+                    w->fonts_data = pane_fonts;
+                } else {
+                    w->font_size_override = false;
+                    w->fonts_data = osw->fonts_data;
+                    w->font_size_in_pts = osw->fonts_data->font_sz_in_pts;
+                }
+            } else {
+                w->fonts_data = osw->fonts_data;
+                w->font_size_in_pts = osw->fonts_data ? osw->fonts_data->font_sz_in_pts : 0;
+            }
             create_gpu_resources_for_window(w);
-            if (w->render_data.screen->cell_size.width != osw->fonts_data->fcm.cell_width ||
-                w->render_data.screen->cell_size.height != osw->fonts_data->fcm.cell_height)
-                resize_screen(osw, w->render_data.screen, true);
-            else screen_dirty_sprite_positions(w->render_data.screen);
-            w->render_data.screen->reload_all_gpu_data = true;
-            screen_visibility_changed(w->render_data.screen, is_os_window_potentially_visible(osw) && t == osw->active_tab && w->visible);
+            if (w->render_data.screen &&
+                (w->render_data.screen->cell_size.width != w->fonts_data->fcm.cell_width ||
+                 w->render_data.screen->cell_size.height != w->fonts_data->fcm.cell_height))
+                resize_screen_for_window(w, w->render_data.screen, true);
+            else if (w->render_data.screen) screen_dirty_sprite_positions(w->render_data.screen);
+            if (w->render_data.screen) {
+                w->render_data.screen->reload_all_gpu_data = true;
+                screen_visibility_changed(w->render_data.screen, is_os_window_potentially_visible(osw) && t == osw->active_tab && w->visible);
+            }
             break;
         }
     }
@@ -1274,9 +1300,23 @@ end:
 
 PYWRAP1(cell_size_for_window) {
     id_type os_window_id;
+    id_type window_id = 0;
     unsigned int cell_width = 0, cell_height = 0;
-    PA("K", &os_window_id);
+    PA("K|K", &os_window_id, &window_id);
     WITH_OS_WINDOW(os_window_id)
+    if (window_id) {
+        for (size_t ti = 0; ti < os_window->num_tabs; ti++) {
+            Tab *tab = os_window->tabs + ti;
+            for (size_t wi = 0; wi < tab->num_windows; wi++) {
+                Window *w = tab->windows + wi;
+                if (w->id == window_id && w->fonts_data) {
+                    cell_width = w->fonts_data->fcm.cell_width;
+                    cell_height = w->fonts_data->fcm.cell_height;
+                    goto end;
+                }
+            }
+        }
+    }
     cell_width = os_window->fonts_data->fcm.cell_width;
     cell_height = os_window->fonts_data->fcm.cell_height;
     goto end;
@@ -1559,7 +1599,25 @@ PYWRAP1(os_window_font_size) {
             Tab *tab = os_window->tabs + ti;
             for (size_t wi = 0; wi < tab->num_windows; wi++) {
                 Window *w = tab->windows + wi;
-                resize_screen(os_window, w->render_data.screen, true);
+                if (w->font_size_override) {
+                    FONTS_DATA_HANDLE pane_fonts = load_fonts_data(
+                        w->font_size_in_pts,
+                        os_window->fonts_data->logical_dpi_x,
+                        os_window->fonts_data->logical_dpi_y);
+                    if (pane_fonts) {
+                        w->fonts_data = pane_fonts;
+                        resize_screen_for_window(w, w->render_data.screen, true);
+                    } else {
+                        w->font_size_override = false;
+                        w->fonts_data = os_window->fonts_data;
+                        w->font_size_in_pts = os_window->fonts_data->font_sz_in_pts;
+                        resize_screen(os_window, w->render_data.screen, true);
+                    }
+                } else {
+                    w->fonts_data = os_window->fonts_data;
+                    w->font_size_in_pts = os_window->fonts_data->font_sz_in_pts;
+                    resize_screen(os_window, w->render_data.screen, true);
+                }
             }
         }
         // On Wayland with CSD title needs to be re-rendered in a different font size
@@ -1568,6 +1626,32 @@ PYWRAP1(os_window_font_size) {
     return Py_BuildValue("d", os_window->fonts_data->font_sz_in_pts);
     END_WITH_OS_WINDOW
     return Py_BuildValue("d", 0.0);
+}
+
+PYWRAP1(set_window_font_size) {
+    id_type window_id;
+    double new_sz = 0;
+    PA("K|d", &window_id, &new_sz);
+    Window *w = window_for_window_id(window_id);
+    if (!w) Py_RETURN_FALSE;
+    OSWindow *os_window = os_window_for_kitty_window(window_id);
+    if (!os_window || !os_window->fonts_data) Py_RETURN_FALSE;
+    if (new_sz > 0) {
+        FONTS_DATA_HANDLE pane_fonts = load_fonts_data(new_sz, os_window->fonts_data->logical_dpi_x, os_window->fonts_data->logical_dpi_y);
+        if (!pane_fonts) Py_RETURN_FALSE;
+        w->fonts_data = pane_fonts;
+        w->font_size_override = true;
+        w->font_size_in_pts = new_sz;
+    } else {
+        w->font_size_override = false;
+        w->fonts_data = os_window->fonts_data;
+        w->font_size_in_pts = os_window->fonts_data->font_sz_in_pts;
+    }
+    resize_screen_for_window(w, w->render_data.screen, true);
+    if (w->render_data.screen) w->render_data.screen->reload_all_gpu_data = true;
+    os_window->needs_render = true;
+    request_frame_render(os_window);
+    Py_RETURN_TRUE;
 }
 
 PYWRAP1(set_os_window_size) {
@@ -2212,6 +2296,7 @@ static PyMethodDef module_methods[] = {
     MW(global_font_size, METH_VARARGS),
     {"set_background_image", (PyCFunction)(void (*)(void))pyset_background_image, METH_VARARGS | METH_KEYWORDS, ""},
     MW(os_window_font_size, METH_VARARGS),
+    MW(set_window_font_size, METH_VARARGS),
     MW(set_os_window_size, METH_VARARGS),
     MW(get_os_window_size, METH_VARARGS),
     MW(os_window_is_invisible, METH_O),

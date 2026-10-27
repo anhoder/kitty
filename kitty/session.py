@@ -2,6 +2,7 @@
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import json
+from math import isfinite
 import os
 import re
 import shlex
@@ -52,6 +53,7 @@ class WindowSpec:
         self.is_background_process = False
         self.serialized_id = serialized_id
         self.run_command_at_shell_startup = run_command_at_shell_startup
+        self.font_size_override: float | None = None
         self.restored_scrollback = b''
         if hasattr(launch_spec, 'opts'):  # LaunchSpec
             from .launch import LaunchSpec
@@ -132,6 +134,11 @@ class Session:
         if cmd and cmd[0].startswith(unserialize_launch_flag):
             serialize_data = json.loads(cmd[0][len(unserialize_launch_flag) :])
             del cmd[0]
+        override = serialize_data.get('font_size_override')
+        if isinstance(override, (int, float)) and not isinstance(override, bool) and isfinite(override) and override > 0:
+            font_size_override: float | None = float(override)
+        else:
+            font_size_override = None
         spec = parse_launch_args(cmd)
         if needs_expandvars:
             assert isinstance(cmd, list)
@@ -143,7 +150,9 @@ class Session:
         if t.next_title and not spec.opts.window_title:
             spec.opts.window_title = t.next_title
         spec.opts.cwd = spec.opts.cwd or t.cwd
-        t.windows.append(WindowSpec(spec, serialized_id=serialize_data['id'], run_command_at_shell_startup=serialize_data.get('cmd_at_shell_startup', ())))
+        window_spec = WindowSpec(spec, serialized_id=serialize_data['id'], run_command_at_shell_startup=serialize_data.get('cmd_at_shell_startup', ()))
+        window_spec.font_size_override = font_size_override
+        t.windows.append(window_spec)
         t.next_title = None
         if t.pending_resize_spec is not None:
             t.windows[-1].resize_spec = t.pending_resize_spec

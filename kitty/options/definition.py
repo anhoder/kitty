@@ -4534,7 +4534,7 @@ agr(
     'Font sizes',
     """
 You can change the font size for all top-level kitty OS windows at a time or
-only the current one.
+only the current pane.
 """,
 )
 
@@ -4599,7 +4599,7 @@ To setup shortcuts for specific font sizes::
 
     map kitty_mod+f6 change_font_size all 10.0
 
-To setup shortcuts to change only the current OS window's font size::
+To setup shortcuts to change only the current pane's font size::
 
     map kitty_mod+f6 change_font_size current 10.0
 

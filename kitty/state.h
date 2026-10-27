@@ -305,6 +305,10 @@ typedef struct DragRemoteItem {
 
 typedef struct Window {
     id_type id;
+    FONTS_DATA_HANDLE fonts_data;
+    id_type temp_font_group_id;
+    double font_size_in_pts;
+    bool font_size_override;
     bool visible;
     PyObject *title;
     WindowRenderData render_data;
@@ -507,6 +511,13 @@ typedef struct Tab {
     // custom shader pipeline groups.
     char layout_name[MAX_LAYOUT_NAME_LEN + 1];
 } Tab;
+
+typedef struct DetachedWindows {
+    unsigned int num_windows, capacity;
+    Window *windows;
+} DetachedWindows;
+
+extern DetachedWindows detached_windows;
 
 enum RENDER_STATE { RENDER_FRAME_NOT_REQUESTED, RENDER_FRAME_REQUESTED, RENDER_FRAME_READY };
 typedef enum { NO_CLOSE_REQUESTED, CONFIRMABLE_CLOSE_REQUESTED, CLOSE_BEING_CONFIRMED, IMPERATIVE_CLOSE_REQUESTED } CloseRequest;
@@ -838,7 +849,7 @@ ssize_t create_cell_vao(void);
 ssize_t create_border_vao(void);
 void bind_shader_globals_to_current_context(void);
 void upload_gamma_lut(void);
-bool send_cell_data_to_gpu(ssize_t, Screen *, OSWindow *);
+bool send_cell_data_to_gpu(ssize_t, Screen *, OSWindow *, Window *);
 void draw_cells(const WindowRenderData *, OSWindow *, bool, bool, bool, Window *, const Window *, monotonic_t);
 bool update_cursor_trail(CursorTrail *ct, Window *w, monotonic_t now, OSWindow *os_window);
 void set_gpu_viewport(unsigned w, unsigned h);
@@ -852,6 +863,7 @@ void blank_os_window(OSWindow *);
 void set_os_window_chrome(OSWindow *w);
 FONTS_DATA_HANDLE load_fonts_data(double, double, double);
 void send_prerendered_sprites_for_window(OSWindow *w);
+bool ensure_font_group_sprite_map(FONTS_DATA_HANDLE);
 #ifdef __APPLE__
 #include "cocoa_window.h"
 #endif

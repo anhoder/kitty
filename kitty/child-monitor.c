@@ -917,7 +917,7 @@ prepare_to_render_os_window(
         zero_at_ptr(cri);
         cri->x = TD.screen->cursor->x;
         cri->y = TD.screen->cursor->y;
-        if (send_cell_data_to_gpu(TD.vao_idx, TD.screen, os_window)) needs_render = true;
+        if (send_cell_data_to_gpu(TD.vao_idx, TD.screen, os_window, NULL)) needs_render = true;
         os_window->needs_layers = os_window->needs_layers || screen_needs_rendering_in_layers(os_window, NULL, TD.screen);
     }
     if (OPT(mouse_hide.hide_wait) > 0 && !is_mouse_hidden(os_window)) {
@@ -1011,7 +1011,7 @@ prepare_to_render_os_window(
                     set_maximum_wait(min_gap);
                 }
             }
-            if (send_cell_data_to_gpu(WD.vao_idx, WD.screen, os_window)) needs_render = true;
+            if (send_cell_data_to_gpu(WD.vao_idx, WD.screen, os_window, w)) needs_render = true;
             if (WD.screen->start_visual_bell_at | WD.screen->start_drag_overlay_at) needs_render = true;
             if (OPT(progress_bar) != PROGRESS_BAR_HIDDEN && WD.screen->progress_state == PROGRESS_STATE_INDETERMINATE) needs_render = true;
             if (WD.screen->start_visual_bell_at && WD.screen->start_visual_bell_at > os_window->last_rendered_at) {
@@ -1022,7 +1022,7 @@ prepare_to_render_os_window(
             WindowRenderData *trd = &w->window_title_render_data;
             if (trd->screen && trd->geometry.bottom > trd->geometry.top && trd->geometry.right > trd->geometry.left) {
                 trd->screen->cursor_render_info.is_visible = false;
-                if (send_cell_data_to_gpu(trd->vao_idx, trd->screen, os_window)) needs_render = true;
+                if (send_cell_data_to_gpu(trd->vao_idx, trd->screen, os_window, NULL)) needs_render = true;
             }
         }
     }

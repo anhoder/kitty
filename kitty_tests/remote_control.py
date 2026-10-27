@@ -17,6 +17,10 @@ class Window:
     def __init__(self, id: int, os_window_id: int):
         self.id = id
         self.os_window_id = os_window_id
+        self.font_size_override = None
+
+    def tabref(self):
+        return None
 
 
 class Boss:
@@ -38,6 +42,20 @@ class Boss:
 
 
 class TestRemoteControl(BaseTest):
+    def test_change_font_size_current_pane(self):
+        from kitty.boss import Boss as KittyBoss
+
+        self.set_options({'font_size': 11.0})
+        window = Window(1, 2)
+        boss = object.__new__(KittyBoss)
+        boss.window_for_dispatch = window
+        with patch('kitty.boss.os_window_font_size', return_value=11.0), patch('kitty.fast_data_types.set_window_font_size', return_value=True):
+            KittyBoss.change_font_size(boss, False, '+', 2.0)
+        self.ae(window.font_size_override, 13.0)
+        with patch('kitty.boss.os_window_font_size', return_value=11.0), patch('kitty.fast_data_types.set_window_font_size', return_value=True):
+            KittyBoss.change_font_size(boss, False, None, 0.0)
+        self.ae(window.font_size_override, None)
+
     def test_set_font_size_mapping(self):
         from kitty.boss import Boss as KittyBoss
         from kitty.rc.base import RemoteControlErrorWithoutTraceback

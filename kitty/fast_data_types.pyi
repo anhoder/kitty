@@ -843,6 +843,9 @@ def create_canvas(d: bytes, w: int, x: int, y: int, cw: int, ch: int, bpp: int) 
 def os_window_font_size(os_window_id: int, new_sz: float = -1.0, force: bool = False) -> float:
     pass
 
+def set_window_font_size(window_id: int, new_sz: float = 0.0) -> bool:
+    pass
+
 def cocoa_set_notification_activated_callback(identifier: Optional[Callable[[str, str, str], None]]) -> None:
     pass
 
@@ -1028,7 +1031,7 @@ def attach_window(os_window_id: int, tab_id: int, window_id: int) -> None:
 def add_tab(os_window_id: int) -> int:
     pass
 
-def cell_size_for_window(os_window_id: int) -> Tuple[int, int]:
+def cell_size_for_window(os_window_id: int, window_id: int = 0) -> Tuple[int, int]:
     pass
 
 def wakeup_main_loop() -> None:

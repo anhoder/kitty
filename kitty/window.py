@@ -295,6 +295,7 @@ class WindowDict(TypedDict):
     needs_attention: bool
     has_activity_since_last_focus: bool
     program_status: list[dict[str, Any]]
+    font_size_override: float | None
 
 
 class PipeData(TypedDict):
@@ -804,6 +805,7 @@ class Window:
         self.needs_attention = False
         self.ignore_focus_changes = self.initial_ignore_focus_changes
         self.override_title = override_title
+        self.font_size_override: float | None = None
         self.default_title = os.path.basename(child.argv[0] or appname)
         self.child_title = self.default_title
         self.title_stack: Deque[str] = deque(maxlen=10)
@@ -1098,27 +1100,30 @@ class Window:
         opts = get_options()
         position = opts.window_title_bar
         show_tb = self.show_title_bar and new_geometry.ynum > 1
+        pane_cell_width, pane_cell_height = cell_size_for_window(self.os_window_id, self.id)
+        title_cell_width, title_cell_height = cell_size_for_window(self.os_window_id)
 
         if show_tb:
-            render_ynum = new_geometry.ynum - 1
-            cell_width, cell_height = cell_size_for_window(self.os_window_id)
             if position == 'top':
-                render_top = new_geometry.top + cell_height
+                render_top = new_geometry.top + title_cell_height
                 render_bottom = new_geometry.bottom
                 tb_top = new_geometry.top
-                tb_bottom = new_geometry.top + cell_height
+                tb_bottom = new_geometry.top + title_cell_height
             else:
                 render_top = new_geometry.top
-                render_bottom = new_geometry.bottom - cell_height
-                tb_top = new_geometry.bottom - cell_height
+                render_bottom = new_geometry.bottom - title_cell_height
+                tb_top = new_geometry.bottom - title_cell_height
                 tb_bottom = new_geometry.bottom
         else:
-            render_ynum = new_geometry.ynum
             render_top = new_geometry.top
             render_bottom = new_geometry.bottom
 
-        if self.needs_layout or new_geometry.xnum != self.screen.columns or render_ynum != self.screen.lines:
-            self.screen.resize(max(0, render_ynum), max(0, new_geometry.xnum))
+        pane_width = max(0, new_geometry.right - new_geometry.left)
+        pane_height = max(0, render_bottom - render_top)
+        pane_columns = pane_width // max(1, pane_cell_width)
+        pane_lines = pane_height // max(1, pane_cell_height)
+        if self.needs_layout or pane_columns != self.screen.columns or pane_lines != self.screen.lines:
+            self.screen.resize(pane_lines, pane_columns)
             self.needs_layout = False
             call_watchers(weakref.ref(self), 'on_resize', {'old_geometry': self.geometry, 'new_geometry': new_geometry})
         current_pty_size = (self.screen.lines, self.screen.columns, max(0, new_geometry.right - new_geometry.left), max(0, render_bottom - render_top))
@@ -1159,7 +1164,7 @@ class Window:
             if self._title_bar_screen is None:
                 from .window_title_bar import WindowTitleBarScreen
 
-                self._title_bar_screen = WindowTitleBarScreen(self.os_window_id, cell_width, cell_height)
+                self._title_bar_screen = WindowTitleBarScreen(self.os_window_id, title_cell_width, title_cell_height)
             tb_geom = WindowGeometry(
                 left=g.left,
                 top=tb_top,
@@ -2463,6 +2468,7 @@ class Window:
             'needs_attention': self.needs_attention,
             'has_activity_since_last_focus': self.has_activity_since_last_focus,
             'program_status': self.program_status.as_list(),
+            'font_size_override': self.font_size_override,
         }
 
     def serialize_state(self) -> dict[str, Any]:
@@ -2483,6 +2489,7 @@ class Window:
             'margin': self.margin.serialize(),
             'user_vars': self.user_vars,
             'padding': self.padding.serialize(),
+            'font_size_override': self.font_size_override,
         }
         if self.window_custom_type:
             ans['window_custom_type'] = self.window_custom_type
@@ -2563,7 +2570,7 @@ class Window:
                     if self.at_prompt:
                         if self.screen.last_reported_cwd:
                             set_cwd_in_cmdline(path_from_osc7_url(self.screen.last_reported_cwd), cmd)
-        unserialize_data: dict[str, int | list[str] | str] = {'id': self.id}
+        unserialize_data: dict[str, int | float | list[str] | str] = {'id': self.id}
         if not cmd and ser_opts.use_foreground_process:
 
             def make_exe_absolute(cmd: list[str], pid: int) -> None:
@@ -2593,6 +2600,8 @@ class Window:
                         if fcmd:
                             make_exe_absolute(fcmd, pid)
                             unserialize_data['cmd_at_shell_startup'] = fcmd
+        if self.font_size_override is not None:
+            unserialize_data['font_size_override'] = self.font_size_override
         ans.insert(1, unserialize_launch_flag + json.dumps(unserialize_data))
         ans.extend(cmd)
         return ans

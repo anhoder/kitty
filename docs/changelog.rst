@@ -245,6 +245,12 @@ Detailed list of changes
   family are configurable
 - Keep the window title watermark's font size fixed when the terminal font size changes.
 
+- :ac:`change_font_size` with the ``current`` selector now changes the font
+  size of only the current pane rather than all panes in the OS window. Each
+  pane keeps its own font size across relayouts, detach and session
+  save/restore, and ``change_font_size current 0`` resets a pane back to the
+  OS window font size
+
 - Custom shaders: New :code:`cursor-trail-railgun`, :code:`cursor-trail-torpedo`
   and :code:`cursor-trail-pixiedust` shaders that make particles fly off the
   cursor as it moves, in the style of neovide (:iss:`10587`)

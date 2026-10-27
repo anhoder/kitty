@@ -1765,10 +1765,29 @@ class Boss:
                 global_font_size(new_size)
             os_windows = list(self.os_window_map.keys())
         else:
-            os_windows = []
             w = self.window_for_dispatch or self.active_window
-            if w is not None:
-                os_windows.append(w.os_window_id)
+            if w is None:
+                return
+            if amt == 0:
+                from .fast_data_types import set_window_font_size
+                if not set_window_font_size(w.id, 0):
+                    return
+                w.font_size_override = None
+                if (tab := w.tabref()) is not None:
+                    tab.relayout()
+                return
+            current_size = w.font_size_override
+            if current_size is None:
+                current_size = os_window_font_size(w.os_window_id)
+            new_size = calc_new_size(current_size)
+            if new_size != current_size:
+                from .fast_data_types import set_window_font_size
+                if not set_window_font_size(w.id, new_size):
+                    return
+                w.font_size_override = new_size
+                if (tab := w.tabref()) is not None:
+                    tab.relayout()
+            return
         if os_windows:
             final_windows = {}
             for wid in os_windows:

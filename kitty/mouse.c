@@ -325,13 +325,17 @@ cell_for_pos(Window *w, unsigned int *x, unsigned int *y, bool *in_left_half_of_
         qx = screen->columns - 1;
         in_left_half = false;
     } else if (mouse_x >= g->left) {
-        double xval = (double)(mouse_x - g->left) / os_window->fonts_data->fcm.cell_width;
+        FONTS_DATA_HANDLE fonts_data = w->fonts_data ? w->fonts_data : os_window->fonts_data;
+        double xval = (double)(mouse_x - g->left) / fonts_data->fcm.cell_width;
         double fxval = floor(xval);
         qx = (unsigned int)fxval;
         in_left_half = (xval - fxval <= 0.5) ? true : false;
     }
     if (mouse_y >= g->bottom) qy = screen->lines - 1;
-    else if (mouse_y >= g->top) { qy = (unsigned int)((double)(mouse_y - g->top - screen->pixel_scroll_offset_y) / os_window->fonts_data->fcm.cell_height); }
+    else if (mouse_y >= g->top) {
+        FONTS_DATA_HANDLE fonts_data = w->fonts_data ? w->fonts_data : os_window->fonts_data;
+        qy = (unsigned int)((double)(mouse_y - g->top - screen->pixel_scroll_offset_y) / fonts_data->fcm.cell_height);
+    }
     if (qx < screen->columns && qy < screen->lines) {
         *x = qx;
         *y = qy;
@@ -739,8 +743,10 @@ HANDLER(handle_move_event) {
 #define N(n) (q->clicks[q->length - n])
 
 static double
-radius_for_multiclick(void) {
-    return 0.5 * (global_state.callback_os_window ? global_state.callback_os_window->fonts_data->fcm.cell_height : 8);
+radius_for_multiclick(const Window *w) {
+    FONTS_DATA_HANDLE fonts_data = w && w->fonts_data ? w->fonts_data :
+        (global_state.callback_os_window ? global_state.callback_os_window->fonts_data : NULL);
+    return 0.5 * (fonts_data ? fonts_data->fcm.cell_height : 8);
 }
 
 static bool
@@ -748,14 +754,14 @@ release_is_click(const Window *w, int button) {
     const ClickQueue *q = &w->click_queues[button];
     monotonic_t now = monotonic();
     return (
-        q->length > 0 && distance(N(1).x, N(1).y, MAX(0, w->mouse_pos.global_x), MAX(0, w->mouse_pos.global_y)) <= radius_for_multiclick() &&
+        q->length > 0 && distance(N(1).x, N(1).y, MAX(0, w->mouse_pos.global_x), MAX(0, w->mouse_pos.global_y)) <= radius_for_multiclick(w) &&
         now - N(1).at < OPT(click_interval));
 }
 
 static unsigned
 multi_click_count(const Window *w, int button) {
     const ClickQueue *q = &w->click_queues[button];
-    double multi_click_allowed_radius = radius_for_multiclick();
+    double multi_click_allowed_radius = radius_for_multiclick(w);
     if (q->length > 2) {
         // possible triple-click
         if (N(1).at - N(3).at <= 2 * OPT(click_interval) && distance(N(1).x, N(1).y, N(3).x, N(3).y) <= multi_click_allowed_radius) return 3;
@@ -887,7 +893,7 @@ dispatch_possible_click(Window *w, int button, int modifiers) {
         pc->count = count == 2 ? -3 : -2;
         pc->modifiers = modifiers;
         pc->grabbed = screen->modes.mouse_tracking_mode != 0;
-        pc->radius_for_multiclick = radius_for_multiclick();
+        pc->radius_for_multiclick = radius_for_multiclick(w);
         add_main_loop_timer(OPT(click_interval), false, dispatch_pending_clicks, NULL, NULL);
     }
 }
@@ -1849,7 +1855,8 @@ scroll_event(const GLFWScrollEvent *ev) {
             w->mouse_pos.in_left_half_of_cell = in_left_half_of_cell;
         }
     }
-    scroll_event_in_window(osw, w, ev, osw->fonts_data->fcm.cell_width, osw->fonts_data->fcm.cell_height);
+    FONTS_DATA_HANDLE fonts_data = w->fonts_data ? w->fonts_data : osw->fonts_data;
+    scroll_event_in_window(osw, w, ev, fonts_data->fcm.cell_width, fonts_data->fcm.cell_height);
 }
 
 static PyObject *

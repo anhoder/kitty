@@ -400,6 +400,11 @@ class Tab:  # {{{
                 if launched_window is not None:
                     launched_window.serialized_id = window.serialized_id
             if launched_window is not None:
+                if window.font_size_override is not None:
+                    from .fast_data_types import set_window_font_size
+                    if set_window_font_size(launched_window.id, window.font_size_override):
+                        launched_window.font_size_override = window.font_size_override
+            if launched_window is not None:
                 if not first_window_id:
                     first_window_id = launched_window.id
                 if session_tab.active_window_idx == i:

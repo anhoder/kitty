@@ -629,6 +629,11 @@ class Layout:
                 window.set_visible_in_layout(False)
 
     def _set_dimensions(self, all_windows: WindowList) -> None:
+        # The layout quantum is deliberately the OS window cell size, not any
+        # pane's own cell size. Panes derive their own columns/lines from the
+        # pixel region they are given (see Window.set_geometry), so making the
+        # quantum follow a pane's font would re-snap every other pane's pixel
+        # boundaries whenever one pane's font size changed.
         full_area, tab_bar, vw, vh, lgd.cell_width, lgd.cell_height = viewport_for_window(self.os_window_id)
         opts = get_options()
         self.collapsed_margin_rects = []

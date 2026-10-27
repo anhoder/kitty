@@ -209,6 +209,17 @@ save_window_font_groups(void) {
     for (size_t o = 0; o < global_state.num_os_windows; o++) {
         OSWindow *w = global_state.os_windows + o;
         w->temp_font_group_id = w->fonts_data ? ((FontGroup *)(w->fonts_data))->id : 0;
+        for (size_t t = 0; t < w->num_tabs; t++) {
+            Tab *tab = w->tabs + t;
+            for (size_t i = 0; i < tab->num_windows; i++) {
+                Window *window = tab->windows + i;
+                window->temp_font_group_id = window->fonts_data ? ((FontGroup *)(window->fonts_data))->id : 0;
+            }
+        }
+    }
+    for (size_t i = 0; i < detached_windows.num_windows; i++) {
+        Window *window = detached_windows.windows + i;
+        window->temp_font_group_id = window->fonts_data ? ((FontGroup *)(window->fonts_data))->id : 0;
     }
 }
 
@@ -223,6 +234,29 @@ restore_window_font_groups(void) {
                 break;
             }
         }
+        for (size_t t = 0; t < w->num_tabs; t++) {
+            Tab *tab = w->tabs + t;
+            for (size_t j = 0; j < tab->num_windows; j++) {
+                Window *window = tab->windows + j;
+                window->fonts_data = NULL;
+                for (size_t k = 0; k < num_font_groups; k++) {
+                    if (font_groups[k].id == window->temp_font_group_id) {
+                        window->fonts_data = (FONTS_DATA_HANDLE)(font_groups + k);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    for (size_t i = 0; i < detached_windows.num_windows; i++) {
+        Window *window = detached_windows.windows + i;
+        window->fonts_data = NULL;
+        for (size_t j = 0; j < num_font_groups; j++) {
+            if (font_groups[j].id == window->temp_font_group_id) {
+                window->fonts_data = (FONTS_DATA_HANDLE)(font_groups + j);
+                break;
+            }
+        }
     }
 }
 
@@ -231,6 +265,15 @@ font_group_is_unused(FontGroup *fg) {
     for (size_t o = 0; o < global_state.num_os_windows; o++) {
         OSWindow *w = global_state.os_windows + o;
         if (w->temp_font_group_id == fg->id) return false;
+        for (size_t t = 0; t < w->num_tabs; t++) {
+            Tab *tab = w->tabs + t;
+            for (size_t i = 0; i < tab->num_windows; i++) {
+                if (tab->windows[i].temp_font_group_id == fg->id) return false;
+            }
+        }
+    }
+    for (size_t i = 0; i < detached_windows.num_windows; i++) {
+        if (detached_windows.windows[i].temp_font_group_id == fg->id) return false;
     }
     return true;
 }
@@ -572,6 +615,10 @@ init_font(Font *f, PyObject *face, bool bold, bool italic, bool emoji_presentati
 
 static void
 free_font_groups(void) {
+    // FontGroup entries live in a relocatable array.  Keep every OS window and
+    // pane reference represented by its stable group id while the entries are
+    // destroyed, then clear/rebind the pointers after the array is gone.
+    save_window_font_groups();
     if (font_groups) {
         for (size_t i = 0; i < num_font_groups; i++) del_font_group(font_groups + i);
         free(font_groups);
@@ -579,6 +626,7 @@ free_font_groups(void) {
         font_groups_capacity = 0;
         num_font_groups = 0;
     }
+    restore_window_font_groups();
 }
 
 static void
@@ -2507,11 +2555,19 @@ initialize_font_group(FontGroup *fg) {
 
 void
 send_prerendered_sprites_for_window(OSWindow *w) {
-    FontGroup *fg = (FontGroup *)w->fonts_data;
+    if (w) ensure_font_group_sprite_map(w->fonts_data);
+}
+
+bool
+ensure_font_group_sprite_map(FONTS_DATA_HANDLE fonts_data) {
+    if (!fonts_data) return false;
+    FontGroup *fg = (FontGroup *)fonts_data;
     if (!fg->sprite_map) {
         fg->sprite_map = alloc_sprite_map();
+        if (!fg->sprite_map) return false;
         send_prerendered_sprites(fg);
     }
+    return true;
 }
 
 FONTS_DATA_HANDLE

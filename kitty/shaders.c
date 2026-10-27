@@ -299,6 +299,7 @@ decorations_map_new_size(size_t count, size_t current_capacity, size_t max_size,
 static void
 realloc_sprite_decorations_texture_if_needed(FONTS_DATA_HANDLE fg) {
 #define dm (sm->decorations_map)
+    if (!fg || !fg->sprite_map) return;
     SpriteMap *sm = (SpriteMap *)fg->sprite_map;
     size_t current_capacity = (size_t)dm.width * dm.height;
     if (dm.count < current_capacity && dm.texture_id) return;
@@ -321,6 +322,7 @@ realloc_sprite_decorations_texture_if_needed(FONTS_DATA_HANDLE fg) {
 
 static void
 realloc_sprite_texture(FONTS_DATA_HANDLE fg) {
+    if (!fg || !fg->sprite_map) return;
     unsigned int xnum, ynum, z, znum, width, height;
     sprite_tracker_current_layout(fg, &xnum, &ynum, &z);
     znum = z + 1;
@@ -340,21 +342,34 @@ realloc_sprite_texture(FONTS_DATA_HANDLE fg) {
     sprite_map->texture_id = tex;
 }
 
-static void
-ensure_sprite_map(FONTS_DATA_HANDLE fg) {
+static bool
+bind_sprite_maps(FONTS_DATA_HANDLE fg) {
+    if (!fg || !fg->sprite_map) return false;
     SpriteMap *sprite_map = (SpriteMap *)fg->sprite_map;
-    if (!sprite_map->texture_id) realloc_sprite_texture(fg);
-    if (!sprite_map->decorations_map.texture_id) realloc_sprite_decorations_texture_if_needed(fg);
+    if (!sprite_map->texture_id || !sprite_map->decorations_map.texture_id) return false;
     // We have to rebind since we don't know if the texture was ever bound
-    // in the context of the current OSWindow
+    // in the context of the current OSWindow, and because every pane can have
+    // its own FontGroup, and therefore its own sprite textures.
     glActiveTexture(GL_TEXTURE0 + SPRITE_DECORATIONS_MAP_UNIT);
     glBindTexture(GL_TEXTURE_2D, sprite_map->decorations_map.texture_id);
     glActiveTexture(GL_TEXTURE0 + SPRITE_MAP_UNIT);
     glBindTexture(GL_TEXTURE_2D_ARRAY, sprite_map->texture_id);
+    return true;
+}
+
+static bool
+ensure_sprite_map(FONTS_DATA_HANDLE fg) {
+    if (!fg) return false;
+    if (!ensure_font_group_sprite_map(fg)) return false;
+    SpriteMap *sprite_map = (SpriteMap *)fg->sprite_map;
+    if (!sprite_map->texture_id) realloc_sprite_texture(fg);
+    if (!sprite_map->decorations_map.texture_id) realloc_sprite_decorations_texture_if_needed(fg);
+    return bind_sprite_maps(fg);
 }
 
 void
 send_sprite_to_gpu(FONTS_DATA_HANDLE fg, sprite_index idx, pixel *buf, sprite_index decoration_idx) {
+    if (!fg || !fg->sprite_map || !buf) return;
     SpriteMap *sprite_map = (SpriteMap *)fg->sprite_map;
     unsigned int xnum, ynum, znum, x, y, z;
 #define dm (sprite_map->decorations_map)
@@ -1187,6 +1202,17 @@ dynamic_color_for_gpu(const ColorProfile *cp, color_type val) {
     return colorprofile_to_color(cp, dc, zero).rgb;
 }
 
+static FONTS_DATA_HANDLE
+fonts_data_for_render(OSWindow *os_window, Window *window) {
+    static bool warned_missing_fonts = false;
+    FONTS_DATA_HANDLE fonts_data = window && window->fonts_data ? window->fonts_data : (os_window ? os_window->fonts_data : NULL);
+    if (!fonts_data && !warned_missing_fonts) {
+        warned_missing_fonts = true;
+        log_error("Skipping render because no FontGroup is available for the pane");
+    }
+    return fonts_data;
+}
+
 static color_type
 cell_update_uniform_block(
     ssize_t vao_idx,
@@ -1194,9 +1220,11 @@ cell_update_uniform_block(
     int uniform_buffer,
     int color_table_buf,
     const CursorRenderInfo *cursor,
-    OSWindow *os_window,
+    OSWindow *os_window UNUSED,
+    FONTS_DATA_HANDLE fonts_data,
     float inactive_text_alpha,
     float bg_alpha) {
+    if (!fonts_data) return OPT(background);
     struct GPUCellRenderData {
         // Colors that are constant for the whole draw, pre-converted to linear
         // space so the vertex shader does not do a gamma LUT lookup for them
@@ -1364,12 +1392,12 @@ cell_update_uniform_block(
     rd->lines = screen->lines;
 
     unsigned int x, y, z;
-    sprite_tracker_current_layout(os_window->fonts_data, &x, &y, &z);
+    sprite_tracker_current_layout(fonts_data, &x, &y, &z);
     rd->sprites_xnum = x;
     rd->sprites_ynum = y;
     rd->inverted = screen_invert_colors(screen) ? 1 : 0;
-    rd->cell_width = os_window->fonts_data->fcm.cell_width;
-    rd->cell_height = os_window->fonts_data->fcm.cell_height;
+    rd->cell_width = fonts_data->fcm.cell_width;
+    rd->cell_height = fonts_data->fcm.cell_height;
     rd->inactive_text_alpha = inactive_text_alpha;
     rd->dim_opacity = OPT(dim_opacity);
 
@@ -1392,12 +1420,13 @@ cell_update_uniform_block(
 
 static bool
 cell_prepare_to_render(ssize_t vao_idx, Screen *screen, FONTS_DATA_HANDLE fonts_data) {
+    if (!screen || !fonts_data) return false;
     size_t sz;
     CELL_BUFFERS;
     void *address;
     bool changed = false;
 
-    ensure_sprite_map(fonts_data);
+    if (!ensure_sprite_map(fonts_data)) return false;
     const Cursor *cursor = screen->paused_rendering.expires_at ? &screen->paused_rendering.cursor : screen->cursor;
 
     bool cursor_pos_changed = cursor->x != screen->last_rendered.cursor.x || cursor->y != screen->last_rendered.cursor.y;
@@ -2680,12 +2709,10 @@ blank_canvas(float background_opacity, color_type color_in_srgb, bool for_final_
 }
 
 bool
-send_cell_data_to_gpu(ssize_t vao_idx, Screen *screen, OSWindow *os_window) {
-    bool changed = false;
-    if (os_window->fonts_data) {
-        if (cell_prepare_to_render(vao_idx, screen, os_window->fonts_data)) changed = true;
-    }
-    return changed;
+send_cell_data_to_gpu(ssize_t vao_idx, Screen *screen, OSWindow *os_window, Window *window) {
+    FONTS_DATA_HANDLE fonts_data = fonts_data_for_render(os_window, window);
+    if (!os_window || !screen || !fonts_data) return false;
+    return cell_prepare_to_render(vao_idx, screen, fonts_data);
 }
 
 void
@@ -2698,7 +2725,16 @@ draw_cells(
     Window *window,
     const Window *title_bar_of,
     monotonic_t now) {
+    if (!srd || !srd->screen || !os_window) return;
     Screen *screen = srd->screen;
+    FONTS_DATA_HANDLE fonts_data = fonts_data_for_render(os_window, window);
+    if (!fonts_data) return;
+    // Each pane can use a different FontGroup, and so a different pair of
+    // sprite textures. The bindings made while preparing cell data belong to
+    // whichever pane was prepared last, so re-bind for this pane before
+    // drawing, otherwise its sprite indices are resolved against another
+    // pane's atlas.
+    if (!bind_sprite_maps(fonts_data)) return;
     CELL_BUFFERS;
     bind_vertex_array(srd->vao_idx);
     // When inactive_text_alpha is negative, its absolute value is used as the
@@ -2713,7 +2749,7 @@ draw_cells(
     float bg_alpha = effective_os_window_alpha(os_window);
 
     color_type default_bg = cell_update_uniform_block(
-        srd->vao_idx, screen, uniform_buffer, color_table_buffer, &screen->cursor_render_info, os_window, current_inactive_text_alpha, bg_alpha);
+        srd->vao_idx, screen, uniform_buffer, color_table_buffer, &screen->cursor_render_info, os_window, fonts_data, current_inactive_text_alpha, bg_alpha);
     set_cell_uniforms(screen->reload_all_gpu_data);
     WindowLogoRenderData *wl;
     if (window && (wl = &window->window_logo) && wl->id && (wl->instance = find_window_logo(global_state.all_window_logos, wl->id)) &&
@@ -2724,8 +2760,8 @@ draw_cells(
     UIRenderData ui = {
         .screen_width = srd->geometry.right - srd->geometry.left,
         .screen_height = srd->geometry.bottom - srd->geometry.top,
-        .cell_width = os_window->fonts_data->fcm.cell_width,
-        .cell_height = os_window->fonts_data->fcm.cell_height,
+        .cell_width = fonts_data->fcm.cell_width,
+        .cell_height = fonts_data->fcm.cell_height,
         .screen_left = srd->geometry.left,
         .screen_top = srd->geometry.top,
         .full_framebuffer_width = os_window->viewport_width,
