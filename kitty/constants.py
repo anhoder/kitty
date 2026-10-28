@@ -46,7 +46,13 @@ def slangc() -> tuple[str, ...]:
         if DEVELOP_ROOT:
             _slangc = (os.path.join(DEVELOP_ROOT, 'bin', 'slangc'),)
         else:
-            _slangc = tuple(Shlex(os.environ.get('SLANGC', 'slangc'), False))
+            exe_dir = kitty_run_data.get('bundle_exe_dir')
+            if exe_dir and os.path.basename(os.path.dirname(exe_dir)) == 'Contents':
+                bundled = os.path.join(exe_dir, 'slangc')
+                if os.access(bundled, os.X_OK):
+                    _slangc = (bundled,)
+            if not _slangc:
+                _slangc = tuple(Shlex(os.environ.get('SLANGC', 'slangc'), False))
     return _slangc
 
 
@@ -76,9 +82,7 @@ if getattr(sys, 'frozen', False):
         return ans
 
     kitty_base_dir = get_frozen_base()
-    if rpath := kitty_run_data.get('bundle_exe_dir'):
-        _slangc = (os.path.join(rpath, 'slangc'),)
-    del get_frozen_base, rpath
+    del get_frozen_base
 else:
     kitty_base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     extensions_dir = os.path.join(kitty_base_dir, 'kitty')

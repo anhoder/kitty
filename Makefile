@@ -9,6 +9,11 @@ ifdef FAIL_WARN
 export FAIL_WARN
 endif
 
+# The slang shader compiler. Used when building the shaders and copied into the
+# app bundle, since a frozen kitty only ever looks for slangc next to its own
+# launcher (see kitty/constants.py), never in PATH or SLANGC.
+SLANGC ?= $(HOME)/.local/slang/bin/slangc
+
 all:
 	python3 setup.py $(VVAL)
 
@@ -39,10 +44,20 @@ app:
 # Set SLANGC when slangc is installed somewhere other than ~/.local/slang/bin.
 macos-app: FORCE
 	@test "$$(uname -s)" = Darwin || { echo 'macos-app requires macOS' >&2; exit 1; }
-	SLANGC="$${SLANGC:-$$HOME/.local/slang/bin/slangc}" python3 setup.py build --verbose $(VVAL)
-	SLANGC="$${SLANGC:-$$HOME/.local/slang/bin/slangc}" $(MAKE) FAIL_WARN=1 docs
-	SLANGC="$${SLANGC:-$$HOME/.local/slang/bin/slangc}" python3 setup.py kitty.app --update-check-interval=0 $(VVAL)
+	SLANGC="$(SLANGC)" python3 setup.py build --verbose $(VVAL)
+	SLANGC="$(SLANGC)" $(MAKE) FAIL_WARN=1 docs
+	SLANGC="$(SLANGC)" python3 setup.py kitty.app --update-check-interval=0 $(VVAL)
+	@set -e; \
+	test -x "$(SLANGC)" || { echo "slangc not found at $(SLANGC); install shader-slang or set SLANGC" >&2; exit 1; }; \
+	slang_lib=$$(cd "$$(dirname "$(SLANGC)")/../lib" && pwd); \
+	for f in "$$slang_lib"/libslang-compiler.0.*.dylib "$$slang_lib"/libslang-glslang-*.dylib "$$slang_lib"/libslang-glsl-module-*.dylib; do \
+		test -f "$$f" || { echo "missing slang runtime library: $$f" >&2; exit 1; }; \
+	done; \
+	cp -f "$(SLANGC)" kitty.app/Contents/MacOS/slangc; \
+	cp -f "$$slang_lib"/libslang-compiler.0.*.dylib "$$slang_lib"/libslang-glslang-*.dylib "$$slang_lib"/libslang-glsl-module-*.dylib kitty.app/Contents/MacOS/; \
+	echo "Bundled slangc $$(kitty.app/Contents/MacOS/slangc -v 2>&1) into kitty.app"
 	kitty.app/Contents/MacOS/kitty +runpy "from kitty.constants import *; print(kitty_exe())"
+	kitty.app/Contents/MacOS/kitty +runpy "import subprocess; from kitty.constants import slangc; print('runtime slangc:', *slangc()); print(subprocess.check_output(list(slangc()) + ['-v']).decode().strip())"
 	codesign --force --deep --sign - kitty.app
 
 linux-package: FORCE
