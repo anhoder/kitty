@@ -40,6 +40,7 @@ You can quickly browse all available mappable actions by pressing
    :hidden:
 
    conf
+   agents
 
 
 .. _layouts:

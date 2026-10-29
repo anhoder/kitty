@@ -828,6 +828,20 @@ vertical_tab_bar_cols(const OSWindow *os_window, long margin_outer, long margin_
 
 void
 os_window_regions(const OSWindow *os_window, Region *central, Region *tab_bar) {
+    if (os_window->agents_sidebar_enabled) {
+        unsigned cols = MAX(1u, MIN(os_window->agents_sidebar_cols, (unsigned)os_window->viewport_width / MAX(1u, os_window->fonts_data->fcm.cell_width)));
+        unsigned width = cols * os_window->fonts_data->fcm.cell_width;
+        unsigned height = os_window->agents_sidebar_height_pixels ? MIN(os_window->agents_sidebar_height_pixels, (unsigned)os_window->viewport_height) : (unsigned)os_window->viewport_height;
+        central->left = MIN((long)width, (long)os_window->viewport_width);
+        central->right = os_window->viewport_width;
+        central->top = 0;
+        central->bottom = os_window->viewport_height;
+        tab_bar->left = 0;
+        tab_bar->right = width;
+        tab_bar->top = 0;
+        tab_bar->bottom = height;
+        return;
+    }
     if (!OPT(tab_bar_hidden) && os_window->num_tabs && !os_window->has_too_few_tabs) {
         long margin_outer = pt_to_px_for_os_window(OPT(tab_bar_margin_height.outer), os_window);
         long margin_inner = pt_to_px_for_os_window(OPT(tab_bar_margin_height.inner), os_window);

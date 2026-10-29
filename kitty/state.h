@@ -84,7 +84,7 @@ typedef struct Options {
     } focus_follows_mouse;
     unsigned int hide_window_decorations;
     bool macos_hide_from_tasks, macos_quit_when_last_window_closed, macos_window_resizable, macos_traditional_fullscreen,
-        macos_fullscreen_ignore_safe_area_insets, macos_use_physical_screen_frame, macos_native_tabs;
+        macos_fullscreen_ignore_safe_area_insets, macos_use_physical_screen_frame, macos_native_tabs, agents_sidebar_auto_show;
     unsigned int macos_option_as_alt;
     float macos_thicken_font;
     WindowTitleIn macos_show_window_title_in;
@@ -652,7 +652,8 @@ typedef struct OSWindow {
     double mouse_x, mouse_y;
     double mouse_left_press_x, mouse_left_press_y;
     bool mouse_button_pressed[32];
-    bool has_too_few_tabs;
+    bool has_too_few_tabs, agents_sidebar_enabled;
+    unsigned int agents_sidebar_cols, agents_sidebar_height_pixels;
     PyObject *window_title;
     bool disallow_title_changes, title_is_overriden;
     bool viewport_size_dirty, viewport_updated_at_least_once;

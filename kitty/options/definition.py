@@ -3577,6 +3577,18 @@ Note that when using :ref:`auto_color_scheme` this option is overridden by the c
 )
 
 opt(
+    'agents_sidebar_auto_show',
+    'no',
+    option_type='to_bool',
+    ctype='bool',
+    long_text="""
+Automatically open the native macOS Agents sidebar when kitty stably detects
+the first recognized agent. With :code:`no`, use the mapped
+:code:`toggle_agents_sidebar` action to open it manually.
+""",
+)
+
+opt(
     'macos_native_tabs',
     'no',
     option_type='to_bool',

@@ -142,6 +142,7 @@ class ScrollAnimation:
 if TYPE_CHECKING:
     from kittens.tui.handler import OpenUrlHandler
 
+    from .agent_manifest import Screen as AgentScreen
     from .fast_data_types import MousePosition
     from .file_transmission import FileTransmission
     from .notifications import OnlyWhen
@@ -780,6 +781,11 @@ class Window:
         self.last_focused_at = 0.0
         self.is_focused: bool = False
         self.progress = Progress()
+        # The OSC 9;4 payload exactly as the program sent it. Progress above
+        # normalises it into a state and a percentage, which loses the
+        # distinction agent detection needs: "4;1;-1" (busy, indeterminate) and
+        # "4;1;0" both normalise to set/0.
+        self.progress_payload = ''
         self.program_status = ProgramStatus()
         self.clear_progress_timer: int = 0
         self.last_resized_at = 0.0
@@ -1454,6 +1460,7 @@ class Window:
             except Exception:
                 log_error(f'Ignoring malformed OSC 9;4 progress report: {raw_data!r}')
                 return
+            self.progress_payload = raw_data
             self.progress.update(*parts[:2])
             self.screen.set_progress(self.progress.state.value, self.progress.percent)
             if (tab := self.tabref()) is not None:
@@ -1467,6 +1474,7 @@ class Window:
         if timer_id is not None:  # this is a timer callback
             self.clear_progress_timer = 0
         if self.progress.clear_progress():
+            self.progress_payload = ''
             if hasattr(self, 'screen'):
                 self.screen.set_progress(0, 0)
             if (tab := self.tabref()) is not None:
@@ -1624,6 +1632,8 @@ class Window:
 
                 traceback.print_exc()
         self.screen.focus_changed(focused)
+        get_boss().mark_agent_window_dirty(self.id)
+        get_boss().maybe_auto_show_agents_sidebar(self)
         if focused:
             self.last_focused_at = monotonic()
             update_ime_position_for_window(self.id, False, 1)
@@ -1648,6 +1658,10 @@ class Window:
     def title_changed(self, new_title: memoryview | None, is_base64: bool = False) -> None:
         self.child_title = process_title_from_child(new_title or memoryview(b''), is_base64, self.default_title)
         self.call_watchers(self.watchers.on_title_change, {'title': self.child_title, 'from_child': True})
+        # The title is a detection region in its own right: for several agents
+        # a spinner in the title is the only working signal they emit.
+        get_boss().mark_agent_window_dirty(self.id)
+        get_boss().maybe_auto_show_agents_sidebar(self)
         if self.override_title is None:
             self.title_updated()
 
@@ -1677,6 +1691,7 @@ class Window:
             self.call_watchers(self.watchers.on_program_status_change, {'program_status': self.program_status.as_list()})
         if (tab := self.tabref()) is not None:
             tab.mark_tab_bar_dirty()
+        get_boss().mark_agent_window_dirty(self.id)
 
     def icon_changed(self, new_icon: memoryview) -> None:
         pass  # TODO: Implement this
@@ -1735,6 +1750,7 @@ class Window:
             self.program_status_changed()
         if self.progress.state is not ProgressState.unset:
             self.progress.update(0)  # unset
+            self.progress_payload = ''
             if (tab := self.tabref()) is not None:
                 tab.update_progress()
 
@@ -2097,6 +2113,9 @@ class Window:
             if is_start is False and self.program_status.on_process_exit_or_prompt():  # a new shell prompt
                 self.program_status_changed()
             self.handle_cmd_end(cmdline)
+        # A prompt appearing or a command starting both change what the
+        # detection regions see.
+        get_boss().mark_agent_window_dirty(self.id)
 
     # }}}
 
@@ -2231,6 +2250,21 @@ class Window:
         self, as_ansi: bool = False, add_history: bool = False, add_wrap_markers: bool = False, alternate_screen: bool = False, add_cursor: bool = False
     ) -> str:
         return as_text(self.screen, as_ansi, add_history, add_wrap_markers, alternate_screen, add_cursor)
+
+    def agent_detection_snapshot(self) -> 'AgentScreen':
+        """The live bottom of the pane, for agent state detection.
+
+        Deliberately not as_text(): that renders the *visual* lines, so once
+        the user scrolls back it returns history and detection starts reading
+        a stale screen. This reads the live rows regardless of scroll
+        position, and keeps blank lines and letter case because the region
+        vocabulary counts non-empty lines and some markers are case sensitive.
+        """
+        from .agent_manifest import Screen as AgentScreen
+
+        lines: list[str] = []
+        self.screen.as_text_non_visual(lines.append, False, False)
+        return AgentScreen(tuple(''.join(lines).splitlines()), self.title, self.progress_payload)
 
     def cmd_output(self, which: CommandOutput = CommandOutput.last_run, as_ansi: bool = False, add_wrap_markers: bool = False) -> str:
         return cmd_output(self.screen, which, as_ansi, add_wrap_markers)

@@ -55,6 +55,415 @@ extern CGSConnectionID _CGSDefaultConnection(void);
 CFArrayRef CGSCopySpacesForWindows(CGSConnectionID Connection, CGSSpaceSelector Type, CFArrayRef Windows);
 
 static NSMenuItem *title_menu = NULL;
+
+static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
+
+@interface KittyAgentsSidebarView : NSView {
+    unsigned os_window_id;
+    NSArray<NSString *> *groups;
+    NSArray<NSString *> *agents;
+    NSArray<NSString *> *labels;
+    NSArray<NSString *> *details;
+    NSArray<NSNumber *> *states;
+    NSArray<NSNumber *> *active_rows;
+    CGFloat header_height;
+    CGFloat group_height;
+    CGFloat row_height;
+    NSTimer *spinner_timer;
+    CGFloat spinner_phase;
+    NSVisualEffectView *background_view;
+    unsigned cell_width_pixels;
+    BOOL resizing;
+    BOOL resizing_width;
+    BOOL resizing_height;
+}
+- (instancetype)initWithOSWindowID:(unsigned)window_id width:(CGFloat)width cellWidth:(unsigned)cell_width;
+- (void)setRows:(const char **)new_groups agents:(const char **)new_agents labels:(const char **)new_labels details:(const char **)new_details states:(const unsigned char *)new_states active:(const bool *)active count:(size_t)count;
+- (NSVisualEffectView *)backgroundView;
+- (void)stopAnimating;
+- (void)advanceSpinner:(NSTimer *)timer;
+- (BOOL)isAnimating;
+@end
+
+@implementation KittyAgentsSidebarView
+- (instancetype)initWithOSWindowID:(unsigned)window_id width:(CGFloat)width cellWidth:(unsigned)cell_width {
+    self = [super initWithFrame:NSMakeRect(0, 0, width, 100)];
+    if (self) {
+        os_window_id = window_id;
+        cell_width_pixels = MAX(1u, cell_width);
+        resizing = NO;
+        resizing_width = NO;
+        resizing_height = NO;
+        agents = [[NSArray alloc] init];
+        labels = [[NSArray alloc] init];
+        details = [[NSArray alloc] init];
+        states = [[NSArray alloc] init];
+        active_rows = [[NSArray alloc] init];
+        header_height = 40.0;
+        group_height = 24.0;
+        row_height = 48.0;
+        spinner_timer = nil;
+        spinner_phase = 0.0;
+        // The translucent sidebar material has to sit behind the rows, but a
+        // view's own drawRect paints *beneath* its subviews, so hosting the
+        // material as a subview here would hide every row we draw. Keep it in
+        // a sibling layer underneath instead.
+        NSVisualEffectView *effect = [[NSVisualEffectView alloc] initWithFrame:self.bounds];
+        effect.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        effect.material = NSVisualEffectMaterialSidebar;
+        effect.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+        effect.state = NSVisualEffectStateActive;
+        background_view = effect;
+        self.identifier = @"kitty-agents-sidebar";
+    }
+    return self;
+}
+
+- (BOOL)isFlipped { return YES; }
+- (BOOL)isOpaque { return NO; }
+- (NSVisualEffectView *)backgroundView { return background_view; }
+
+
+- (void)previewSizeWidth:(CGFloat)width height:(CGFloat)height {
+    CGFloat parent_height = self.superview ? self.superview.bounds.size.height : height;
+    CGFloat origin_y = MAX(0.0, parent_height - height);
+    NSRect frame = NSMakeRect(0, origin_y, width, height);
+    [self setFrame:frame];
+    [background_view setFrame:frame];
+    [self resetCursorRects];
+    [self setNeedsDisplay:YES];
+}
+
+- (void)resetCursorRects {
+    [super resetCursorRects];
+    const CGFloat edge = 8.0;
+    if (self.bounds.size.width > edge) {
+        [self addCursorRect:NSMakeRect(self.bounds.size.width - edge, 0, edge, self.bounds.size.height) cursor:[NSCursor resizeLeftRightCursor]];
+    }
+    if (self.bounds.size.height > edge) {
+        [self addCursorRect:NSMakeRect(0, self.bounds.size.height - edge, self.bounds.size.width, edge) cursor:[NSCursor resizeUpDownCursor]];
+    }
+}
+
+- (BOOL)isInResizeZone:(NSPoint)p width:(BOOL *)width height:(BOOL *)height {
+    const CGFloat edge = 8.0;
+    *width = p.x >= self.bounds.size.width - edge;
+    *height = p.y >= self.bounds.size.height - edge;
+    return *width || *height;
+}
+
+- (void)mouseDown:(NSEvent *)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    BOOL width = NO, height = NO;
+    if ([self isInResizeZone:p width:&width height:&height]) {
+        resizing = YES;
+        resizing_width = width;
+        resizing_height = height;
+        return;
+    }
+    NSString *last_group = nil;
+    CGFloat y = header_height;
+    for (NSUInteger i = 0; i < labels.count; i++) {
+        NSString *group = groups[i];
+        if (!last_group || ![last_group isEqualToString:group]) {
+            y += group_height;
+            last_group = group;
+        }
+        if (p.y >= y && p.y < y + row_height) {
+            char data[64];
+            snprintf(data, sizeof(data), "%u:%lu", os_window_id, (unsigned long)i);
+            set_cocoa_pending_action(AGENTS_SIDEBAR_CLICK, data);
+            return;
+        }
+        y += row_height;
+    }
+}
+
+- (void)mouseDragged:(NSEvent *)event {
+    if (!resizing || !self.superview) return;
+    CGFloat scale = MAX(1.0, self.window.backingScaleFactor);
+    NSPoint p = [self.superview convertPoint:event.locationInWindow fromView:nil];
+    CGFloat width = self.frame.size.width;
+    CGFloat height = self.frame.size.height;
+    unsigned cols = MAX(16u, (unsigned)llround(width * scale / (CGFloat)cell_width_pixels));
+    unsigned height_pixels = (unsigned)llround(height * scale);
+    if (resizing_width) {
+        CGFloat min_width = 16.0 * cell_width_pixels / scale;
+        CGFloat max_width = self.superview.bounds.size.width * 0.75;
+        width = MIN(max_width, MAX(min_width, p.x));
+        cols = MAX(16u, (unsigned)llround(width * scale / (CGFloat)cell_width_pixels));
+        width = cols * cell_width_pixels / scale;
+    }
+    if (resizing_height) {
+        CGFloat min_height = 160.0;
+        CGFloat max_height = self.superview.bounds.size.height;
+        height = self.superview.bounds.size.height - p.y;
+        height = MIN(max_height, MAX(min_height, height));
+        height_pixels = (unsigned)llround(height * scale);
+    }
+    [self previewSizeWidth:width height:height];
+    char data[96];
+    snprintf(data, sizeof(data), "%u:%u:%u", os_window_id, cols, height_pixels);
+    set_cocoa_pending_action(AGENTS_SIDEBAR_RESIZE, data);
+}
+
+- (void)mouseUp:(NSEvent *)event {
+    (void)event;
+    resizing = NO;
+    resizing_width = NO;
+    resizing_height = NO;
+    [self resetCursorRects];
+}
+- (void)setRows:(const char **)new_groups agents:(const char **)new_agents labels:(const char **)new_labels details:(const char **)new_details states:(const unsigned char *)new_states active:(const bool *)active count:(size_t)count {
+    NSMutableArray *next_groups = [NSMutableArray arrayWithCapacity:count];
+    NSMutableArray *next_agents = [NSMutableArray arrayWithCapacity:count];
+    NSMutableArray *next_labels = [NSMutableArray arrayWithCapacity:count];
+    NSMutableArray *next_details = [NSMutableArray arrayWithCapacity:count];
+    NSMutableArray *next_states = [NSMutableArray arrayWithCapacity:count];
+    NSMutableArray *next_active = [NSMutableArray arrayWithCapacity:count];
+    for (size_t i = 0; i < count; i++) {
+        [next_groups addObject:[NSString stringWithUTF8String:new_groups[i] ? new_groups[i] : ""]];
+        [next_agents addObject:[NSString stringWithUTF8String:new_agents[i] ? new_agents[i] : ""]];
+        [next_labels addObject:[NSString stringWithUTF8String:new_labels[i] ? new_labels[i] : ""]];
+        [next_details addObject:[NSString stringWithUTF8String:new_details[i] ? new_details[i] : ""]];
+        [next_states addObject:@(new_states ? new_states[i] : 0)];
+        [next_active addObject:@(active && active[i])];
+    }
+    [groups release];
+    [agents release];
+    [labels release];
+    [details release];
+    [states release];
+    [active_rows release];
+    groups = [next_groups copy];
+    agents = [next_agents copy];
+    labels = [next_labels copy];
+    details = [next_details copy];
+    states = [next_states copy];
+    active_rows = [next_active copy];
+    [self updateAnimationState];
+    // Everything is painted in drawRect. There used to be a parallel set of
+    // NSTextField subviews drawing the same text on top of it, which hid the
+    // state indicator, the spinner and the agent icon underneath them.
+    [self setNeedsDisplay:YES];
+}
+
+- (NSColor *)stateColor:(NSUInteger)state active:(BOOL)active {
+    if (active && state == 1) return [NSColor alternateSelectedControlTextColor];
+    switch (state) {
+        case 2: return [NSColor systemOrangeColor];
+        case 3: return [NSColor systemRedColor];
+        case 4: return [NSColor systemGreenColor];
+        default: return [NSColor secondaryLabelColor];
+    }
+}
+
+- (NSColor *)stateTextColor:(NSUInteger)state active:(BOOL)active {
+    // Keep idle readable on the selected blue row; active working/blocked/done
+    // rows retain their semantic colors instead of collapsing to white.
+    return [self stateColor:state active:active];
+}
+
+// The spinner only runs while some row is working. A sidebar full of idle
+// agents must not keep waking the CPU.
+- (BOOL)hasWorkingRow {
+    for (NSUInteger i = 0; i < states.count; i++) {
+        if ([states[i] unsignedIntegerValue] == 2) return YES;
+    }
+    return NO;
+}
+
+- (BOOL)isAnimating { return spinner_timer != nil; }
+
+- (void)updateAnimationState {
+    BOOL want = [self hasWorkingRow] && self.window != nil;
+    if (want && !spinner_timer) {
+        spinner_timer = [NSTimer timerWithTimeInterval:(1.0 / 30.0) target:self selector:@selector(advanceSpinner:) userInfo:nil repeats:YES];
+        // Common run loop modes, so the spinner keeps turning during a live
+        // resize or a menu tracking loop instead of freezing mid-arc.
+        [[NSRunLoop currentRunLoop] addTimer:spinner_timer forMode:NSRunLoopCommonModes];
+    } else if (!want && spinner_timer) {
+        [self stopAnimating];
+    }
+}
+
+- (void)advanceSpinner:(NSTimer *)timer {
+    (void)timer;
+    spinner_phase += 1.0 / 30.0;
+    if (spinner_phase > 1.0e6) spinner_phase = 0.0;
+    [self setNeedsDisplay:YES];
+}
+
+- (void)stopAnimating {
+    [spinner_timer invalidate];
+    spinner_timer = nil;
+}
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    // Leaving a window orphans the run loop source; re-evaluate either way.
+    [self updateAnimationState];
+}
+
+// An indeterminate arc, the platform idiom for "running, length unknown".
+- (void)drawSpinnerInRect:(NSRect)rect color:(NSColor *)color {
+    const CGFloat line_width = 1.8;
+    NSPoint center = NSMakePoint(NSMidX(rect), NSMidY(rect));
+    CGFloat radius = (MIN(rect.size.width, rect.size.height) - line_width) / 2.0;
+    if (radius <= 0) return;
+    CGFloat revolutions_per_second = 0.9;
+    CGFloat start = -fmod(spinner_phase * revolutions_per_second, 1.0) * 360.0;
+    [[color colorWithAlphaComponent:0.25] setStroke];
+    NSBezierPath *track = [NSBezierPath bezierPath];
+    track.lineWidth = line_width;
+    [track appendBezierPathWithArcWithCenter:center radius:radius startAngle:0 endAngle:360];
+    [track stroke];
+    [color setStroke];
+    NSBezierPath *arc = [NSBezierPath bezierPath];
+    arc.lineWidth = line_width;
+    arc.lineCapStyle = NSLineCapStyleRound;
+    [arc appendBezierPathWithArcWithCenter:center radius:radius startAngle:start endAngle:start - 100.0 clockwise:YES];
+    [arc stroke];
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    // No background fill here: the NSVisualEffectView sibling underneath
+    // provides the sidebar material, and painting over it would throw away
+    // the translucency it exists for.
+
+    NSUInteger visible_count = 0;
+    for (NSString *agent in agents) if (agent.length) visible_count++;
+    NSDictionary *header_attrs = @{
+        NSFontAttributeName: [NSFont boldSystemFontOfSize:11.0],
+        NSForegroundColorAttributeName: [NSColor secondaryLabelColor],
+    };
+    NSString *header = visible_count ? [NSString stringWithFormat:@"AGENTS  %lu", (unsigned long)visible_count] : @"AGENTS";
+    [header drawAtPoint:NSMakePoint(12.0, 13.0) withAttributes:header_attrs];
+    [[NSColor separatorColor] setFill];
+    NSRectFill(NSMakeRect(0, header_height - 1.0, self.bounds.size.width, 1.0));
+
+    NSString *last_group = nil;
+    CGFloat y = header_height;
+    for (NSUInteger i = 0; i < labels.count; i++) {
+        NSString *group = groups[i];
+        if (!last_group || ![last_group isEqualToString:group]) {
+            NSDictionary *group_attrs = @{
+                NSFontAttributeName: [NSFont systemFontOfSize:11.0],
+                NSForegroundColorAttributeName: [NSColor secondaryLabelColor],
+            };
+            [group drawAtPoint:NSMakePoint(12.0, y + 5.0) withAttributes:group_attrs];
+            y += group_height;
+            last_group = group;
+        }
+        BOOL active = [active_rows[i] boolValue];
+        NSRect row = NSMakeRect(0, y, self.bounds.size.width, row_height);
+        if (active) {
+            // Inset rounded capsule, matching how macOS sidebars mark the
+            // selected row, instead of a full-bleed rectangle.
+            NSRect pill = NSInsetRect(row, 6.0, 2.0);
+            [[NSColor selectedContentBackgroundColor] setFill];
+            [[NSBezierPath bezierPathWithRoundedRect:pill xRadius:6.0 yRadius:6.0] fill];
+        }
+        NSColor *primary_color = active ? [NSColor alternateSelectedControlTextColor] : [NSColor controlTextColor];
+        NSColor *detail_color = active ? [[NSColor alternateSelectedControlTextColor] colorWithAlphaComponent:0.72] : [NSColor secondaryLabelColor];
+        BOOL has_agent = i < agents.count && agents[i].length > 0;
+        NSUInteger row_state = [states[i] unsignedIntegerValue];
+        NSColor *state_color = [self stateColor:row_state active:active];
+        // The "No AI agents" placeholder uses an empty agent id. It is not a
+        // state-bearing row, so do not render a misleading unknown-state dot.
+        const CGFloat indicator_center = 14.0, text_left = 26.0;
+        CGFloat row_center = row.origin.y + row_height / 2.0;
+        if (has_agent) {
+            if (row_state == 2) {
+                [self drawSpinnerInRect:NSMakeRect(indicator_center - 5.5, row_center - 5.5, 11.0, 11.0) color:state_color];
+            } else {
+                [state_color setFill];
+                NSRect dot = NSMakeRect(indicator_center - 4.0, row_center - 4.0, 8.0, 8.0);
+                [[NSBezierPath bezierPathWithOvalInRect:dot] fill];
+            }
+        }
+        NSDictionary *primary_attrs = @{
+            NSFontAttributeName: [NSFont boldSystemFontOfSize:12.0],
+            NSForegroundColorAttributeName: primary_color,
+        };
+        NSDictionary *detail_attrs = @{
+            NSFontAttributeName: [NSFont systemFontOfSize:10.0],
+            NSForegroundColorAttributeName: detail_color,
+        };
+        // Keep the directory subdued, but make the state itself prominent and
+        // semantically colored. Details use "cwd · state" today; if a future
+        // row has no separator, it remains a normal one-color detail string.
+        NSMutableAttributedString *detail_text = [[[NSMutableAttributedString alloc] initWithString:details[i] attributes:detail_attrs] autorelease];
+        NSRange separator = [details[i] rangeOfString:@" · " options:NSBackwardsSearch];
+        if (separator.location != NSNotFound) {
+            NSUInteger state_start = NSMaxRange(separator);
+            NSRange state_range = NSMakeRange(state_start, details[i].length - state_start);
+            [detail_text addAttributes:@{
+                NSFontAttributeName: [NSFont boldSystemFontOfSize:10.5],
+                NSForegroundColorAttributeName: [self stateTextColor:row_state active:active],
+            } range:state_range];
+        }
+        // Use line-fragment drawing rather than baseline placement. The
+        // previous drawWithRect call omitted this flag, so AppKit positioned
+        // the glyphs against the rect baseline and the two-line block looked
+        // too high inside the selected row.
+        const CGFloat primary_h = 17.0, detail_h = 14.0, gap = 1.0;
+        CGFloat text_top = row_center - (primary_h + gap + detail_h) / 2.0;
+        CGFloat text_width = row.size.width - text_left - 10.0;
+        NSRect primary_rect = NSMakeRect(text_left, text_top, text_width, primary_h);
+        NSRect detail_rect = NSMakeRect(text_left, text_top + primary_h + gap, text_width, detail_h);
+        NSStringDrawingOptions text_options = NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading | NSStringDrawingTruncatesLastVisibleLine;
+        [labels[i] drawWithRect:primary_rect options:text_options attributes:primary_attrs context:nil];
+        [detail_text drawWithRect:detail_rect options:text_options context:nil];
+        y += row_height;
+    }
+}
+
+
+- (void)dealloc {
+    [self stopAnimating];
+    [groups release];
+    [agents release];
+    [labels release];
+    [details release];
+    [states release];
+    [active_rows release];
+    [background_view release];
+    [super dealloc];
+}
+@end
+
+void
+cocoa_set_agents_sidebar(void *ptr, unsigned os_window_id, bool enabled, unsigned width_pixels, unsigned height_pixels, unsigned cell_width, const char **groups, const char **agents, const char **labels, const char **details, const unsigned char *states, const bool *active, size_t count) {
+    NSWindow *window = (NSWindow *)ptr;
+    if (!window || !window.contentView) return;
+    if (!enabled) {
+        KittyAgentsSidebarView *sidebar = objc_getAssociatedObject(window, kitty_agents_sidebar_key);
+        [sidebar stopAnimating];
+        [[sidebar backgroundView] removeFromSuperview];
+        [sidebar removeFromSuperview];
+        objc_setAssociatedObject(window, kitty_agents_sidebar_key, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+    CGFloat scale = MAX(1.0, window.backingScaleFactor);
+    CGFloat width = width_pixels / scale;
+    CGFloat height = height_pixels ? MIN(height_pixels / scale, window.contentView.bounds.size.height) : window.contentView.bounds.size.height;
+    KittyAgentsSidebarView *sidebar = objc_getAssociatedObject(window, kitty_agents_sidebar_key);
+    if (!sidebar) {
+        sidebar = [[KittyAgentsSidebarView alloc] initWithOSWindowID:os_window_id width:width cellWidth:cell_width];
+        [window.contentView addSubview:sidebar positioned:NSWindowAbove relativeTo:nil];
+        [window.contentView addSubview:[sidebar backgroundView] positioned:NSWindowBelow relativeTo:sidebar];
+        objc_setAssociatedObject(window, kitty_agents_sidebar_key, sidebar, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [sidebar release];
+    }
+    CGFloat origin_y = MAX(0.0, window.contentView.bounds.size.height - height);
+    NSRect frame = NSMakeRect(0, origin_y, width, height);
+    [sidebar setFrame:frame];
+    [[sidebar backgroundView] setFrame:frame];
+    [sidebar setRows:groups agents:agents labels:labels details:details states:states active:active count:count];
+}
+
 static NSMenuItem *secure_input_title_menu = NULL;
 
 

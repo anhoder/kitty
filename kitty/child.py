@@ -2,6 +2,7 @@
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import os
+import shlex
 import sys
 import termios
 from collections import defaultdict
@@ -322,6 +323,16 @@ class ProcessDesc(TypedDict):
 child_counter = count()
 
 
+def _macos_login_shell_command(argv: Sequence[str], cwd: str, user: str, home: str) -> tuple[list[str], str]:
+    login_argv = ['/usr/bin/login']
+    if os.path.isfile(os.path.join(home, '.hushlogin')):
+        login_argv.append('-q')
+    login_argv.extend(
+        ('-flp', user, '/bin/bash', '--noprofile', '--norc', '-c', f'exec -l {shlex.join(argv)}')
+    )
+    return login_argv, cwd
+
+
 class Child:
     child_fd: int | None = None
     pid: int | None = None
@@ -362,7 +373,7 @@ class Child:
         self.startup_command_via_shell_integration = startup_command_via_shell_integration
         self.final_env: dict[str, str] = {}
         self.is_default_shell = bool(self.argv and self.argv[0] == shell_path)
-        self.should_run_via_run_shell_kitten = is_macos and self.is_default_shell
+        self.is_macos_default_shell = is_macos and self.is_default_shell
         self.hold = hold
 
     def get_final_env(self) -> tuple[dict[str, str], bool]:
@@ -403,11 +414,10 @@ class Child:
             env['TERMINFO'] = base64_terminfo_data()
         env['KITTY_INSTALLATION_DIR'] = kitty_base_dir
         self.unmodified_argv = list(self.argv)
-        if not self.should_run_via_run_shell_kitten and 'disabled' not in opts.shell_integration:
+        if 'disabled' not in opts.shell_integration:
             from .shell_integration import modify_shell_environ
 
             modify_shell_environ(opts, env, self.argv)
-        env = {k: v for k, v in env.items() if v is not DELETE_ENV_VAR}
         if self.is_clone_launch:
             env['KITTY_IS_CLONE_LAUNCH'] = self.is_clone_launch
             self.is_clone_launch = '1'  # free memory
@@ -450,23 +460,14 @@ class Child:
         pass_fds = self.pass_fds
         if self.remote_control_fd > -1:
             pass_fds += (self.remote_control_fd,)
-        if self.should_run_via_run_shell_kitten or must_run_startup_command_via_kitten:
-            # bash will only source ~/.bash_profile if it detects it is a login
-            # shell (see the invocation section of the bash man page), which it
-            # does if argv[0] is prefixed by a hyphen see
-            # https://github.com/kovidgoyal/kitty/issues/247
-            # it is apparently common to use ~/.bash_profile instead of the
-            # more correct ~/.bashrc on macOS to setup env vars, so if
-            # the default shell is used prefix argv[0] by '-'
-            #
-            # it is arguable whether graphical terminals should start shells
-            # in login mode in general, there are at least a few Linux users
-            # that also make this incorrect assumption, see for example
-            # https://github.com/kovidgoyal/kitty/issues/1870
-            # xterm, urxvt, konsole and gnome-terminal do not do it in my
-            # testing.
-            import shlex
+        if self.is_macos_default_shell and not must_run_startup_command_via_kitten and not pass_fds and not opts.forward_stdio:
+            import pwd
 
+            pw = pwd.getpwuid(os.geteuid())
+            argv, cwd = _macos_login_shell_command(argv, cwd, pw.pw_name, pw.pw_dir)
+        elif self.is_macos_default_shell or must_run_startup_command_via_kitten:
+            # Keep the kitten wrapper for unsupported startup commands and for
+            # launches where login cannot safely close inherited descriptors.
             ksi = ' '.join(opts.shell_integration)
             if ksi == 'invalid':
                 ksi = 'enabled'
@@ -479,8 +480,6 @@ class Child:
                 # And login on macOS looks for .hushlogin in CWD instead of
                 # HOME, bloody idiotic so we cant cwd when running it.
                 # https://github.com/kovidgoyal/kitty/issues/6511
-                # login closes inherited file descriptors so dont use it when
-                # forward_stdio or pass_fds are used.
                 import pwd
 
                 user = pwd.getpwuid(os.geteuid()).pw_name
