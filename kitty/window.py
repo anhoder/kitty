@@ -1633,6 +1633,7 @@ class Window:
                 traceback.print_exc()
         self.screen.focus_changed(focused)
         get_boss().mark_agent_window_dirty(self.id)
+        get_boss().maybe_auto_show_agents_sidebar(self)
         if focused:
             self.last_focused_at = monotonic()
             update_ime_position_for_window(self.id, False, 1)
@@ -1660,6 +1661,7 @@ class Window:
         # The title is a detection region in its own right: for several agents
         # a spinner in the title is the only working signal they emit.
         get_boss().mark_agent_window_dirty(self.id)
+        get_boss().maybe_auto_show_agents_sidebar(self)
         if self.override_title is None:
             self.title_updated()
 

@@ -45,6 +45,9 @@ Recent major new features
   at the top while the bottom edge moves.
 - Make the Agents sidebar state text prominent and color-coded: working is
   orange, blocked is red, done is green, while idle and unknown remain neutral.
+- Add :opt:`agents_sidebar_auto_show` to automatically open the Agents sidebar
+  when the first recognized agent is detected; it is opt-in and defaults to
+  :code:`no`.
 - Add :opt:`window_title_watermark_template` to render the window title
   watermark via template, exposing :code:`layout_name` to identify zoom mode
   in single-visible-window layouts such as :code:`stack`. The default

@@ -21,6 +21,11 @@ to change its width, or its bottom edge to change its height. Height changes
 keep the sidebar top-anchored, so the ``AGENTS`` header stays at the top while
 the bottom edge moves.
 
+Set :opt:`agents_sidebar_auto_show` to :code:`yes` to open the sidebar
+automatically when the first recognized foreground agent is detected. The
+automatic detector polls only while the sidebar is closed and stops once it
+opens; the default is :code:`no`.
+
 The sidebar visibility is global for the kitty process. Toggling it in any tab
 opens or closes it in every existing and newly created tab; the Agent rows remain
 scoped to the current native tab group or OS window.

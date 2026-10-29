@@ -27,7 +27,7 @@ from typing import (
 )
 from weakref import WeakValueDictionary
 
-from .agents import AgentSidebarRow, AgentState, AgentTracker, session_group_for_window
+from .agents import AgentSidebarRow, AgentState, AgentTracker, detect_agent, session_group_for_window
 
 from kitty.types import WindowResizeDrag
 
@@ -450,6 +450,7 @@ class Boss:
         self.agent_sidebar_enabled = False
         self.agent_sidebar_cols = 30
         self.agent_sidebar_height_pixels = 0
+        self.agent_sidebar_auto_show_timer = 0
         self.misc_config_errors: list[str] = []
         # we dont allow reloading the config file to change
         # allow_remote_control
@@ -477,6 +478,8 @@ class Boss:
         set_boss(self)
         self.mappings: Mappings = Mappings(global_shortcuts, self.refresh_active_tab_bar)
         self.notification_manager: NotificationManager = NotificationManager(debug=self.args.debug_keyboard or self.args.debug_rendering)
+        if get_options().agents_sidebar_auto_show:
+            self.agent_sidebar_auto_show_timer = add_timer(self.auto_show_agents_sidebar, 1.0)
         effective_config_path, effective_config_error = store_effective_config()
         if effective_config_path:
             self.atexit.unlink(effective_config_path)
@@ -1920,8 +1923,34 @@ class Boss:
         # Completion notifications must work even when the sidebar is hidden;
         # the tracker is the source for both the sidebar and the notification.
         self.agent_tracker.mark_dirty(window_id)
+        if not self.agent_sidebar_enabled and get_options().agents_sidebar_auto_show:
+            window = self.window_id_map.get(window_id)
+            if window is not None and detect_agent(window.child.foreground_processes) is not None:
+                self.auto_show_agents_sidebar()
         if not self.agent_sidebar_flush_timer:
             self.agent_sidebar_flush_timer = add_timer(self.flush_agent_sidebar_updates, 0, False)
+
+    def auto_show_agents_sidebar(self, timer_id: int | None = None) -> None:
+        del timer_id
+        if self.agent_sidebar_enabled or not get_options().agents_sidebar_auto_show:
+            return
+        if not any(detect_agent(w.child.foreground_processes) is not None for w in self.all_windows):
+            return
+        if self.agent_sidebar_auto_show_timer:
+            remove_timer(self.agent_sidebar_auto_show_timer)
+            self.agent_sidebar_auto_show_timer = 0
+        self.agent_sidebar_enabled = True
+        for tm in self.all_tab_managers:
+            tm.agent_sidebar_enabled = True
+        if not self.agent_sidebar_timer:
+            self.agent_sidebar_timer = add_timer(self.refresh_agent_sidebars, 1.0)
+        self.refresh_agent_sidebars()
+
+    def maybe_auto_show_agents_sidebar(self, window: Window) -> None:
+        if self.agent_sidebar_enabled or not get_options().agents_sidebar_auto_show:
+            return
+        if detect_agent(window.child.foreground_processes) is not None:
+            self.auto_show_agents_sidebar()
 
     def _refresh_agent_sidebar_scope(self, scope: tuple[TabManager, ...]) -> None:
         active_window = self.active_window
@@ -2017,6 +2046,9 @@ class Boss:
         for tm in managers:
             tm.agent_sidebar_enabled = self.agent_sidebar_enabled
         if self.agent_sidebar_enabled:
+            if self.agent_sidebar_auto_show_timer:
+                remove_timer(self.agent_sidebar_auto_show_timer)
+                self.agent_sidebar_auto_show_timer = 0
             if not self.agent_sidebar_timer:
                 self.agent_sidebar_timer = add_timer(self.refresh_agent_sidebars, 1.0)
             self.refresh_agent_sidebars()
@@ -3329,6 +3361,9 @@ class Boss:
         if self.agent_sidebar_flush_timer:
             remove_timer(self.agent_sidebar_flush_timer)
             self.agent_sidebar_flush_timer = 0
+        if self.agent_sidebar_auto_show_timer:
+            remove_timer(self.agent_sidebar_auto_show_timer)
+            self.agent_sidebar_auto_show_timer = 0
         self.child_monitor.shutdown_monitor()
         self.set_update_check_process()
         self.update_check_process = None
