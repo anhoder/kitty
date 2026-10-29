@@ -40,7 +40,7 @@ from .fast_data_types import (
     get_tab_being_dragged,
     get_window_being_dragged,
     is_tab_bar_visible,
-    last_focused_os_window_id,
+    set_agents_sidebar,
     mark_tab_bar_dirty,
     monotonic,
     next_window_id,
@@ -65,6 +65,8 @@ from .layout.interface import all_layouts, create_layout_object_for, evict_cache
 from .layout.splits import Splits
 from .progress import ProgressState
 from .tab_bar import TabBar, TabBarData, WindowDropTarget, apply_title_template
+from .agents import AgentSidebarRow, state_code
+
 from .types import DockSpec, ac
 from .typing_compat import EdgeLiteral, SessionTab, SessionType, TypedDict
 from .utils import cmdline_for_hold, color_as_int, log_error, natsort_key, platform_window_id, resolved_shell, shlex_split, which
@@ -1556,6 +1558,15 @@ class TabManager:  # {{{
         self.tabs: list[Tab] = []
         self.active_tab_history: Deque[int] = deque()
         self.tab_bar = TabBar(self.os_window_id)
+        # The sidebar is a process-wide setting, so a tab manager created after
+        # it was switched on has to come up with it already enabled; otherwise
+        # a new OS window or native tab opens without one until something else
+        # happens to refresh it.
+        boss = get_boss()
+        self.agent_sidebar_enabled = getattr(boss, 'agent_sidebar_enabled', False)
+        self.agent_sidebar_cols = getattr(boss, 'agent_sidebar_cols', 30)
+        self.agent_sidebar_height_pixels = getattr(boss, 'agent_sidebar_height_pixels', 0)
+        self.agent_sidebar_rows: tuple[AgentSidebarRow, ...] = ()
         self._active_tab_idx = 0
 
         if startup_session is not None:
@@ -1685,9 +1696,33 @@ class TabManager:  # {{{
                 watcher(boss, w, data)
 
     def update_tab_bar_data(self) -> None:
+        if self.agent_sidebar_enabled:
+            return
         if self.tab_bar.update(self.tab_bar_data):
             for tab in self.tabs:
                 tab.relayout_borders()
+
+    def set_agent_sidebar_rows(self, rows: Sequence[AgentSidebarRow]) -> None:
+        self.agent_sidebar_rows = tuple(rows)
+        if self.agent_sidebar_enabled:
+            self.update_native_agents_sidebar()
+            self.resize(only_tabs=True)
+
+    def update_native_agents_sidebar(self) -> None:
+        if not is_macos:
+            return
+        height_pixels = self.agent_sidebar_height_pixels
+        if not height_pixels:
+            if (g := get_os_window_geometry(self.os_window_id)) is not None:
+                height_pixels = int(g['height'])
+        set_agents_sidebar(
+            self.os_window_id,
+            self.agent_sidebar_enabled,
+            self.agent_sidebar_cols,
+            height_pixels,
+            tuple((row.group, row.agent, row.title, row.detail, state_code(row.state), row.is_active) for row in self.agent_sidebar_rows),
+        )
+
 
     def title_changed(self, tab: Tab) -> None:
         self.mark_tab_bar_dirty()
@@ -1696,10 +1731,12 @@ class TabManager:  # {{{
 
     def resize(self, only_tabs: bool = False) -> None:
         if not only_tabs:
-            if not self.tab_bar_hidden:
+            if not self.tab_bar_hidden and not self.agent_sidebar_enabled:
                 self.layout_tab_bar()
         for tab in self.tabs:
             tab.relayout()
+        if self.agent_sidebar_enabled:
+            self.update_native_agents_sidebar()
 
     def set_active_tab_idx(self, idx: int) -> None:
         self._set_active_tab(idx)
@@ -1929,6 +1966,10 @@ class TabManager:  # {{{
                 idx = desired_idx
         self._set_active_tab(idx)
         self.mark_tab_bar_dirty()
+        if self.agent_sidebar_enabled:
+            # The new tab's windows have to appear in the sidebar immediately,
+            # not only once the user switches tabs.
+            get_boss().refresh_agent_sidebars()
         return t
 
     @update_tab_bar_visibility
@@ -2518,9 +2559,14 @@ class TabManager:  # {{{
 
     @property
     def tab_bar_rects(self) -> tuple[Border, ...]:
+        if self.agent_sidebar_enabled:
+            return ()
         return self.tab_bar.blank_rects if self.tab_bar_should_be_visible else ()
 
     def destroy(self) -> None:
+        if self.agent_sidebar_enabled:
+            self.agent_sidebar_enabled = False
+            self.update_native_agents_sidebar()
         self._cancel_drag_hover()
         for t in self:
             t.destroy()
@@ -2535,8 +2581,11 @@ class TabManager:  # {{{
         opts = get_options()
         self.tab_bar_hidden = opts.tab_bar_style == 'hidden' or (is_macos and opts.macos_native_tabs)
         self.tab_bar.apply_options()
-        self.update_tab_bar_data()
-        self.layout_tab_bar()
+        if not self.agent_sidebar_enabled:
+            self.update_tab_bar_data()
+            self.layout_tab_bar()
+        else:
+            self.update_native_agents_sidebar()
 
 
 # }}}

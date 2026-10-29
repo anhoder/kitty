@@ -43,8 +43,9 @@ typedef enum {
     PASTE_FROM_CLIPBOARD,
     COPY_OR_NOOP,
     USER_MENU_ACTION,
+    AGENTS_SIDEBAR_CLICK,
+    AGENTS_SIDEBAR_RESIZE,
     COCOA_NOTIFICATION_UNTRACKED,
-
     NUM_COCOA_PENDING_ACTIONS
 } CocoaPendingAction;
 
@@ -70,6 +71,7 @@ size_t cocoa_text_width_for_single_line(const char *text, const size_t height, c
 extern uint8_t *render_single_ascii_char_as_mask(const char ch, size_t *result_width, size_t *result_height);
 void get_cocoa_key_equivalent(uint32_t, int, char *key, size_t key_sz, int *);
 void set_cocoa_pending_action(CocoaPendingAction action, const char *);
+void cocoa_set_agents_sidebar(void *, unsigned, bool, unsigned, unsigned, unsigned, const char **, const char **, const char **, const char **, const unsigned char *, const bool *, size_t);
 void cocoa_report_live_notifications(const char *ident);
 void cocoa_set_dock_badge(const char *label);
 void cocoa_clear_dock_badge_if_set(void);

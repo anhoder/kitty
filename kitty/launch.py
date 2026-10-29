@@ -1509,7 +1509,7 @@ def clone_and_launch(msg: str, window: Window) -> None:
             cmdline = []
         if not cmdline:
             cmdline = list(window.child.argv)
-        if cmdline and cmdline[0].startswith('-'):  # on macOS, run via run-shell kitten
+        if cmdline and cmdline[0].startswith('-'):  # login shells use a '-' argv0 on macOS
             if window.child.is_default_shell:
                 cmdline = window.child.unmodified_argv
             else:

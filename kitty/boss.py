@@ -27,6 +27,8 @@ from typing import (
 )
 from weakref import WeakValueDictionary
 
+from .agents import AgentSidebarRow, AgentState, AgentTracker, session_group_for_window
+
 from kitty.types import WindowResizeDrag
 
 from .child import cached_process_data, default_env, process_data_cache, set_default_env
@@ -123,7 +125,7 @@ from .fast_data_types import (
     set_application_quit_request,
     set_background_image,
     set_boss,
-    set_options,
+    remove_timer,
     set_os_window_chrome,
     set_os_window_size,
     set_os_window_title,
@@ -442,6 +444,12 @@ class Boss:
         self.thumbnail_request_queue: deque[PendingThumbnailRequest] = deque()
         self.cursor_blinking = True
         self.shutting_down = False
+        self.agent_sidebar_timer = 0
+        self.agent_tracker = AgentTracker()
+        self.agent_sidebar_flush_timer = 0
+        self.agent_sidebar_enabled = False
+        self.agent_sidebar_cols = 30
+        self.agent_sidebar_height_pixels = 0
         self.misc_config_errors: list[str] = []
         # we dont allow reloading the config file to change
         # allow_remote_control
@@ -539,6 +547,10 @@ class Boss:
             wclass = self.args.cls or appname
         tm = TabManager(os_window_id, self.args, wclass, wname, startup_session)
         self.os_window_map[os_window_id] = tm
+        if self.agent_sidebar_enabled:
+            # A fresh tab manager has no rows yet, so the sidebar it inherits
+            # would come up blank until the next refresh. Fill it now.
+            self.refresh_agent_sidebars()
         return os_window_id
 
     def add_os_panel(self, cfg: LayerShellConfig, wclass: str | None = appname, wname: str | None = appname) -> int:
@@ -1898,6 +1910,161 @@ class Boss:
             tm.mark_tab_bar_dirty()
             return True
         return False
+    def agent_sidebar_scope(self, tab_manager: TabManager) -> tuple[TabManager, ...]:
+        if not self.native_tabs_enabled():
+            return (tab_manager,)
+        os_window_ids = native_tab_group_order(tab_manager.os_window_id) or (tab_manager.os_window_id,)
+        return tuple(self.os_window_map[os_window_id] for os_window_id in os_window_ids if os_window_id in self.os_window_map)
+
+    def mark_agent_window_dirty(self, window_id: int) -> None:
+        # Completion notifications must work even when the sidebar is hidden;
+        # the tracker is the source for both the sidebar and the notification.
+        self.agent_tracker.mark_dirty(window_id)
+        if not self.agent_sidebar_flush_timer:
+            self.agent_sidebar_flush_timer = add_timer(self.flush_agent_sidebar_updates, 0, False)
+
+    def _refresh_agent_sidebar_scope(self, scope: tuple[TabManager, ...]) -> None:
+        active_window = self.active_window
+        rows: list[AgentSidebarRow] = []
+        for tm in scope:
+            for tab in tm:
+                for window in tab:
+                    snapshot = self.agent_tracker.snapshot_for(window.id)
+                    if snapshot is None:
+                        continue
+                    label = snapshot.agent
+                    cwd = os.path.basename(snapshot.cwd) or snapshot.cwd
+                    detail = f'{cwd} · {snapshot.state.value}'
+                    rows.append(AgentSidebarRow(window.id, session_group_for_window(window), snapshot.agent, label, detail, snapshot.state, window is active_window))
+        if not rows:
+            rows.append(AgentSidebarRow(0, 'Today', '', 'No AI agents', '', AgentState.unknown, False))
+        for tm in scope:
+            if tuple(rows) != tm.agent_sidebar_rows:
+                tm.set_agent_sidebar_rows(rows)
+
+    def flush_agent_sidebar_updates(self, timer_id: int | None = None) -> None:
+        del timer_id
+        self.agent_sidebar_flush_timer = 0
+        scopes: dict[tuple[int, ...], tuple[TabManager, ...]] = {}
+        auto_show = False
+        for window_id in self.agent_tracker.drain_dirty():
+            window = self.window_id_map.get(window_id)
+            if window is None:
+                self.agent_tracker.discard(window_id)
+                continue
+            before = self.agent_tracker.snapshot_for(window_id)
+            self.agent_tracker.refresh_window(window)
+            after = self.agent_tracker.snapshot_for(window_id)
+            if after is not None and after.state is AgentState.done and (before is None or before.state is not AgentState.done):
+                self.notify_agent_done(after)
+            if (
+                not self.agent_sidebar_enabled
+                and get_options().agents_sidebar_auto_show
+                and before is None
+                and after is not None
+            ):
+                auto_show = True
+            tab = window.tabref()
+            if tab is not None:
+                scope = self.agent_sidebar_scope(tab.tab_manager_ref())
+                scopes[tuple(tm.os_window_id for tm in scope)] = scope
+        if auto_show and not self.agent_sidebar_enabled:
+            self.agent_sidebar_enabled = True
+            for tm in self.all_tab_managers:
+                tm.agent_sidebar_enabled = True
+            if not self.agent_sidebar_timer:
+                self.agent_sidebar_timer = add_timer(self.refresh_agent_sidebars, 1.0)
+            self.refresh_agent_sidebars()
+        for scope in scopes.values():
+            if any(tm.agent_sidebar_enabled for tm in scope):
+                self._refresh_agent_sidebar_scope(scope)
+
+    def notify_agent_done(self, snapshot: Any) -> None:
+        """Tell the user an agent finished, and focus it when clicked."""
+        window = self.window_id_map.get(snapshot.window_id)
+        if window is None:
+            return
+        nm = self.notification_manager
+        cmd = nm.create_notification_cmd()
+        cmd.title = f'{snapshot.agent} finished'
+        cmd.body = snapshot.title or os.path.basename(snapshot.cwd) or snapshot.cwd
+        window_id = snapshot.window_id
+
+        def on_activation(c: Any, which: int) -> None:
+            del c, which
+            w = self.window_id_map.get(window_id)
+            if w is not None:
+                self.set_active_window(w, switch_os_window_if_needed=True)
+
+        cmd.on_activation = on_activation
+        nm.notify_with_command(cmd, window.id)
+
+    def refresh_agent_sidebars(self, timer_id: int | None = None) -> None:
+        del timer_id
+        if not self.agent_sidebar_enabled:
+            return
+        for tab_manager in self.all_tab_managers:
+            tab_manager.agent_sidebar_enabled = True
+        self.agent_tracker.mark_all_dirty(tuple(window.id for window in self.all_windows))
+        self.flush_agent_sidebar_updates()
+
+    @ac('tab', 'Toggle the native AI agents sidebar')
+    def toggle_agents_sidebar(self) -> None:
+        if self.active_tab_manager is None:
+            return
+        self.agent_sidebar_enabled = not self.agent_sidebar_enabled
+        managers = tuple(self.all_tab_managers)
+        for tm in managers:
+            tm.agent_sidebar_enabled = self.agent_sidebar_enabled
+        if self.agent_sidebar_enabled:
+            if not self.agent_sidebar_timer:
+                self.agent_sidebar_timer = add_timer(self.refresh_agent_sidebars, 1.0)
+            self.refresh_agent_sidebars()
+        else:
+            if self.agent_sidebar_timer:
+                remove_timer(self.agent_sidebar_timer)
+                self.agent_sidebar_timer = 0
+            for tm in managers:
+                tm.set_agent_sidebar_rows(())
+                tm.update_native_agents_sidebar()
+                tm.resize(only_tabs=True)
+                tm.update_tab_bar_data()
+                tm.mark_tab_bar_dirty()
+    def agents_sidebar_click(self, data: str) -> None:
+        os_window_id, _, row_text = data.partition(':')
+        try:
+            row = int(row_text)
+            tab_manager = self.os_window_map.get(int(os_window_id))
+        except ValueError:
+            return
+        if tab_manager is None or row < 0 or row >= len(tab_manager.agent_sidebar_rows):
+            return
+        window_id = tab_manager.agent_sidebar_rows[row].window_id
+        if window_id:
+            window = self.window_id_map.get(window_id)
+            if window is not None:
+                self.set_active_window(window, switch_os_window_if_needed=True)
+
+    @ac('misc', 'Resize the native AI agents sidebar')
+    def agents_sidebar_resize(self, data: str) -> None:
+        try:
+            os_window_id_s, cols_s, height_s = data.split(':')
+            os_window_id = int(os_window_id_s)
+            cols = max(16, int(cols_s))
+            height_pixels = max(1, int(height_s))
+        except (TypeError, ValueError):
+            return
+        tab_manager = self.os_window_map.get(os_window_id)
+        if tab_manager is None or not self.agent_sidebar_enabled:
+            return
+        self.agent_sidebar_cols = cols
+        self.agent_sidebar_height_pixels = height_pixels
+        scope = self.agent_sidebar_scope(tab_manager)
+        for tm in scope:
+            tm.agent_sidebar_cols = cols
+            tm.agent_sidebar_height_pixels = height_pixels
+            tm.update_native_agents_sidebar()
+            tm.resize(only_tabs=True)
 
     @ac(
         'misc',
@@ -3156,6 +3323,12 @@ class Boss:
 
     def destroy(self) -> None:
         self.shutting_down = True
+        if self.agent_sidebar_timer:
+            remove_timer(self.agent_sidebar_timer)
+            self.agent_sidebar_timer = 0
+        if self.agent_sidebar_flush_timer:
+            remove_timer(self.agent_sidebar_flush_timer)
+            self.agent_sidebar_flush_timer = 0
         self.child_monitor.shutdown_monitor()
         self.set_update_check_process()
         self.update_check_process = None

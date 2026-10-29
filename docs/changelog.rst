@@ -10,6 +10,41 @@ Recent major new features
 ---------------------------
 
 
+- macOS: Reduce default shell startup latency by avoiding the per-pane ``kitten run-shell`` helper.
+- Add a native macOS Agents sidebar for monitoring recognized AI coding agents.
+  It uses a dedicated vertical Cocoa surface rather than kitty's tab-bar
+  renderer, shows working/blocked/done/idle state, and focuses an agent window
+  when clicked. Map :code:`toggle_agents_sidebar` to enable it.
+- Fix the native macOS Agents sidebar leaving the terminal content area blank
+  after it was opened.
+- Improve the native Agents sidebar with hierarchical agent/detail rows,
+  state-colored indicators, and shared rows across macOS native-tab groups.
+- Agent state detection in the Agents sidebar is now rule-based, with
+  per-agent rule tables scoped to named regions of the window (title, OSC 9;4
+  progress payload, bottom non-empty lines, prompt box interior, and so on).
+  ``working`` now requires a visible marker instead of being inferred from
+  output, transcript viewers and model pickers hold the previous state instead
+  of reporting idle, reported states from agents whose hooks only cover session
+  identity no longer override the visible screen, and detection reads the live
+  window rather than the scrolled-back view.
+- Animate a turning arc on working rows in the Agents sidebar. The animation
+  runs only while an agent is actually working.
+- Recognize oh-my-pi (omp) state from its window title and prompt header. A
+  recognized agent that kitty ships no rules for now reports ``unknown``
+  instead of claiming to be idle.
+- Preserve ``done`` for screen-detected agents until their window is viewed,
+  send a desktop notification when they finish, and focus the agent window
+  when the notification is clicked. New tabs now inherit an enabled Agents
+  sidebar immediately instead of waiting for a tab switch.
+- Center Agents sidebar headings, group labels, and two-line row text within
+  their bands so selected and unselected rows share the same vertical rhythm.
+- Do not show an agent state indicator on the empty ``No AI agents``
+  placeholder row.
+- Make the Agents sidebar resizable by dragging its right or bottom edge.
+  Height changes keep the sidebar top-anchored so the ``AGENTS`` header stays
+  at the top while the bottom edge moves.
+- Make the Agents sidebar state text prominent and color-coded: working is
+  orange, blocked is red, done is green, while idle and unknown remain neutral.
 - Add :opt:`window_title_watermark_template` to render the window title
   watermark via template, exposing :code:`layout_name` to identify zoom mode
   in single-visible-window layouts such as :code:`stack`. The default

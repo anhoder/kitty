@@ -652,7 +652,8 @@ typedef struct OSWindow {
     double mouse_x, mouse_y;
     double mouse_left_press_x, mouse_left_press_y;
     bool mouse_button_pressed[32];
-    bool has_too_few_tabs;
+    bool has_too_few_tabs, agents_sidebar_enabled;
+    unsigned int agents_sidebar_cols, agents_sidebar_height_pixels;
     PyObject *window_title;
     bool disallow_title_changes, title_is_overriden;
     bool viewport_size_dirty, viewport_updated_at_least_once;

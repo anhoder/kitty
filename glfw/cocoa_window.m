@@ -898,6 +898,7 @@ static void _glfwUpdateNotchCover(_GLFWwindow *);
 
 // }}}
 
+
 // Content view class for the GLFW window {{{
 
 @interface GLFWContentView : NSView <NSTextInputClient> {
@@ -4084,6 +4085,7 @@ clear_title_bar_background_views(NSWindow *window) {
         for (NSView *subview in [titlebarContainer viewsWithIdentifier:tag]) [subview removeFromSuperview];
     }
 }
+
 
 static void
 set_title_bar_background(NSWindow *window, NSColor *backgroundColor) {

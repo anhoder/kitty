@@ -3171,6 +3171,102 @@ toggle_macos_tab_overview(PyObject *self UNUSED, PyObject *os_window_id) {
 #endif
     Py_RETURN_NONE;
 }
+static PyObject *
+set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
+    id_type osw_id;
+    int enabled;
+    unsigned cols, height_pixels;
+    PyObject *rows;
+    if (!PyArg_ParseTuple(args, "KpIIO", &osw_id, &enabled, &cols, &height_pixels, &rows)) return NULL;
+#ifdef __APPLE__
+    OSWindow *osw = os_window_for_id(osw_id);
+    if (!osw || !osw->handle) Py_RETURN_NONE;
+    PyObject *fast = PySequence_Fast(rows, "sidebar rows must be a sequence");
+    if (!fast) return NULL;
+    Py_ssize_t count = PySequence_Fast_GET_SIZE(fast);
+    const char **groups = PyMem_Malloc((size_t)count * sizeof(char *));
+    const char **agents = PyMem_Malloc((size_t)count * sizeof(char *));
+    const char **labels = PyMem_Malloc((size_t)count * sizeof(char *));
+    const char **details = PyMem_Malloc((size_t)count * sizeof(char *));
+    unsigned char *states = PyMem_Malloc((size_t)count * sizeof(unsigned char));
+    bool *active = PyMem_Calloc((size_t)count, sizeof(bool));
+    if ((count && (!groups || !agents || !labels || !details || !states || !active))) {
+        PyMem_Free(groups);
+        PyMem_Free(agents);
+        PyMem_Free(labels);
+        PyMem_Free(details);
+        PyMem_Free(states);
+        PyMem_Free(active);
+        Py_DECREF(fast);
+        return PyErr_NoMemory();
+    }
+    for (Py_ssize_t i = 0; i < count; i++) {
+        PyObject *item = PySequence_Fast_GET_ITEM(fast, i);
+        if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 6 || !PyUnicode_Check(PyTuple_GET_ITEM(item, 0)) ||
+            !PyUnicode_Check(PyTuple_GET_ITEM(item, 1)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 2)) ||
+            !PyUnicode_Check(PyTuple_GET_ITEM(item, 3))) {
+            PyMem_Free(groups);
+            PyMem_Free(agents);
+            PyMem_Free(labels);
+            PyMem_Free(details);
+            PyMem_Free(states);
+            PyMem_Free(active);
+            Py_DECREF(fast);
+            PyErr_SetString(PyExc_TypeError, "sidebar rows must contain (group, agent, title, detail, state, active) tuples");
+            return NULL;
+        }
+        groups[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 0));
+        agents[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 1));
+        labels[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 2));
+        details[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 3));
+        if (!groups[i] || !agents[i] || !labels[i] || !details[i]) {
+            PyMem_Free(groups);
+            PyMem_Free(agents);
+            PyMem_Free(labels);
+            PyMem_Free(details);
+            PyMem_Free(states);
+            PyMem_Free(active);
+            Py_DECREF(fast);
+            return NULL;
+        }
+        unsigned long state = PyLong_AsUnsignedLong(PyTuple_GET_ITEM(item, 4));
+        if (PyErr_Occurred() || state > 255) {
+            PyMem_Free(groups);
+            PyMem_Free(agents);
+            PyMem_Free(labels);
+            PyMem_Free(details);
+            PyMem_Free(states);
+            PyMem_Free(active);
+            Py_DECREF(fast);
+            if (!PyErr_Occurred()) PyErr_SetString(PyExc_ValueError, "invalid sidebar state code");
+            return NULL;
+        }
+        states[i] = (unsigned char)state;
+        active[i] = PyObject_IsTrue(PyTuple_GET_ITEM(item, 5));
+    }
+    osw->agents_sidebar_enabled = enabled != 0;
+    osw->agents_sidebar_cols = enabled ? cols : 0;
+    osw->agents_sidebar_height_pixels = enabled ? height_pixels : 0;
+    unsigned cell_width = osw->fonts_data ? osw->fonts_data->fcm.cell_width : 0;
+    cocoa_set_agents_sidebar(glfwGetCocoaWindow(osw->handle), (unsigned)osw_id, enabled != 0, cols * cell_width, height_pixels, cell_width, groups, agents, labels, details, states, active, (size_t)count);
+    PyMem_Free(groups);
+    PyMem_Free(agents);
+    PyMem_Free(labels);
+    PyMem_Free(details);
+    PyMem_Free(states);
+    PyMem_Free(active);
+    Py_DECREF(fast);
+    wakeup_main_loop();
+#else
+    (void)osw_id;
+    (void)enabled;
+    (void)cols;
+    (void)height_pixels;
+    (void)rows;
+#endif
+    Py_RETURN_NONE;
+}
+
 
 static PyObject *
 cocoa_hide_app(PYNOARG) {
@@ -4211,6 +4307,7 @@ static PyMethodDef module_methods[] = {
     METHODB(macos_cycle_through_os_windows, METH_O),
     METHODB(native_tab_group_order, METH_O),
     METHODB(toggle_macos_tab_overview, METH_O),
+    METHODB(set_agents_sidebar, METH_VARARGS),
     METHODB(get_content_scale_for_window, METH_NOARGS),
     METHODB(ring_bell, METH_VARARGS),
     METHODB(request_attention, METH_VARARGS),

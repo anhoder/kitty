@@ -16,6 +16,17 @@
 #include <openssl/bio.h>
 #include <openssl/rand.h>
 #include <openssl/crypto.h>
+
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L && !defined(LIBRESSL_VERSION_NUMBER)
+#define KITTY_EVP_CIPHER_KEY_LENGTH EVP_CIPHER_get_key_length
+#define KITTY_EVP_CIPHER_IV_LENGTH EVP_CIPHER_get_iv_length
+#define KITTY_EVP_CIPHER_CTX_BLOCK_SIZE EVP_CIPHER_CTX_get_block_size
+#else
+#define KITTY_EVP_CIPHER_KEY_LENGTH EVP_CIPHER_key_length
+#define KITTY_EVP_CIPHER_IV_LENGTH EVP_CIPHER_iv_length
+#define KITTY_EVP_CIPHER_CTX_BLOCK_SIZE EVP_CIPHER_CTX_block_size
+#endif
+
 #include <sys/mman.h>
 #include <structmember.h>
 
@@ -355,8 +366,8 @@ new_aes256gcmencrypt(PyTypeObject *type, PyObject *args, PyObject *kwds UNUSED) 
     Secret *key;
     if (!PyArg_ParseTuple(args, "O!", &Secret_Type, &key)) return NULL;
     const EVP_CIPHER *cipher = EVP_get_cipherbynid(NID_aes_256_gcm);
-    if (key->secret_len != (size_t)EVP_CIPHER_key_length(cipher)) {
-        PyErr_Format(PyExc_ValueError, "The key for AES 256 GCM must be %d bytes long", EVP_CIPHER_key_length(cipher));
+    if (key->secret_len != (size_t)KITTY_EVP_CIPHER_KEY_LENGTH(cipher)) {
+        PyErr_Format(PyExc_ValueError, "The key for AES 256 GCM must be %d bytes long", KITTY_EVP_CIPHER_KEY_LENGTH(cipher));
         return NULL;
     }
     AES256GCMEncrypt *self = (AES256GCMEncrypt *)type->tp_alloc(type, 0);
@@ -365,7 +376,7 @@ new_aes256gcmencrypt(PyTypeObject *type, PyObject *args, PyObject *kwds UNUSED) 
         Py_CLEAR(self);
         return set_error_from_openssl("Failed to allocate encryption context");
     }
-    if (!(self->iv = PyBytes_FromStringAndSize(NULL, EVP_CIPHER_iv_length(cipher)))) {
+    if (!(self->iv = PyBytes_FromStringAndSize(NULL, KITTY_EVP_CIPHER_IV_LENGTH(cipher)))) {
         Py_CLEAR(self);
         return NULL;
     }
@@ -427,7 +438,7 @@ add_data_to_be_encrypted(AES256GCMEncrypt *self, PyObject *args) {
     Py_ssize_t plaintext_len;
     int finish_encryption = 0;
     if (!PyArg_ParseTuple(args, "y#|p", &plaintext, &plaintext_len, &finish_encryption)) return NULL;
-    PyObject *ciphertext = PyBytes_FromStringAndSize(NULL, plaintext_len + 2 * EVP_CIPHER_CTX_block_size(self->ctx));
+    PyObject *ciphertext = PyBytes_FromStringAndSize(NULL, plaintext_len + 2 * KITTY_EVP_CIPHER_CTX_BLOCK_SIZE(self->ctx));
     if (!ciphertext) return NULL;
     self->state = 1;
     int offset = 0;
@@ -505,12 +516,12 @@ new_aes256gcmdecrypt(PyTypeObject *type, PyObject *args, PyObject *kwds UNUSED) 
     Py_ssize_t iv_len, tag_len;
     if (!PyArg_ParseTuple(args, "O!y#y#", &Secret_Type, &key, &iv, &iv_len, &tag, &tag_len)) return NULL;
     const EVP_CIPHER *cipher = EVP_get_cipherbynid(NID_aes_256_gcm);
-    if (key->secret_len != (size_t)EVP_CIPHER_key_length(cipher)) {
-        PyErr_Format(PyExc_ValueError, "The key for AES 256 GCM must be %d bytes long", EVP_CIPHER_key_length(cipher));
+    if (key->secret_len != (size_t)KITTY_EVP_CIPHER_KEY_LENGTH(cipher)) {
+        PyErr_Format(PyExc_ValueError, "The key for AES 256 GCM must be %d bytes long", KITTY_EVP_CIPHER_KEY_LENGTH(cipher));
         return NULL;
     }
-    if (iv_len < EVP_CIPHER_iv_length(cipher)) {
-        PyErr_Format(PyExc_ValueError, "The iv for AES 256 GCM must be at least %d bytes long", EVP_CIPHER_iv_length(cipher));
+    if (iv_len < KITTY_EVP_CIPHER_IV_LENGTH(cipher)) {
+        PyErr_Format(PyExc_ValueError, "The iv for AES 256 GCM must be at least %d bytes long", KITTY_EVP_CIPHER_IV_LENGTH(cipher));
         return NULL;
     }
     AES256GCMDecrypt *self = (AES256GCMDecrypt *)type->tp_alloc(type, 0);
@@ -519,7 +530,7 @@ new_aes256gcmdecrypt(PyTypeObject *type, PyObject *args, PyObject *kwds UNUSED) 
         Py_CLEAR(self);
         return set_error_from_openssl("Failed to allocate decryption context");
     }
-    if (iv_len > EVP_CIPHER_iv_length(cipher)) {
+    if (iv_len > KITTY_EVP_CIPHER_IV_LENGTH(cipher)) {
         if (!EVP_CIPHER_CTX_ctrl(self->ctx, EVP_CTRL_GCM_SET_IVLEN, iv_len, NULL)) {
             Py_CLEAR(self);
             return set_error_from_openssl("Failed to set the IV length");
@@ -574,7 +585,7 @@ add_data_to_be_decrypted(AES256GCMDecrypt *self, PyObject *args) {
     Py_ssize_t ciphertext_len;
     int finish_decryption = 0;
     if (!PyArg_ParseTuple(args, "y#|p", &ciphertext, &ciphertext_len, &finish_decryption)) return NULL;
-    PyObject *plaintext = PyBytes_FromStringAndSize(NULL, ciphertext_len + 2 * EVP_CIPHER_CTX_block_size(self->ctx));
+    PyObject *plaintext = PyBytes_FromStringAndSize(NULL, ciphertext_len + 2 * KITTY_EVP_CIPHER_CTX_BLOCK_SIZE(self->ctx));
     if (!plaintext) return NULL;
     self->state = 1;
     int offset = 0;
