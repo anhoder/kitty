@@ -96,13 +96,18 @@ static void draw_agents_sidebar_icon(NSRect rect) {
     BOOL expanded = self.state == NSControlStateValueOn;
     NSRect rect = NSInsetRect(self.bounds, 0.5, 0.5);
     NSBezierPath *background = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:7.0 yRadius:7.0];
-    NSColor *fill = expanded ? [NSColor selectedContentBackgroundColor] : [NSColor controlBackgroundColor];
-    [[fill colorWithAlphaComponent:self.highlighted ? 1.0 : 0.92] setFill];
-    [background fill];
-    [[NSColor separatorColor] setStroke];
-    [background stroke];
+    BOOL emphasized = expanded || self.highlighted;
+    if (emphasized) {
+        NSColor *fill = expanded ? [NSColor controlBackgroundColor] : [NSColor controlBackgroundColor];
+        CGFloat alpha = expanded ? 0.24 : 0.35;
+        [[fill colorWithAlphaComponent:alpha] setFill];
+        [background fill];
+        NSColor *border = expanded ? [NSColor selectedContentBackgroundColor] : [NSColor separatorColor];
+        [[border colorWithAlphaComponent:expanded ? 0.48 : 0.35] setStroke];
+        [background stroke];
+    }
 
-    NSColor *foreground = expanded ? [NSColor alternateSelectedControlTextColor] : [NSColor labelColor];
+    NSColor *foreground = expanded ? [NSColor labelColor] : [NSColor secondaryLabelColor];
     [foreground setStroke];
     draw_agents_sidebar_icon(NSMakeRect(5.0, (self.bounds.size.height - 18.0) / 2.0, 18.0, 18.0));
     CGFloat center_x = self.bounds.size.width - 10.0;
@@ -139,23 +144,19 @@ static NSButton *agents_sidebar_toggle_button(NSWindow *window) {
     NSButton *button = objc_getAssociatedObject(window, kitty_agents_sidebar_toggle_key);
     if (button) return button;
     if (!(window.styleMask & NSWindowStyleMaskTitled)) return nil;
-    NSButton *close_button = [window standardWindowButton:NSWindowCloseButton];
-    NSButton *zoom_button = [window standardWindowButton:NSWindowZoomButton];
-    NSView *container = close_button.superview;
-    if (!container || !zoom_button) return nil;
+    if (![window standardWindowButton:NSWindowZoomButton]) return nil;
     button = [KittyAgentsSidebarToggleButton buttonWithTitle:@"Agents sidebar" target:window action:@selector(agentsSidebarToggleFromTitlebar:)];
     button.bordered = NO;
-    button.translatesAutoresizingMaskIntoConstraints = NO;
+    button.frame = NSMakeRect(0, 0, 44.0, 28.0);
     button.identifier = @"kitty-agents-sidebar-toggle";
     button.accessibilityRole = NSAccessibilityButtonRole;
     button.accessibilityLabel = @"Agents sidebar";
-    [container addSubview:button positioned:NSWindowAbove relativeTo:nil];
-    [NSLayoutConstraint activateConstraints:@[
-        [button.leadingAnchor constraintEqualToAnchor:zoom_button.trailingAnchor constant:12.0],
-        [button.centerYAnchor constraintEqualToAnchor:zoom_button.centerYAnchor],
-        [button.widthAnchor constraintEqualToConstant:44.0],
-        [button.heightAnchor constraintEqualToConstant:28.0],
-    ]];
+    // Let AppKit reserve title space instead of overlaying its title view.
+    NSTitlebarAccessoryViewController *accessory = [[NSTitlebarAccessoryViewController alloc] init];
+    accessory.view = button;
+    accessory.layoutAttribute = NSLayoutAttributeLeft;
+    [window addTitlebarAccessoryViewController:accessory];
+    [accessory release];
     agents_sidebar_update_toggle_state(button, NO);
     objc_setAssociatedObject(window, kitty_agents_sidebar_toggle_key, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return button;
@@ -181,6 +182,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 @end
 @interface KittyAgentsSidebarView : NSView {
     unsigned os_window_id;
+    NSArray<NSNumber *> *window_ids;
     NSArray<NSString *> *groups;
     NSArray<NSString *> *agents;
     NSArray<NSString *> *labels;
@@ -191,19 +193,35 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     CGFloat group_height;
     CGFloat row_height;
     NSTimer *spinner_timer;
+    NSTimer *group_animation_timer;
     CGFloat spinner_phase;
     NSVisualEffectView *background_view;
     unsigned cell_width_pixels;
     BOOL resizing;
     BOOL resizing_width;
     NSTrackingArea *sidebar_tracking_area;
+    NSMutableSet<NSString *> *collapsed_groups;
+    NSMutableDictionary<NSString *, NSNumber *> *group_animation;
 }
+@property (copy) NSString *grouping;
 - (instancetype)initWithOSWindowID:(unsigned)window_id width:(CGFloat)width cellWidth:(unsigned)cell_width;
-- (void)setRows:(const char **)new_groups agents:(const char **)new_agents labels:(const char **)new_labels details:(const char **)new_details states:(const unsigned char *)new_states active:(const bool *)active count:(size_t)count;
+- (void)setRows:(const unsigned long long *)new_window_ids
+         groups:(const char **)new_groups
+         agents:(const char **)new_agents
+         labels:(const char **)new_labels
+        details:(const char **)new_details
+         states:(const unsigned char *)new_states
+         active:(const bool *)active
+          count:(size_t)count;
 - (NSVisualEffectView *)backgroundView;
 - (void)stopAnimating;
 - (void)advanceSpinner:(NSTimer *)timer;
+- (void)advanceGroupAnimation:(NSTimer *)timer;
+- (CGFloat)groupExpansion:(NSString *)group;
+- (void)drawDisclosureForGroup:(NSString *)group atPoint:(NSPoint)point expanded:(BOOL)expanded;
 - (BOOL)isAnimating;
+- (NSString *)groupHeaderAtPoint:(NSPoint)p;
+- (NSInteger)rowAtPoint:(NSPoint)p;
 @end
 
 @implementation KittyAgentsSidebarView
@@ -214,6 +232,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         cell_width_pixels = MAX(1u, cell_width);
         resizing = NO;
         resizing_width = NO;
+        window_ids = [[NSArray alloc] init];
         groups = [[NSArray alloc] init];
         agents = [[NSArray alloc] init];
         labels = [[NSArray alloc] init];
@@ -224,7 +243,10 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         group_height = 24.0;
         row_height = 48.0;
         spinner_timer = nil;
+        group_animation_timer = nil;
         spinner_phase = 0.0;
+        collapsed_groups = [[NSMutableSet alloc] init];
+        group_animation = [[NSMutableDictionary alloc] init];
         // The translucent sidebar material has to sit behind the rows, but a
         // view's own drawRect paints *beneath* its subviews, so hosting the
         // material as a subview here would hide every row we draw. Keep it in
@@ -285,6 +307,91 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     }
 }
 
+- (CGFloat)groupExpansion:(NSString *)group {
+    NSNumber *value = group_animation[group];
+    return value ? value.doubleValue : ([collapsed_groups containsObject:group] ? 0.0 : 1.0);
+}
+
+- (void)advanceGroupAnimation:(NSTimer *)timer {
+    (void)timer;
+    BOOL active = NO;
+    for (NSString *group in [group_animation allKeys]) {
+        CGFloat value = [group_animation[group] doubleValue];
+        CGFloat target = [collapsed_groups containsObject:group] ? 0.0 : 1.0;
+        CGFloat delta = target - value;
+        if (fabs(delta) < 0.08) value = target;
+        else { value += delta * 0.28; active = YES; }
+        group_animation[group] = @(value);
+    }
+    [self setNeedsDisplay:YES];
+    if (!active) {
+        [group_animation_timer invalidate];
+        group_animation_timer = nil;
+    }
+}
+
+- (void)drawDisclosureForGroup:(NSString *)group atPoint:(NSPoint)point expanded:(BOOL)expanded {
+    CGFloat progress = [self groupExpansion:group];
+    CGFloat angle = (1.0 - progress) * M_PI_2;
+    NSBezierPath *chevron = [NSBezierPath bezierPath];
+    chevron.lineWidth = 1.8;
+    chevron.lineCapStyle = NSLineCapStyleRound;
+    chevron.lineJoinStyle = NSLineJoinStyleRound;
+    [chevron moveToPoint:NSMakePoint(point.x - 3.0, point.y - 2.0)];
+    [chevron lineToPoint:NSMakePoint(point.x, point.y + 1.0)];
+    [chevron lineToPoint:NSMakePoint(point.x + 3.0, point.y - 2.0)];
+    NSAffineTransform *transform = [NSAffineTransform transform];
+    [transform translateXBy:point.x yBy:point.y];
+    [transform rotateByRadians:angle];
+    [transform translateXBy:-point.x yBy:-point.y];
+    [transform concat];
+    [[NSColor labelColor] setStroke];
+    [chevron stroke];
+    [transform invert];
+    [transform concat];
+}
+
+- (NSString *)groupHeaderAtPoint:(NSPoint)p {
+    NSString *last_group = nil;
+    CGFloat y = header_height;
+    for (NSUInteger i = 0; i < labels.count; i++) {
+        NSString *group = groups[i];
+        CGFloat expansion = [self groupExpansion:group];
+        if (!last_group || ![last_group isEqualToString:group]) {
+            if (p.y >= y && p.y < y + group_height) return group;
+            y += group_height;
+            last_group = group;
+        }
+        y += row_height * expansion;
+    }
+    return nil;
+}
+
+- (NSInteger)rowAtPoint:(NSPoint)p {
+    NSString *last_group = nil;
+    CGFloat y = header_height;
+    for (NSUInteger i = 0; i < labels.count; i++) {
+        NSString *group = groups[i];
+        CGFloat expansion = [self groupExpansion:group];
+        if (!last_group || ![last_group isEqualToString:group]) {
+            y += group_height;
+            last_group = group;
+        }
+        CGFloat current_row_height = row_height * expansion;
+        if (current_row_height > 1.0 && p.y >= y && p.y < y + current_row_height) return (NSInteger)i;
+        y += current_row_height;
+    }
+    return -1;
+}
+
+// The placeholder row carries no agent name and maps to no window, so it must
+// not offer per-agent actions.
+- (unsigned long long)windowIDForRow:(NSInteger)row {
+    if (row < 0 || (NSUInteger)row >= window_ids.count) return 0;
+    if ((NSUInteger)row < agents.count && [agents[(NSUInteger)row] length] == 0) return 0;
+    return [window_ids[(NSUInteger)row] unsignedLongLongValue];
+}
+
 - (void)mouseDown:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
     if (p.x >= self.bounds.size.width - 8.0) {
@@ -292,22 +399,59 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         resizing_width = YES;
         return;
     }
-    NSString *last_group = nil;
-    CGFloat y = header_height;
-    for (NSUInteger i = 0; i < labels.count; i++) {
-        NSString *group = groups[i];
-        if (!last_group || ![last_group isEqualToString:group]) {
-            y += group_height;
-            last_group = group;
+    NSString *group = [self groupHeaderAtPoint:p];
+    if (group) {
+        BOOL collapsing = ![collapsed_groups containsObject:group];
+        if (collapsing) [collapsed_groups addObject:group];
+        else [collapsed_groups removeObject:group];
+        if (!group_animation[group]) group_animation[group] = @(collapsing ? 1.0 : 0.0);
+        if (!group_animation_timer) {
+            group_animation_timer = [NSTimer timerWithTimeInterval:(1.0 / 60.0) target:self selector:@selector(advanceGroupAnimation:) userInfo:nil repeats:YES];
+            [[NSRunLoop currentRunLoop] addTimer:group_animation_timer forMode:NSRunLoopCommonModes];
         }
-        if (p.y >= y && p.y < y + row_height) {
-            char data[64];
-            snprintf(data, sizeof(data), "%u:%lu", os_window_id, (unsigned long)i);
-            set_cocoa_pending_action(AGENTS_SIDEBAR_CLICK, data);
-            return;
-        }
-        y += row_height;
+        [self setNeedsDisplay:YES];
+        return;
     }
+    NSInteger row = [self rowAtPoint:p];
+    if (row < 0) return;
+    char data[64];
+    snprintf(data, sizeof(data), "%u:%ld", os_window_id, (long)row);
+    set_cocoa_pending_action(AGENTS_SIDEBAR_CLICK, data);
+}
+
+- (void)addMenuItemTo:(NSMenu *)menu title:(NSString *)title command:(const char *)command windowID:(unsigned long long)window_id {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:@selector(agentsSidebarMenuAction:) keyEquivalent:@""];
+    item.target = self;
+    item.tag = (NSInteger)window_id;
+    item.representedObject = @(command);
+    [menu addItem:item];
+    [item release];
+}
+
+// The row list is rebuilt on a timer, which can happen while the menu is
+// tracking, so the menu carries the agent's window id rather than the row
+// index it was opened on.
+- (NSMenu *)menuForEvent:(NSEvent *)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (p.x >= self.bounds.size.width - 8.0) return nil;
+    unsigned long long window_id = [self windowIDForRow:[self rowAtPoint:p]];
+    if (!window_id) return nil;
+    NSMenu *menu = [[[NSMenu alloc] initWithTitle:@"kitty-agents-sidebar"] autorelease];
+    [self addMenuItemTo:menu title:@"Focus Agent" command:"focus" windowID:window_id];
+    [self addMenuItemTo:menu title:@"New Window Here" command:"new_window" windowID:window_id];
+    [self addMenuItemTo:menu title:@"Copy Working Directory" command:"copy_cwd" windowID:window_id];
+    [menu addItem:[NSMenuItem separatorItem]];
+    [self addMenuItemTo:menu title:@"Close Agent Window" command:"close" windowID:window_id];
+    return menu;
+}
+
+- (void)agentsSidebarMenuAction:(id)sender {
+    NSMenuItem *item = (NSMenuItem *)sender;
+    NSString *command = (NSString *)item.representedObject;
+    if (![command isKindOfClass:[NSString class]]) return;
+    char data[128];
+    snprintf(data, sizeof(data), "%u:%llu:%s", os_window_id, (unsigned long long)item.tag, [command UTF8String]);
+    set_cocoa_pending_action(AGENTS_SIDEBAR_MENU, data);
 }
 
 - (void)mouseMoved:(NSEvent *)event {
@@ -344,7 +488,15 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     resizing_width = NO;
     [self resetCursorRects];
 }
-- (void)setRows:(const char **)new_groups agents:(const char **)new_agents labels:(const char **)new_labels details:(const char **)new_details states:(const unsigned char *)new_states active:(const bool *)active count:(size_t)count {
+- (void)setRows:(const unsigned long long *)new_window_ids
+         groups:(const char **)new_groups
+         agents:(const char **)new_agents
+         labels:(const char **)new_labels
+        details:(const char **)new_details
+         states:(const unsigned char *)new_states
+         active:(const bool *)active
+          count:(size_t)count {
+    NSMutableArray *next_window_ids = [NSMutableArray arrayWithCapacity:count];
     NSMutableArray *next_groups = [NSMutableArray arrayWithCapacity:count];
     NSMutableArray *next_agents = [NSMutableArray arrayWithCapacity:count];
     NSMutableArray *next_labels = [NSMutableArray arrayWithCapacity:count];
@@ -352,6 +504,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     NSMutableArray *next_states = [NSMutableArray arrayWithCapacity:count];
     NSMutableArray *next_active = [NSMutableArray arrayWithCapacity:count];
     for (size_t i = 0; i < count; i++) {
+        [next_window_ids addObject:@(new_window_ids ? new_window_ids[i] : 0ULL)];
         [next_groups addObject:[NSString stringWithUTF8String:new_groups[i] ? new_groups[i] : ""]];
         [next_agents addObject:[NSString stringWithUTF8String:new_agents[i] ? new_agents[i] : ""]];
         [next_labels addObject:[NSString stringWithUTF8String:new_labels[i] ? new_labels[i] : ""]];
@@ -359,18 +512,23 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         [next_states addObject:@(new_states ? new_states[i] : 0)];
         [next_active addObject:@(active && active[i])];
     }
+    [window_ids release];
     [groups release];
     [agents release];
     [labels release];
     [details release];
     [states release];
     [active_rows release];
+    window_ids = [next_window_ids copy];
     groups = [next_groups copy];
     agents = [next_agents copy];
     labels = [next_labels copy];
     details = [next_details copy];
     states = [next_states copy];
     active_rows = [next_active copy];
+    NSMutableSet *valid_groups = [NSMutableSet set];
+    for (NSString *group in groups) [valid_groups addObject:group];
+    [collapsed_groups intersectSet:valid_groups];
     [self updateAnimationState];
     // Everything is painted in drawRect. There used to be a parallel set of
     // NSTextField subviews drawing the same text on top of it, which hid the
@@ -464,33 +622,50 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 
     NSUInteger visible_count = 0;
     for (NSString *agent in agents) if (agent.length) visible_count++;
+    NSUInteger group_count = 0;
+    NSString *last_group = nil;
+    for (NSString *group in groups) {
+        if (!last_group || ![last_group isEqualToString:group]) {
+            group_count++;
+            last_group = group;
+        }
+    }
     NSDictionary *header_attrs = @{
         NSFontAttributeName: [NSFont boldSystemFontOfSize:11.0],
         NSForegroundColorAttributeName: [NSColor secondaryLabelColor],
     };
-    NSString *header = visible_count ? [NSString stringWithFormat:@"AGENTS  %lu", (unsigned long)visible_count] : @"AGENTS";
+    NSString *header = [NSString stringWithFormat:@"Grouping: %@ · %lu agent%@ · %lu group%@", self.grouping, (unsigned long)visible_count,
+        visible_count == 1 ? @"" : @"s", (unsigned long)group_count, group_count == 1 ? @"" : @"s"];
     NSRect header_rect = NSMakeRect(12.0, 13.0, MAX(0.0, self.bounds.size.width - 24.0), 18.0);
     [header drawWithRect:header_rect options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine attributes:header_attrs context:nil];
     [[NSColor separatorColor] setFill];
     NSRectFill(NSMakeRect(0, header_height - 1.0, self.bounds.size.width, 1.0));
 
-    NSString *last_group = nil;
+    last_group = nil;
     CGFloat y = header_height;
     for (NSUInteger i = 0; i < labels.count; i++) {
         NSString *group = groups[i];
         if (!last_group || ![last_group isEqualToString:group]) {
+            BOOL expanded = [self groupExpansion:group] > 0.5;
+            NSRect group_rect = NSMakeRect(0, y, self.bounds.size.width, group_height);
+            [[[NSColor controlBackgroundColor] colorWithAlphaComponent:0.34] setFill];
+            NSRectFill(group_rect);
             NSDictionary *group_attrs = @{
-                NSFontAttributeName: [NSFont systemFontOfSize:11.0],
-                NSForegroundColorAttributeName: [NSColor secondaryLabelColor],
+                NSFontAttributeName: [NSFont boldSystemFontOfSize:11.0],
+                NSForegroundColorAttributeName: [NSColor labelColor],
             };
-            [group drawAtPoint:NSMakePoint(12.0, y + 5.0) withAttributes:group_attrs];
+            [self drawDisclosureForGroup:group atPoint:NSMakePoint(16.0, y + 12.0) expanded:expanded];
+            [group drawAtPoint:NSMakePoint(24.0, y + 5.0) withAttributes:group_attrs];
             y += group_height;
             last_group = group;
         }
+        CGFloat expansion = [self groupExpansion:group];
+        if (expansion <= 0.001) continue;
         BOOL active = [active_rows[i] boolValue];
-        NSRect row = NSMakeRect(0, y, self.bounds.size.width, row_height);
+        NSRect row = NSMakeRect(0, y, self.bounds.size.width, row_height * expansion);
+        [NSGraphicsContext saveGraphicsState];
+        NSRectClip(row);
         if (active) {
-            // Inset rounded capsule, matching how macOS sidebars mark the
             // selected row, instead of a full-bleed rectangle.
             NSRect pill = NSInsetRect(row, 6.0, 2.0);
             [[NSColor selectedContentBackgroundColor] setFill];
@@ -547,28 +722,36 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         NSStringDrawingOptions text_options = NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading | NSStringDrawingTruncatesLastVisibleLine;
         [labels[i] drawWithRect:primary_rect options:text_options attributes:primary_attrs context:nil];
         [detail_text drawWithRect:detail_rect options:text_options context:nil];
-        y += row_height;
+        [NSGraphicsContext restoreGraphicsState];
+        y += row_height * expansion;
     }
 }
 
 
 - (void)dealloc {
     [self stopAnimating];
+    [group_animation_timer invalidate];
     [self removeTrackingArea:sidebar_tracking_area];
     [sidebar_tracking_area release];
+    [window_ids release];
     [groups release];
     [agents release];
     [labels release];
     [details release];
     [states release];
     [active_rows release];
+    [collapsed_groups release];
+    [group_animation release];
     [background_view release];
+    [_grouping release];
     [super dealloc];
 }
 @end
 
 void
-cocoa_set_agents_sidebar(void *ptr, unsigned os_window_id, bool enabled, unsigned width_pixels, unsigned cell_width, const char **groups, const char **agents, const char **labels, const char **details, const unsigned char *states, const bool *active, size_t count) {
+cocoa_set_agents_sidebar(
+    void *ptr, unsigned os_window_id, bool enabled, unsigned width_pixels, unsigned cell_width, const char *grouping, const unsigned long long *window_ids,
+    const char **groups, const char **agents, const char **labels, const char **details, const unsigned char *states, const bool *active, size_t count) {
     NSWindow *window = (NSWindow *)ptr;
     if (!window || !window.contentView) return;
     NSButton *toggle_button = agents_sidebar_toggle_button(window);
@@ -595,7 +778,8 @@ cocoa_set_agents_sidebar(void *ptr, unsigned os_window_id, bool enabled, unsigne
     NSRect frame = NSMakeRect(0, 0, width, window.contentView.bounds.size.height);
     [sidebar setFrame:frame];
     [[sidebar backgroundView] setFrame:frame];
-    [sidebar setRows:groups agents:agents labels:labels details:details states:states active:active count:count];
+    sidebar.grouping = [NSString stringWithUTF8String:grouping];
+    [sidebar setRows:window_ids groups:groups agents:agents labels:labels details:details states:states active:active count:count];
 }
 
 static NSMenuItem *secure_input_title_menu = NULL;

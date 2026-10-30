@@ -1714,7 +1714,11 @@ class TabManager:  # {{{
             self.os_window_id,
             self.agent_sidebar_enabled,
             self.agent_sidebar_cols,
-            tuple((row.group, row.agent, row.title, row.detail, state_code(row.state), row.is_active) for row in self.agent_sidebar_rows),
+            get_options().agents_sidebar_grouping,
+            tuple(
+                (row.window_id, row.group, row.agent, row.title, row.detail, state_code(row.state), row.is_active)
+                for row in self.agent_sidebar_rows
+            ),
         )
 
 

@@ -13,21 +13,36 @@ Enable the sidebar and map the toggle action in :file:`kitty.conf`::
 Click an agent row to focus its window. Press the mapped shortcut again to
 restore the normal tab list.
 
-The macOS surface uses a translucent sidebar material, grouped time sections,
+Right-click (or control-click) an agent row for a context menu acting on that
+row's agent window: focus it, open a new window in its working directory, copy
+that directory to the clipboard, or close the window. The menu is bound to the
+agent window, not the row position, so a sidebar refresh while the menu is open
+cannot redirect an action to a different agent. The ``No AI agents``
+placeholder has no menu.
+
+The macOS surface uses a translucent sidebar material, grouped sections,
 two-line agent rows, colored state indicators, and active-row highlighting.
 A working agent shows a turning arc in place of the state dot; the animation
 only runs while something is actually working. Drag the sidebar's right edge
 to change its width; the sidebar always spans the full window height. The
-sidebar toggle is a floating native button on the titlebar's left side, after
-the traffic-light controls and before the window title. Its expanded and
-collapsed states use different background and chevron styles.
+sidebar toggle is a native titlebar accessory after the traffic-light controls;
+AppKit reserves its width so the window title starts to its right. Its expanded
+and collapsed states use different background and chevron styles.
 
-The grouping strategy is configurable with :opt:`agents_sidebar_grouping`:
+The sidebar header displays the active grouping, agent count, and group count.
+For example, ``Grouping: tab · 3 agents · 2 groups`` means that three agent
+rows are arranged into two tab groups. The grouping strategy is configurable
+with :opt:`agents_sidebar_grouping`:
 
 * ``time`` (default): group by Today, Yesterday, and Earlier;
 * ``agent``: group rows by agent name;
-* ``tab``: group rows by kitty tab title;
+* ``tab``: group rows by tab sequence number and kitty tab title;
 * ``path``: group rows by the full working directory.
+
+Click a group header to expand or collapse its agent rows. Group headers use a
+separate shaded band and a native disclosure chevron, with a short transition
+animation for both the icon and agent rows. Collapse state is retained while
+the group remains present in the sidebar.
 
 The sidebar is opened and closed manually with the persistent floating
 sidebar button at the upper-left of the window or the

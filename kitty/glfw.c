@@ -3178,77 +3178,59 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     int enabled;
     unsigned cols;
     PyObject *rows;
-    if (!PyArg_ParseTuple(args, "KpIO", &osw_id, &enabled, &cols, &rows)) return NULL;
+    const char *grouping;
+    if (!PyArg_ParseTuple(args, "KpIsO", &osw_id, &enabled, &cols, &grouping, &rows)) return NULL;
 #ifdef __APPLE__
     OSWindow *osw = os_window_for_id(osw_id);
     if (!osw || !osw->handle) Py_RETURN_NONE;
     PyObject *fast = PySequence_Fast(rows, "sidebar rows must be a sequence");
     if (!fast) return NULL;
     Py_ssize_t count = PySequence_Fast_GET_SIZE(fast);
+    PyObject *ret = NULL;
+    unsigned cell_width = 0;
+    unsigned long long *window_ids = PyMem_Malloc((size_t)count * sizeof(unsigned long long));
     const char **groups = PyMem_Malloc((size_t)count * sizeof(char *));
     const char **agents = PyMem_Malloc((size_t)count * sizeof(char *));
     const char **labels = PyMem_Malloc((size_t)count * sizeof(char *));
     const char **details = PyMem_Malloc((size_t)count * sizeof(char *));
     unsigned char *states = PyMem_Malloc((size_t)count * sizeof(unsigned char));
     bool *active = PyMem_Calloc((size_t)count, sizeof(bool));
-    if ((count && (!groups || !agents || !labels || !details || !states || !active))) {
-        PyMem_Free(groups);
-        PyMem_Free(agents);
-        PyMem_Free(labels);
-        PyMem_Free(details);
-        PyMem_Free(states);
-        PyMem_Free(active);
-        Py_DECREF(fast);
-        return PyErr_NoMemory();
+    if (count && (!window_ids || !groups || !agents || !labels || !details || !states || !active)) {
+        PyErr_NoMemory();
+        goto cleanup;
     }
     for (Py_ssize_t i = 0; i < count; i++) {
         PyObject *item = PySequence_Fast_GET_ITEM(fast, i);
-        if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 6 || !PyUnicode_Check(PyTuple_GET_ITEM(item, 0)) ||
+        if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 7 || !PyLong_Check(PyTuple_GET_ITEM(item, 0)) ||
             !PyUnicode_Check(PyTuple_GET_ITEM(item, 1)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 2)) ||
-            !PyUnicode_Check(PyTuple_GET_ITEM(item, 3))) {
-            PyMem_Free(groups);
-            PyMem_Free(agents);
-            PyMem_Free(labels);
-            PyMem_Free(details);
-            PyMem_Free(states);
-            PyMem_Free(active);
-            Py_DECREF(fast);
-            PyErr_SetString(PyExc_TypeError, "sidebar rows must contain (group, agent, title, detail, state, active) tuples");
-            return NULL;
+            !PyUnicode_Check(PyTuple_GET_ITEM(item, 3)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 4))) {
+            PyErr_SetString(PyExc_TypeError, "sidebar rows must contain (window_id, group, agent, title, detail, state, active) tuples");
+            goto cleanup;
         }
-        groups[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 0));
-        agents[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 1));
-        labels[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 2));
-        details[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 3));
-        if (!groups[i] || !agents[i] || !labels[i] || !details[i]) {
-            PyMem_Free(groups);
-            PyMem_Free(agents);
-            PyMem_Free(labels);
-            PyMem_Free(details);
-            PyMem_Free(states);
-            PyMem_Free(active);
-            Py_DECREF(fast);
-            return NULL;
-        }
-        unsigned long state = PyLong_AsUnsignedLong(PyTuple_GET_ITEM(item, 4));
+        window_ids[i] = PyLong_AsUnsignedLongLong(PyTuple_GET_ITEM(item, 0));
+        groups[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 1));
+        agents[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 2));
+        labels[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 3));
+        details[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 4));
+        if (PyErr_Occurred() || !groups[i] || !agents[i] || !labels[i] || !details[i]) goto cleanup;
+        unsigned long state = PyLong_AsUnsignedLong(PyTuple_GET_ITEM(item, 5));
         if (PyErr_Occurred() || state > 255) {
-            PyMem_Free(groups);
-            PyMem_Free(agents);
-            PyMem_Free(labels);
-            PyMem_Free(details);
-            PyMem_Free(states);
-            PyMem_Free(active);
-            Py_DECREF(fast);
             if (!PyErr_Occurred()) PyErr_SetString(PyExc_ValueError, "invalid sidebar state code");
-            return NULL;
+            goto cleanup;
         }
         states[i] = (unsigned char)state;
-        active[i] = PyObject_IsTrue(PyTuple_GET_ITEM(item, 5));
+        active[i] = PyObject_IsTrue(PyTuple_GET_ITEM(item, 6));
     }
     osw->agents_sidebar_enabled = enabled != 0;
     osw->agents_sidebar_cols = enabled ? cols : 0;
-    unsigned cell_width = osw->fonts_data ? osw->fonts_data->fcm.cell_width : 0;
-    cocoa_set_agents_sidebar(glfwGetCocoaWindow(osw->handle), (unsigned)osw_id, enabled != 0, cols * cell_width, cell_width, groups, agents, labels, details, states, active, (size_t)count);
+    cell_width = osw->fonts_data ? osw->fonts_data->fcm.cell_width : 0;
+    cocoa_set_agents_sidebar(
+        glfwGetCocoaWindow(osw->handle), (unsigned)osw_id, enabled != 0, cols * cell_width, cell_width, grouping, window_ids, groups, agents, labels,
+        details, states, active, (size_t)count);
+    wakeup_main_loop();
+    ret = Py_NewRef(Py_None);
+cleanup:
+    PyMem_Free(window_ids);
     PyMem_Free(groups);
     PyMem_Free(agents);
     PyMem_Free(labels);
@@ -3256,11 +3238,12 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     PyMem_Free(states);
     PyMem_Free(active);
     Py_DECREF(fast);
-    wakeup_main_loop();
+    return ret;
 #else
     (void)osw_id;
     (void)enabled;
     (void)cols;
+    (void)grouping;
     (void)rows;
 #endif
     Py_RETURN_NONE;

@@ -3583,8 +3583,8 @@ opt(
     long_text="""
 Choose how agents are grouped in the native macOS Agents sidebar. :code:`time`
 groups by session age; :code:`agent` groups by agent name; :code:`tab` groups
-by kitty tab title; and :code:`path` groups by the full working directory.
-The default is :code:`time`.
+by tab sequence number and kitty tab title; and :code:`path` groups by the full
+working directory. The default is :code:`time`.
 """,
 )
 

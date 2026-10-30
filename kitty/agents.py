@@ -309,6 +309,8 @@ def group_sidebar_rows(rows: Sequence[AgentSidebarRow], strategy: str) -> tuple[
         groups.setdefault(group, []).append(replace(row, group=group) if group != row.group else row)
     if strategy == 'time':
         order = ('Today', 'Yesterday', 'Earlier')
+    elif strategy == 'tab':
+        order = tuple(groups)
     else:
         order = tuple(sorted(groups, key=str.casefold))
     return tuple(row for group in order for row in groups.get(group, ()))

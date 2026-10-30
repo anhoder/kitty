@@ -1926,8 +1926,10 @@ class Boss:
         active_window = self.active_window
         strategy = get_options().agents_sidebar_grouping
         rows: list[AgentSidebarRow] = []
+        tab_index = 0
         for tm in scope:
             for tab in tm:
+                tab_index += 1
                 for window in tab:
                     snapshot = self.agent_tracker.snapshot_for(window.id)
                     if snapshot is None:
@@ -1937,7 +1939,8 @@ class Boss:
                     if strategy == 'agent':
                         group = snapshot.agent
                     elif strategy == 'tab':
-                        group = tab.effective_title or 'Untitled tab'
+                        title = tab.effective_title or 'Untitled tab'
+                        group = f'{tab_index}: {title}'
                     elif strategy == 'path':
                         group = snapshot.cwd or cwd
                     else:
@@ -2035,6 +2038,43 @@ class Boss:
             window = self.window_id_map.get(window_id)
             if window is not None:
                 self.set_active_window(window, switch_os_window_if_needed=True)
+
+    def agents_sidebar_menu(self, data: str) -> None:
+        """Callback from the native Agents sidebar context menu.
+
+        The payload carries the agent's window id, not a row index, because the
+        row list is rebuilt on a timer while the menu is open.
+        """
+        os_window_id_s, sep1, rest = data.partition(':')
+        window_id_s, sep2, command = rest.partition(':')
+        if not sep1 or not sep2:
+            return
+        try:
+            os_window_id = int(os_window_id_s)
+            window_id = int(window_id_s)
+        except ValueError:
+            return
+        window = self.window_id_map.get(window_id)
+        if window is None or self.os_window_map.get(os_window_id) is None:
+            return
+        if command == 'focus':
+            self.set_active_window(window, switch_os_window_if_needed=True)
+        elif command == 'new_window':
+            tab = window.tabref()
+            if tab is not None:
+                tab.new_window(cwd_from=CwdRequest(window))
+        elif command == 'copy_cwd':
+            cwd = CwdRequest(window).cwd_of_child or window.cwd_of_child
+            if cwd:
+                set_clipboard_string(cwd)
+                self.handle_clipboard_loss('clipboard')
+        elif command == 'close':
+            msg = self.close_windows_with_confirmation_msg((window,), window)[0]
+            if msg:
+                msg = _('Are you sure you want to close this window?') + ' ' + msg
+                self.confirm(msg, self.handle_close_window_confirmation, window.id, window=window, title=_('Close window?'))
+            else:
+                self.mark_window_for_close(window)
 
     @ac('misc', 'Resize the native AI agents sidebar')
     def agents_sidebar_resize(self, data: str) -> None:

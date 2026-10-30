@@ -295,10 +295,51 @@ class TestAgents(BaseTest):
             AgentSidebarRow(2, 'Project B', 'claude', 'claude', 'b', AgentState.working, False),
             AgentSidebarRow(3, '/tmp/project', 'omp', 'omp', 'c', AgentState.done, False),
         )
-        by_tab = group_sidebar_rows(rows, 'tab')
-        self.ae([r.group for r in by_tab], ['/tmp/project', 'Project A', 'Project B'])
         by_path = group_sidebar_rows(rows, 'path')
         self.ae([r.group for r in by_path], ['/tmp/project', 'Project A', 'Project B'])
+
+    def test_sidebar_same_title_tabs(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from kitty.agents import AgentSnapshot
+        from kitty.boss import Boss
+
+        class Tab(list):
+            effective_title = 'Project'
+
+        class TabManager(list):
+            agent_sidebar_rows = ()
+
+            def set_agent_sidebar_rows(self, rows):
+                self.agent_sidebar_rows = tuple(rows)
+
+        windows = [SimpleNamespace(id=i) for i in range(1, 12)]
+        tabs = [Tab([window]) for window in windows[:10]]
+        tabs[0].append(windows[10])
+        scope = (TabManager(tabs[:1]), TabManager(tabs[1:]))
+        tracker = AgentTracker()
+        tracker.snapshots = {
+            w.id: AgentSnapshot(w.id, 'omp', AgentState.idle, 'omp', '/tmp') for w in windows
+        }
+        boss = SimpleNamespace(active_window=windows[1], agent_tracker=tracker)
+        with patch('kitty.boss.get_options', return_value=SimpleNamespace(agents_sidebar_grouping='tab')):
+            Boss._refresh_agent_sidebar_scope(boss, scope)
+            rows = scope[0].agent_sidebar_rows
+            self.ae([r.window_id for r in rows], [1, 11, *range(2, 11)])
+            self.ae(len({r.group for r in rows}), 10)
+            self.ae(rows[0].group, rows[1].group)
+            self.assertNotEqual(rows[0].group, rows[2].group)
+            self.ae(scope[1].agent_sidebar_rows, rows)
+            self.ae([r.window_id for r in rows if r.is_active], [2])
+
+            # Reordering and closing tabs must update numbering, not membership.
+            scope[1].reverse()
+            scope[0].clear()
+            Boss._refresh_agent_sidebar_scope(boss, scope)
+            rows = scope[1].agent_sidebar_rows
+            self.ae([r.window_id for r in rows], list(range(10, 1, -1)))
+            self.ae(len({r.group for r in rows}), 9)
 
 
 class FakeWindow:

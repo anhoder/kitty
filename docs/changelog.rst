@@ -10,6 +10,9 @@ Recent major new features
 ---------------------------
 
 
+- macOS: Replace Agents sidebar group glyphs with animated disclosure chevrons; expanding and collapsing now animates the group rows.
+- macOS: Simplify the Agents sidebar header by removing its redundant title while retaining grouping and count information.
+- macOS: Distinguish Agents sidebar groups for tabs with identical titles by including each tab's sequence number.
 - macOS: Reduce default shell startup latency by avoiding the per-pane ``kitten run-shell`` helper.
 - Add a native macOS Agents sidebar for monitoring recognized AI coding agents.
   It uses a dedicated vertical Cocoa surface rather than kitty's tab-bar
@@ -50,6 +53,11 @@ Recent major new features
   titlebar control or the toggle action; automatic-show has been removed.
 - Place the Agents expand/collapse control in the titlebar after the traffic
   lights and before the window title, with distinct expanded/collapsed styles.
+- Reserve titlebar space for the Agents toggle so window titles cannot overlap
+  it, and display the selected grouping key in the sidebar header.
+- Add a right-click context menu to Agents sidebar rows: focus the agent, open
+  a new window in its working directory, copy that directory, or close the
+  agent window.
 - Add :opt:`window_title_watermark_template` to render the window title
   watermark via template, exposing :code:`layout_name` to identify zoom mode
   in single-visible-window layouts such as :code:`stack`. The default
