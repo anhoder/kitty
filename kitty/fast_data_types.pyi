@@ -905,7 +905,7 @@ def macos_cycle_through_os_windows(backwards: bool) -> None:
 
 def native_tab_group_order(os_window_id: int) -> tuple[int, ...] | None:
     pass
-def set_agents_sidebar(os_window_id: int, enabled: bool, cols: int, height_pixels: int, rows: tuple[tuple[str, str, str, str, int, bool], ...]) -> None: ...
+def set_agents_sidebar(os_window_id: int, enabled: bool, cols: int, rows: tuple[tuple[str, str, str, str, int, bool], ...]) -> None: ...
 
 def toggle_macos_tab_overview(os_window_id: int) -> None:
     pass

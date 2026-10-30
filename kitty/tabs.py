@@ -1565,7 +1565,6 @@ class TabManager:  # {{{
         boss = get_boss()
         self.agent_sidebar_enabled = getattr(boss, 'agent_sidebar_enabled', False)
         self.agent_sidebar_cols = getattr(boss, 'agent_sidebar_cols', 30)
-        self.agent_sidebar_height_pixels = getattr(boss, 'agent_sidebar_height_pixels', 0)
         self.agent_sidebar_rows: tuple[AgentSidebarRow, ...] = ()
         self._active_tab_idx = 0
 
@@ -1711,15 +1710,10 @@ class TabManager:  # {{{
     def update_native_agents_sidebar(self) -> None:
         if not is_macos:
             return
-        height_pixels = self.agent_sidebar_height_pixels
-        if not height_pixels:
-            if (g := get_os_window_geometry(self.os_window_id)) is not None:
-                height_pixels = int(g['height'])
         set_agents_sidebar(
             self.os_window_id,
             self.agent_sidebar_enabled,
             self.agent_sidebar_cols,
-            height_pixels,
             tuple((row.group, row.agent, row.title, row.detail, state_code(row.state), row.is_active) for row in self.agent_sidebar_rows),
         )
 
