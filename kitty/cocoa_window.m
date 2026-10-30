@@ -75,7 +75,6 @@ static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
     unsigned cell_width_pixels;
     BOOL resizing;
     BOOL resizing_width;
-    BOOL resizing_height;
 }
 - (instancetype)initWithOSWindowID:(unsigned)window_id width:(CGFloat)width cellWidth:(unsigned)cell_width;
 - (void)setRows:(const char **)new_groups agents:(const char **)new_agents labels:(const char **)new_labels details:(const char **)new_details states:(const unsigned char *)new_states active:(const bool *)active count:(size_t)count;
@@ -93,7 +92,6 @@ static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
         cell_width_pixels = MAX(1u, cell_width);
         resizing = NO;
         resizing_width = NO;
-        resizing_height = NO;
         agents = [[NSArray alloc] init];
         labels = [[NSArray alloc] init];
         details = [[NSArray alloc] init];
@@ -124,10 +122,11 @@ static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
 - (NSVisualEffectView *)backgroundView { return background_view; }
 
 
-- (void)previewSizeWidth:(CGFloat)width height:(CGFloat)height {
-    CGFloat parent_height = self.superview ? self.superview.bounds.size.height : height;
-    CGFloat origin_y = MAX(0.0, parent_height - height);
-    NSRect frame = NSMakeRect(0, origin_y, width, height);
+- (void)previewSizeWidth:(CGFloat)width {
+    NSRect frame = self.frame;
+    frame.size.width = width;
+    frame.size.height = self.superview ? self.superview.bounds.size.height : frame.size.height;
+    frame.origin.y = 0;
     [self setFrame:frame];
     [background_view setFrame:frame];
     [self resetCursorRects];
@@ -140,25 +139,17 @@ static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
     if (self.bounds.size.width > edge) {
         [self addCursorRect:NSMakeRect(self.bounds.size.width - edge, 0, edge, self.bounds.size.height) cursor:[NSCursor resizeLeftRightCursor]];
     }
-    if (self.bounds.size.height > edge) {
-        [self addCursorRect:NSMakeRect(0, self.bounds.size.height - edge, self.bounds.size.width, edge) cursor:[NSCursor resizeUpDownCursor]];
-    }
 }
 
-- (BOOL)isInResizeZone:(NSPoint)p width:(BOOL *)width height:(BOOL *)height {
-    const CGFloat edge = 8.0;
-    *width = p.x >= self.bounds.size.width - edge;
-    *height = p.y >= self.bounds.size.height - edge;
-    return *width || *height;
+- (BOOL)isInResizeZone:(NSPoint)p {
+    return p.x >= self.bounds.size.width - 8.0;
 }
 
 - (void)mouseDown:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    BOOL width = NO, height = NO;
-    if ([self isInResizeZone:p width:&width height:&height]) {
+    if ([self isInResizeZone:p]) {
         resizing = YES;
-        resizing_width = width;
-        resizing_height = height;
+        resizing_width = YES;
         return;
     }
     NSString *last_group = nil;
@@ -183,27 +174,14 @@ static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
     if (!resizing || !self.superview) return;
     CGFloat scale = MAX(1.0, self.window.backingScaleFactor);
     NSPoint p = [self.superview convertPoint:event.locationInWindow fromView:nil];
-    CGFloat width = self.frame.size.width;
-    CGFloat height = self.frame.size.height;
+    CGFloat min_width = 16.0 * cell_width_pixels / scale;
+    CGFloat max_width = self.superview.bounds.size.width * 0.75;
+    CGFloat width = MIN(max_width, MAX(min_width, p.x));
     unsigned cols = MAX(16u, (unsigned)llround(width * scale / (CGFloat)cell_width_pixels));
-    unsigned height_pixels = (unsigned)llround(height * scale);
-    if (resizing_width) {
-        CGFloat min_width = 16.0 * cell_width_pixels / scale;
-        CGFloat max_width = self.superview.bounds.size.width * 0.75;
-        width = MIN(max_width, MAX(min_width, p.x));
-        cols = MAX(16u, (unsigned)llround(width * scale / (CGFloat)cell_width_pixels));
-        width = cols * cell_width_pixels / scale;
-    }
-    if (resizing_height) {
-        CGFloat min_height = 160.0;
-        CGFloat max_height = self.superview.bounds.size.height;
-        height = self.superview.bounds.size.height - p.y;
-        height = MIN(max_height, MAX(min_height, height));
-        height_pixels = (unsigned)llround(height * scale);
-    }
-    [self previewSizeWidth:width height:height];
-    char data[96];
-    snprintf(data, sizeof(data), "%u:%u:%u", os_window_id, cols, height_pixels);
+    width = cols * cell_width_pixels / scale;
+    [self previewSizeWidth:width];
+    char data[64];
+    snprintf(data, sizeof(data), "%u:%u", os_window_id, cols);
     set_cocoa_pending_action(AGENTS_SIDEBAR_RESIZE, data);
 }
 
@@ -211,7 +189,6 @@ static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
     (void)event;
     resizing = NO;
     resizing_width = NO;
-    resizing_height = NO;
     [self resetCursorRects];
 }
 - (void)setRows:(const char **)new_groups agents:(const char **)new_agents labels:(const char **)new_labels details:(const char **)new_details states:(const unsigned char *)new_states active:(const bool *)active count:(size_t)count {
@@ -435,7 +412,7 @@ static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
 @end
 
 void
-cocoa_set_agents_sidebar(void *ptr, unsigned os_window_id, bool enabled, unsigned width_pixels, unsigned height_pixels, unsigned cell_width, const char **groups, const char **agents, const char **labels, const char **details, const unsigned char *states, const bool *active, size_t count) {
+cocoa_set_agents_sidebar(void *ptr, unsigned os_window_id, bool enabled, unsigned width_pixels, unsigned cell_width, const char **groups, const char **agents, const char **labels, const char **details, const unsigned char *states, const bool *active, size_t count) {
     NSWindow *window = (NSWindow *)ptr;
     if (!window || !window.contentView) return;
     if (!enabled) {
@@ -448,7 +425,6 @@ cocoa_set_agents_sidebar(void *ptr, unsigned os_window_id, bool enabled, unsigne
     }
     CGFloat scale = MAX(1.0, window.backingScaleFactor);
     CGFloat width = width_pixels / scale;
-    CGFloat height = height_pixels ? MIN(height_pixels / scale, window.contentView.bounds.size.height) : window.contentView.bounds.size.height;
     KittyAgentsSidebarView *sidebar = objc_getAssociatedObject(window, kitty_agents_sidebar_key);
     if (!sidebar) {
         sidebar = [[KittyAgentsSidebarView alloc] initWithOSWindowID:os_window_id width:width cellWidth:cell_width];
@@ -457,8 +433,7 @@ cocoa_set_agents_sidebar(void *ptr, unsigned os_window_id, bool enabled, unsigne
         objc_setAssociatedObject(window, kitty_agents_sidebar_key, sidebar, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [sidebar release];
     }
-    CGFloat origin_y = MAX(0.0, window.contentView.bounds.size.height - height);
-    NSRect frame = NSMakeRect(0, origin_y, width, height);
+    NSRect frame = NSMakeRect(0, 0, width, window.contentView.bounds.size.height);
     [sidebar setFrame:frame];
     [[sidebar backgroundView] setFrame:frame];
     [sidebar setRows:groups agents:agents labels:labels details:details states:states active:active count:count];

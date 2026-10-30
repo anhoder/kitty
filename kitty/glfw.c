@@ -3175,9 +3175,9 @@ static PyObject *
 set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     id_type osw_id;
     int enabled;
-    unsigned cols, height_pixels;
+    unsigned cols;
     PyObject *rows;
-    if (!PyArg_ParseTuple(args, "KpIIO", &osw_id, &enabled, &cols, &height_pixels, &rows)) return NULL;
+    if (!PyArg_ParseTuple(args, "KpIO", &osw_id, &enabled, &cols, &rows)) return NULL;
 #ifdef __APPLE__
     OSWindow *osw = os_window_for_id(osw_id);
     if (!osw || !osw->handle) Py_RETURN_NONE;
@@ -3246,9 +3246,8 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     }
     osw->agents_sidebar_enabled = enabled != 0;
     osw->agents_sidebar_cols = enabled ? cols : 0;
-    osw->agents_sidebar_height_pixels = enabled ? height_pixels : 0;
     unsigned cell_width = osw->fonts_data ? osw->fonts_data->fcm.cell_width : 0;
-    cocoa_set_agents_sidebar(glfwGetCocoaWindow(osw->handle), (unsigned)osw_id, enabled != 0, cols * cell_width, height_pixels, cell_width, groups, agents, labels, details, states, active, (size_t)count);
+    cocoa_set_agents_sidebar(glfwGetCocoaWindow(osw->handle), (unsigned)osw_id, enabled != 0, cols * cell_width, cell_width, groups, agents, labels, details, states, active, (size_t)count);
     PyMem_Free(groups);
     PyMem_Free(agents);
     PyMem_Free(labels);
@@ -3258,10 +3257,8 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     Py_DECREF(fast);
     wakeup_main_loop();
 #else
-    (void)osw_id;
     (void)enabled;
     (void)cols;
-    (void)height_pixels;
     (void)rows;
 #endif
     Py_RETURN_NONE;

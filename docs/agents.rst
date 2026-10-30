@@ -17,9 +17,8 @@ The macOS surface uses a translucent sidebar material, grouped time sections,
 two-line agent rows, colored state indicators, and active-row highlighting.
 A working agent shows a turning arc in place of the state dot; the animation
 only runs while something is actually working. Drag the sidebar's right edge
-to change its width, or its bottom edge to change its height. Height changes
-keep the sidebar top-anchored, so the ``AGENTS`` header stays at the top while
-the bottom edge moves.
+to change its width. The sidebar always spans the full window height, and the
+``AGENTS`` header remains at the top when the window is resized.
 
 Set :opt:`agents_sidebar_auto_show` to :code:`yes` to open the sidebar
 automatically when the first recognized foreground agent is detected. The

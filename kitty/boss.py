@@ -449,7 +449,6 @@ class Boss:
         self.agent_sidebar_flush_timer = 0
         self.agent_sidebar_enabled = False
         self.agent_sidebar_cols = 30
-        self.agent_sidebar_height_pixels = 0
         self.agent_sidebar_auto_show_timer = 0
         self.misc_config_errors: list[str] = []
         # we dont allow reloading the config file to change
@@ -2080,21 +2079,18 @@ class Boss:
     @ac('misc', 'Resize the native AI agents sidebar')
     def agents_sidebar_resize(self, data: str) -> None:
         try:
-            os_window_id_s, cols_s, height_s = data.split(':')
+            os_window_id_s, cols_s = data.split(':')
             os_window_id = int(os_window_id_s)
             cols = max(16, int(cols_s))
-            height_pixels = max(1, int(height_s))
         except (TypeError, ValueError):
             return
         tab_manager = self.os_window_map.get(os_window_id)
         if tab_manager is None or not self.agent_sidebar_enabled:
             return
         self.agent_sidebar_cols = cols
-        self.agent_sidebar_height_pixels = height_pixels
         scope = self.agent_sidebar_scope(tab_manager)
         for tm in scope:
             tm.agent_sidebar_cols = cols
-            tm.agent_sidebar_height_pixels = height_pixels
             tm.update_native_agents_sidebar()
             tm.resize(only_tabs=True)
 

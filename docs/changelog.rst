@@ -40,9 +40,9 @@ Recent major new features
   their bands so selected and unselected rows share the same vertical rhythm.
 - Do not show an agent state indicator on the empty ``No AI agents``
   placeholder row.
-- Make the Agents sidebar resizable by dragging its right or bottom edge.
-  Height changes keep the sidebar top-anchored so the ``AGENTS`` header stays
-  at the top while the bottom edge moves.
+- Make the Agents sidebar resizable by dragging its right edge. Width changes
+  are clamped continuously while the sidebar remains fully rendered and spans
+  the window height.
 - Make the Agents sidebar state text prominent and color-coded: working is
   orange, blocked is red, done is green, while idle and unknown remain neutral.
 - Add :opt:`agents_sidebar_auto_show` to automatically open the Agents sidebar
