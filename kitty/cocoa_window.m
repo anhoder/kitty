@@ -123,6 +123,14 @@ static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
 - (BOOL)isOpaque { return NO; }
 - (NSVisualEffectView *)backgroundView { return background_view; }
 
+- (NSView *)hitTest:(NSPoint)point {
+    // The resize handle must remain owned by this view. The material sibling
+    // is behind it, but AppKit can otherwise route transparent-edge clicks to
+    // the content view and never deliver mouseDown to the sidebar.
+    if (point.x >= self.bounds.size.width - 8.0) return self;
+    return [super hitTest:point];
+}
+
 
 - (void)previewSizeWidth:(CGFloat)width height:(CGFloat)height {
     CGFloat parent_height = self.superview ? self.superview.bounds.size.height : height;

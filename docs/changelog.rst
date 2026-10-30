@@ -48,6 +48,8 @@ Recent major new features
 - Add :opt:`agents_sidebar_auto_show` to automatically open the Agents sidebar
   when the first recognized agent is detected; it is opt-in and defaults to
   :code:`no`.
+- Restore reliable width dragging for the Agents sidebar by keeping the
+  resize edge as the event hit target even over the translucent material.
 - Add :opt:`window_title_watermark_template` to render the window title
   watermark via template, exposing :code:`layout_name` to identify zoom mode
   in single-visible-window layouts such as :code:`stack`. The default
