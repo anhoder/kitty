@@ -139,9 +139,10 @@ static NSButton *agents_sidebar_toggle_button(NSWindow *window) {
     NSButton *button = objc_getAssociatedObject(window, kitty_agents_sidebar_toggle_key);
     if (button) return button;
     if (!(window.styleMask & NSWindowStyleMaskTitled)) return nil;
-    NSButton *standard = [window standardWindowButton:NSWindowCloseButton];
-    NSView *container = standard.superview;
-    if (!container) return nil;
+    NSButton *close_button = [window standardWindowButton:NSWindowCloseButton];
+    NSButton *zoom_button = [window standardWindowButton:NSWindowZoomButton];
+    NSView *container = close_button.superview;
+    if (!container || !zoom_button) return nil;
     button = [KittyAgentsSidebarToggleButton buttonWithTitle:@"Agents sidebar" target:window action:@selector(agentsSidebarToggleFromTitlebar:)];
     button.bordered = NO;
     button.translatesAutoresizingMaskIntoConstraints = NO;
@@ -150,8 +151,8 @@ static NSButton *agents_sidebar_toggle_button(NSWindow *window) {
     button.accessibilityLabel = @"Agents sidebar";
     [container addSubview:button positioned:NSWindowAbove relativeTo:nil];
     [NSLayoutConstraint activateConstraints:@[
-        [button.leadingAnchor constraintEqualToAnchor:standard.trailingAnchor constant:10.0],
-        [button.centerYAnchor constraintEqualToAnchor:standard.centerYAnchor],
+        [button.leadingAnchor constraintEqualToAnchor:zoom_button.trailingAnchor constant:12.0],
+        [button.centerYAnchor constraintEqualToAnchor:zoom_button.centerYAnchor],
         [button.widthAnchor constraintEqualToConstant:44.0],
         [button.heightAnchor constraintEqualToConstant:28.0],
     ]];
