@@ -50,6 +50,8 @@ Recent major new features
   :code:`no`.
 - Restore reliable width dragging for the Agents sidebar by keeping the
   resize edge as the event hit target even over the translucent material.
+- Add a persistent ``Agents`` button to the macOS titlebar so the sidebar can
+  be opened again after it has been closed from its header.
 - Add :opt:`window_title_watermark_template` to render the window title
   watermark via template, exposing :code:`layout_name` to identify zoom mode
   in single-visible-window layouts such as :code:`stack`. The default

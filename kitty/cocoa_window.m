@@ -57,7 +57,46 @@ CFArrayRef CGSCopySpacesForWindows(CGSConnectionID Connection, CGSSpaceSelector 
 static NSMenuItem *title_menu = NULL;
 
 static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
+static const void *kitty_agents_sidebar_toggle_key = &kitty_agents_sidebar_toggle_key;
 
+static void agents_sidebar_toggle_button_pressed(id sender) {
+    (void)sender;
+    set_cocoa_pending_action(AGENTS_SIDEBAR_TOGGLE, NULL);
+}
+
+static NSButton *agents_sidebar_toggle_button(NSWindow *window) {
+    if (!window) return nil;
+    NSButton *button = objc_getAssociatedObject(window, kitty_agents_sidebar_toggle_key);
+    if (button) return button;
+    NSButton *standard = [window standardWindowButton:NSWindowZoomButton];
+    NSView *container = standard.superview;
+    if (!container) return nil;
+    button = [NSButton buttonWithTitle:@"Agents" target:nil action:nil];
+    button.target = (id)window;
+    button.action = @selector(agentsSidebarToggleFromTitlebar:);
+    button.bezelStyle = NSBezelStyleTexturedRounded;
+    button.font = [NSFont systemFontOfSize:11.0 weight:NSFontWeightMedium];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:button positioned:NSWindowAbove relativeTo:nil];
+    [NSLayoutConstraint activateConstraints:@[
+        [button.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-10.0],
+        [button.centerYAnchor constraintEqualToAnchor:container.centerYAnchor],
+        [button.widthAnchor constraintGreaterThanOrEqualToConstant:52.0],
+    ]];
+    objc_setAssociatedObject(window, kitty_agents_sidebar_toggle_key, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return button;
+}
+
+@interface NSWindow (KittyAgentsSidebarToggle)
+- (void)agentsSidebarToggleFromTitlebar:(id)sender;
+@end
+
+@implementation NSWindow (KittyAgentsSidebarToggle)
+- (void)agentsSidebarToggleFromTitlebar:(id)sender {
+    (void)sender;
+    agents_sidebar_toggle_button_pressed(self);
+}
+@end
 @interface KittyAgentsSidebarView : NSView {
     unsigned os_window_id;
     NSArray<NSString *> *groups;
@@ -166,6 +205,10 @@ static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
 
 - (void)mouseDown:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (p.y < header_height && p.x >= self.bounds.size.width - 44.0) {
+        set_cocoa_pending_action(AGENTS_SIDEBAR_TOGGLE, NULL);
+        return;
+    }
     if (p.x >= self.bounds.size.width - 8.0) {
         resizing = YES;
         resizing_width = YES;
@@ -349,6 +392,11 @@ static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
     };
     NSString *header = visible_count ? [NSString stringWithFormat:@"AGENTS  %lu", (unsigned long)visible_count] : @"AGENTS";
     [header drawAtPoint:NSMakePoint(12.0, 13.0) withAttributes:header_attrs];
+    NSDictionary *toggle_attrs = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:16.0 weight:NSFontWeightMedium],
+        NSForegroundColorAttributeName: [NSColor secondaryLabelColor],
+    };
+    [@"×" drawAtPoint:NSMakePoint(self.bounds.size.width - 26.0, 10.0) withAttributes:toggle_attrs];
     [[NSColor separatorColor] setFill];
     NSRectFill(NSMakeRect(0, header_height - 1.0, self.bounds.size.width, 1.0));
 
@@ -449,6 +497,8 @@ void
 cocoa_set_agents_sidebar(void *ptr, unsigned os_window_id, bool enabled, unsigned width_pixels, unsigned cell_width, const char **groups, const char **agents, const char **labels, const char **details, const unsigned char *states, const bool *active, size_t count) {
     NSWindow *window = (NSWindow *)ptr;
     if (!window || !window.contentView) return;
+    NSButton *toggle_button = agents_sidebar_toggle_button(window);
+    toggle_button.hidden = NO;
     if (!enabled) {
         KittyAgentsSidebarView *sidebar = objc_getAssociatedObject(window, kitty_agents_sidebar_key);
         [sidebar stopAnimating];
