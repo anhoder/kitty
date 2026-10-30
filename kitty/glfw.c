@@ -2579,6 +2579,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     if (OPT(macos_option_as_alt)) glfwSetCocoaTextInputFilter(glfw_window, filter_option);
     glfwSetCocoaToggleFullscreenIntercept(glfw_window, intercept_cocoa_fullscreen);
     glfwCocoaSetWindowResizeCallback(glfw_window, cocoa_os_window_resized);
+    cocoa_initialize_agents_sidebar_toggle(glfwGetCocoaWindow(glfw_window));
 #endif
     send_prerendered_sprites_for_window(w);
     if (logo.pixels && logo.width && logo.height && (!lsc || !global_state.is_wayland)) glfwSetWindowIcon(glfw_window, 1, &logo);

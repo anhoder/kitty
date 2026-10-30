@@ -12,7 +12,7 @@ from kitty.agent_manifest import (
     resolve_region,
     translate_regex,
 )
-from kitty.agents import AgentState, AgentTracker, detect_agent, state_code, state_from_signals, state_icon
+from kitty.agents import AgentSidebarRow, AgentState, AgentTracker, detect_agent, group_sidebar_rows, state_code, state_from_signals, state_icon
 
 from .base import BaseTest
 
@@ -276,6 +276,18 @@ class TestAgents(BaseTest):
 
     def test_state_codes_are_stable(self):
         self.ae([state_code(s) for s in AgentState], [1, 2, 3, 4, 0])
+
+    def test_sidebar_grouping_strategies(self):
+        rows = (
+            AgentSidebarRow(1, 'Today', 'omp', 'omp', 'tmp · idle', AgentState.idle, False),
+            AgentSidebarRow(2, 'Today', 'claude', 'claude', 'tmp · working', AgentState.working, False),
+            AgentSidebarRow(3, 'Yesterday', 'omp', 'omp', 'tmp · done', AgentState.done, False),
+        )
+        by_time = group_sidebar_rows(rows, 'time')
+        self.ae([r.window_id for r in by_time], [1, 2, 3])
+        by_agent = group_sidebar_rows(rows, 'agent')
+        self.ae([r.agent for r in by_agent], ['claude', 'omp', 'omp'])
+        self.ae([r.group for r in by_agent], ['claude', 'omp', 'omp'])
 
 
 class FakeWindow:

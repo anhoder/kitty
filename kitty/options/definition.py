@@ -3577,14 +3577,13 @@ Note that when using :ref:`auto_color_scheme` this option is overridden by the c
 )
 
 opt(
-    'agents_sidebar_auto_show',
-    'no',
-    option_type='to_bool',
-    ctype='bool',
+    'agents_sidebar_grouping',
+    'time',
+    choices=('time', 'agent'),
     long_text="""
-Automatically open the native macOS Agents sidebar when kitty stably detects
-the first recognized agent. With :code:`no`, use the mapped
-:code:`toggle_agents_sidebar` action to open it manually.
+Choose how agents are grouped in the native macOS Agents sidebar. :code:`time`
+groups by session age (Today, Yesterday, Earlier); :code:`agent` groups by agent
+name. The default is :code:`time`.
 """,
 )
 

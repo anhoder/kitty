@@ -59,6 +59,53 @@ static NSMenuItem *title_menu = NULL;
 static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
 static const void *kitty_agents_sidebar_toggle_key = &kitty_agents_sidebar_toggle_key;
 
+static void draw_agents_sidebar_icon(NSRect rect) {
+    CGFloat inset = MAX(1.0, MIN(rect.size.width, rect.size.height) * 0.12);
+    NSRect outline_rect = NSInsetRect(rect, inset, inset);
+    NSBezierPath *outline = [NSBezierPath bezierPathWithRoundedRect:outline_rect xRadius:2.0 yRadius:2.0];
+    outline.lineWidth = 1.35;
+    [outline stroke];
+    CGFloat divider_x = NSMinX(outline_rect) + outline_rect.size.width * 0.34;
+    NSBezierPath *divider = [NSBezierPath bezierPath];
+    [divider moveToPoint:NSMakePoint(divider_x, NSMinY(outline_rect))];
+    [divider lineToPoint:NSMakePoint(divider_x, NSMaxY(outline_rect))];
+    [divider stroke];
+    CGFloat line_start = divider_x + 2.5;
+    CGFloat line_end = NSMaxX(outline_rect) - 2.5;
+    for (NSUInteger i = 0; i < 3; i++) {
+        CGFloat y = NSMinY(outline_rect) + 4.0 + i * 3.0;
+        NSBezierPath *line = [NSBezierPath bezierPath];
+        [line moveToPoint:NSMakePoint(line_start, y)];
+        [line lineToPoint:NSMakePoint(line_end, y)];
+        [line stroke];
+    }
+}
+
+static NSImage *agents_sidebar_symbol_image(void) {
+    if (@available(macOS 11.0, *)) {
+        NSImage *image = [NSImage imageWithSystemSymbolName:@"sidebar.left" accessibilityDescription:@"Agents sidebar"];
+        if (image) {
+            image.template = YES;
+            return image;
+        }
+    }
+    NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(18.0, 18.0)];
+    [image lockFocus];
+    [[NSColor whiteColor] setStroke];
+    draw_agents_sidebar_icon(NSMakeRect(0, 0, 18.0, 18.0));
+    [image unlockFocus];
+    image.template = YES;
+    return [image autorelease];
+}
+
+static void agents_sidebar_update_toggle_state(NSButton *button, BOOL visible) {
+    if (!button) return;
+    NSString *verb = visible ? @"Hide" : @"Show";
+    button.toolTip = [NSString stringWithFormat:@"%@ Agents sidebar", verb];
+    button.accessibilityValue = visible ? @"Visible" : @"Hidden";
+    button.accessibilityHelp = [NSString stringWithFormat:@"%@ the Agents sidebar", verb];
+}
+
 static void agents_sidebar_toggle_button_pressed(id sender) {
     (void)sender;
     set_cocoa_pending_action(AGENTS_SIDEBAR_TOGGLE, NULL);
@@ -71,20 +118,34 @@ static NSButton *agents_sidebar_toggle_button(NSWindow *window) {
     NSButton *standard = [window standardWindowButton:NSWindowZoomButton];
     NSView *container = standard.superview;
     if (!container) return nil;
-    button = [NSButton buttonWithTitle:@"Agents" target:nil action:nil];
+    button = [NSButton buttonWithTitle:@"Agents sidebar" target:nil action:nil];
     button.target = (id)window;
     button.action = @selector(agentsSidebarToggleFromTitlebar:);
     button.bezelStyle = NSBezelStyleTexturedRounded;
-    button.font = [NSFont systemFontOfSize:11.0 weight:NSFontWeightMedium];
+    button.image = agents_sidebar_symbol_image();
+    button.imagePosition = NSImageOnly;
+    button.imageScaling = NSImageScaleProportionallyDown;
+    button.contentTintColor = [NSColor secondaryLabelColor];
     button.translatesAutoresizingMaskIntoConstraints = NO;
+    button.accessibilityRole = NSAccessibilityButtonRole;
+    button.accessibilityLabel = @"Agents sidebar";
     [container addSubview:button positioned:NSWindowAbove relativeTo:nil];
     [NSLayoutConstraint activateConstraints:@[
         [button.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-10.0],
         [button.centerYAnchor constraintEqualToAnchor:container.centerYAnchor],
         [button.widthAnchor constraintGreaterThanOrEqualToConstant:52.0],
     ]];
+    agents_sidebar_update_toggle_state(button, NO);
     objc_setAssociatedObject(window, kitty_agents_sidebar_toggle_key, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return button;
+}
+
+void
+cocoa_initialize_agents_sidebar_toggle(void *ptr) {
+    NSWindow *window = (NSWindow *)ptr;
+    NSButton *button = agents_sidebar_toggle_button(window);
+    button.hidden = NO;
+    agents_sidebar_update_toggle_state(button, NO);
 }
 
 @interface NSWindow (KittyAgentsSidebarToggle)
@@ -205,7 +266,7 @@ static NSButton *agents_sidebar_toggle_button(NSWindow *window) {
 
 - (void)mouseDown:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    if (p.y < header_height && p.x >= self.bounds.size.width - 44.0) {
+    if (p.y < header_height && p.x >= self.bounds.size.width - 44.0 && p.x < self.bounds.size.width - 8.0) {
         set_cocoa_pending_action(AGENTS_SIDEBAR_TOGGLE, NULL);
         return;
     }
@@ -392,11 +453,8 @@ static NSButton *agents_sidebar_toggle_button(NSWindow *window) {
     };
     NSString *header = visible_count ? [NSString stringWithFormat:@"AGENTS  %lu", (unsigned long)visible_count] : @"AGENTS";
     [header drawAtPoint:NSMakePoint(12.0, 13.0) withAttributes:header_attrs];
-    NSDictionary *toggle_attrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:16.0 weight:NSFontWeightMedium],
-        NSForegroundColorAttributeName: [NSColor secondaryLabelColor],
-    };
-    [@"×" drawAtPoint:NSMakePoint(self.bounds.size.width - 26.0, 10.0) withAttributes:toggle_attrs];
+    [[NSColor secondaryLabelColor] setStroke];
+    draw_agents_sidebar_icon(NSMakeRect(self.bounds.size.width - 34.0, 11.0, 18.0, 18.0));
     [[NSColor separatorColor] setFill];
     NSRectFill(NSMakeRect(0, header_height - 1.0, self.bounds.size.width, 1.0));
 
@@ -499,6 +557,7 @@ cocoa_set_agents_sidebar(void *ptr, unsigned os_window_id, bool enabled, unsigne
     if (!window || !window.contentView) return;
     NSButton *toggle_button = agents_sidebar_toggle_button(window);
     toggle_button.hidden = NO;
+    agents_sidebar_update_toggle_state(toggle_button, enabled);
     if (!enabled) {
         KittyAgentsSidebarView *sidebar = objc_getAssociatedObject(window, kitty_agents_sidebar_key);
         [sidebar stopAnimating];

@@ -72,6 +72,7 @@ size_t cocoa_text_width_for_single_line(const char *text, const size_t height, c
 extern uint8_t *render_single_ascii_char_as_mask(const char ch, size_t *result_width, size_t *result_height);
 void get_cocoa_key_equivalent(uint32_t, int, char *key, size_t key_sz, int *);
 void set_cocoa_pending_action(CocoaPendingAction action, const char *);
+void cocoa_initialize_agents_sidebar_toggle(void *);
 void cocoa_set_agents_sidebar(void *, unsigned, bool, unsigned, unsigned, const char **, const char **, const char **, const char **, const unsigned char *, const bool *, size_t);
 void cocoa_report_live_notifications(const char *ident);
 void cocoa_set_dock_badge(const char *label);

@@ -44,6 +44,7 @@ choices_for_window_logo_position = choices_for_placement_strategy
 choices_for_window_title_bar = typing.Literal['top', 'bottom']
 choices_for_window_title_bar_align = typing.Literal['left', 'center', 'right']
 choices_for_window_title_watermark = typing.Literal['none', 'top-left', 'top', 'top-right', 'left', 'center', 'right', 'bottom-left', 'bottom', 'bottom-right']
+choices_for_agents_sidebar_grouping = typing.Literal['time', 'agent']
 
 option_names = (
     'action_alias',
@@ -53,7 +54,7 @@ option_names = (
     'active_tab_foreground',
     'active_tab_title_template',
     'active_window_title_template',
-    'agents_sidebar_auto_show',
+    'agents_sidebar_grouping',
     'allow_cloning',
     'allow_hyperlinks',
     'allow_remote_control',
@@ -548,7 +549,7 @@ class Options:
     active_tab_foreground: Color = Color(0, 0, 0)
     active_tab_title_template: str | None = None
     active_window_title_template: str = 'none'
-    agents_sidebar_auto_show: bool = False
+    agents_sidebar_grouping: choices_for_agents_sidebar_grouping = 'time'
     allow_cloning: choices_for_allow_cloning = 'ask'
     allow_hyperlinks: int = 1
     allow_remote_control: choices_for_allow_remote_control = 'no'

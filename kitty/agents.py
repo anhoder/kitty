@@ -300,3 +300,15 @@ def session_group_for_window(window: Any) -> str:
     if age_ns < 48 * 60 * 60 * 1_000_000_000:
         return 'Yesterday'
     return 'Earlier'
+
+def group_sidebar_rows(rows: Sequence[AgentSidebarRow], strategy: str) -> tuple[AgentSidebarRow, ...]:
+    """Keep each group contiguous, preserving input order within the group."""
+    groups: dict[str, list[AgentSidebarRow]] = {}
+    for row in rows:
+        group = row.agent if strategy == 'agent' and row.agent else row.group
+        groups.setdefault(group, []).append(replace(row, group=group) if group != row.group else row)
+    if strategy == 'time':
+        order = ('Today', 'Yesterday', 'Earlier')
+    else:
+        order = tuple(sorted(groups, key=str.casefold))
+    return tuple(row for group in order for row in groups.get(group, ()))

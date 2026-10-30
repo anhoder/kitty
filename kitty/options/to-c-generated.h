@@ -1474,18 +1474,6 @@ convert_from_opts_macos_titlebar_color(PyObject *py_opts, Options *opts) {
     Py_DECREF(ret);
 }
 
-static void
-convert_from_python_agents_sidebar_auto_show(PyObject *val, Options *opts) {
-    opts->agents_sidebar_auto_show = PyObject_IsTrue(val);
-}
-
-static void
-convert_from_opts_agents_sidebar_auto_show(PyObject *py_opts, Options *opts) {
-    PyObject *ret = PyObject_GetAttrString(py_opts, "agents_sidebar_auto_show");
-    if (ret == NULL) return;
-    convert_from_python_agents_sidebar_auto_show(ret, opts);
-    Py_DECREF(ret);
-}
 
 static void
 convert_from_python_macos_native_tabs(PyObject *val, Options *opts) {
@@ -1909,8 +1897,6 @@ convert_opts_from_python_opts(PyObject *py_opts, Options *opts) {
     convert_from_opts_wayland_titlebar_color(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_macos_titlebar_color(py_opts, opts);
-    if (PyErr_Occurred()) return false;
-    convert_from_opts_agents_sidebar_auto_show(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_macos_native_tabs(py_opts, opts);
     if (PyErr_Occurred()) return false;
