@@ -81,22 +81,43 @@ static void draw_agents_sidebar_icon(NSRect rect) {
     }
 }
 
-static NSImage *agents_sidebar_symbol_image(void) {
-    if (@available(macOS 11.0, *)) {
-        NSImage *image = [NSImage imageWithSystemSymbolName:@"sidebar.left" accessibilityDescription:@"Agents sidebar"];
-        if (image) {
-            image.template = YES;
-            return image;
-        }
-    }
-    NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(18.0, 18.0)];
-    [image lockFocus];
-    [[NSColor whiteColor] setStroke];
-    draw_agents_sidebar_icon(NSMakeRect(0, 0, 18.0, 18.0));
-    [image unlockFocus];
-    image.template = YES;
-    return [image autorelease];
+
+@interface KittyAgentsSidebarToggleButton : NSButton
+@end
+
+@implementation KittyAgentsSidebarToggleButton
+- (BOOL)acceptsFirstMouse:(NSEvent *)event {
+    (void)event;
+    return YES;
 }
+
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    BOOL expanded = self.state == NSControlStateValueOn;
+    NSRect rect = NSInsetRect(self.bounds, 0.5, 0.5);
+    NSBezierPath *background = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:7.0 yRadius:7.0];
+    NSColor *fill = expanded ? [NSColor selectedContentBackgroundColor] : [NSColor controlBackgroundColor];
+    [[fill colorWithAlphaComponent:self.highlighted ? 1.0 : 0.92] setFill];
+    [background fill];
+    [[NSColor separatorColor] setStroke];
+    [background stroke];
+
+    NSColor *foreground = expanded ? [NSColor alternateSelectedControlTextColor] : [NSColor labelColor];
+    [foreground setStroke];
+    draw_agents_sidebar_icon(NSMakeRect(5.0, (self.bounds.size.height - 18.0) / 2.0, 18.0, 18.0));
+    CGFloat center_x = self.bounds.size.width - 10.0;
+    CGFloat center_y = NSMidY(self.bounds);
+    CGFloat direction = expanded ? -1.0 : 1.0;
+    NSBezierPath *chevron = [NSBezierPath bezierPath];
+    chevron.lineWidth = 1.5;
+    chevron.lineCapStyle = NSLineCapStyleRound;
+    chevron.lineJoinStyle = NSLineJoinStyleRound;
+    [chevron moveToPoint:NSMakePoint(center_x - direction * 2.0, center_y - 3.5)];
+    [chevron lineToPoint:NSMakePoint(center_x + direction * 2.0, center_y)];
+    [chevron lineToPoint:NSMakePoint(center_x - direction * 2.0, center_y + 3.5)];
+    [chevron stroke];
+}
+@end
 
 static void agents_sidebar_update_toggle_state(NSButton *button, BOOL visible) {
     if (!button) return;
@@ -104,6 +125,8 @@ static void agents_sidebar_update_toggle_state(NSButton *button, BOOL visible) {
     button.toolTip = [NSString stringWithFormat:@"%@ Agents sidebar", verb];
     button.accessibilityValue = visible ? @"Visible" : @"Hidden";
     button.accessibilityHelp = [NSString stringWithFormat:@"%@ the Agents sidebar", verb];
+    button.state = visible ? NSControlStateValueOn : NSControlStateValueOff;
+    [button setNeedsDisplay:YES];
 }
 
 static void agents_sidebar_toggle_button_pressed(id sender) {
@@ -115,25 +138,22 @@ static NSButton *agents_sidebar_toggle_button(NSWindow *window) {
     if (!window) return nil;
     NSButton *button = objc_getAssociatedObject(window, kitty_agents_sidebar_toggle_key);
     if (button) return button;
-    NSButton *standard = [window standardWindowButton:NSWindowZoomButton];
+    if (!(window.styleMask & NSWindowStyleMaskTitled)) return nil;
+    NSButton *standard = [window standardWindowButton:NSWindowCloseButton];
     NSView *container = standard.superview;
     if (!container) return nil;
-    button = [NSButton buttonWithTitle:@"Agents sidebar" target:nil action:nil];
-    button.target = (id)window;
-    button.action = @selector(agentsSidebarToggleFromTitlebar:);
-    button.bezelStyle = NSBezelStyleTexturedRounded;
-    button.image = agents_sidebar_symbol_image();
-    button.imagePosition = NSImageOnly;
-    button.imageScaling = NSImageScaleProportionallyDown;
-    button.contentTintColor = [NSColor secondaryLabelColor];
+    button = [KittyAgentsSidebarToggleButton buttonWithTitle:@"Agents sidebar" target:window action:@selector(agentsSidebarToggleFromTitlebar:)];
+    button.bordered = NO;
     button.translatesAutoresizingMaskIntoConstraints = NO;
+    button.identifier = @"kitty-agents-sidebar-toggle";
     button.accessibilityRole = NSAccessibilityButtonRole;
     button.accessibilityLabel = @"Agents sidebar";
     [container addSubview:button positioned:NSWindowAbove relativeTo:nil];
     [NSLayoutConstraint activateConstraints:@[
-        [button.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-10.0],
-        [button.centerYAnchor constraintEqualToAnchor:container.centerYAnchor],
-        [button.widthAnchor constraintGreaterThanOrEqualToConstant:52.0],
+        [button.leadingAnchor constraintEqualToAnchor:standard.trailingAnchor constant:10.0],
+        [button.centerYAnchor constraintEqualToAnchor:standard.centerYAnchor],
+        [button.widthAnchor constraintEqualToConstant:44.0],
+        [button.heightAnchor constraintEqualToConstant:28.0],
     ]];
     agents_sidebar_update_toggle_state(button, NO);
     objc_setAssociatedObject(window, kitty_agents_sidebar_toggle_key, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -266,10 +286,6 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 
 - (void)mouseDown:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    if (p.y < header_height && p.x >= self.bounds.size.width - 44.0 && p.x < self.bounds.size.width - 8.0) {
-        set_cocoa_pending_action(AGENTS_SIDEBAR_TOGGLE, NULL);
-        return;
-    }
     if (p.x >= self.bounds.size.width - 8.0) {
         resizing = YES;
         resizing_width = YES;
@@ -452,9 +468,8 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         NSForegroundColorAttributeName: [NSColor secondaryLabelColor],
     };
     NSString *header = visible_count ? [NSString stringWithFormat:@"AGENTS  %lu", (unsigned long)visible_count] : @"AGENTS";
-    [header drawAtPoint:NSMakePoint(12.0, 13.0) withAttributes:header_attrs];
-    [[NSColor secondaryLabelColor] setStroke];
-    draw_agents_sidebar_icon(NSMakeRect(self.bounds.size.width - 34.0, 11.0, 18.0, 18.0));
+    NSRect header_rect = NSMakeRect(12.0, 13.0, MAX(0.0, self.bounds.size.width - 24.0), 18.0);
+    [header drawWithRect:header_rect options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine attributes:header_attrs context:nil];
     [[NSColor separatorColor] setFill];
     NSRectFill(NSMakeRect(0, header_height - 1.0, self.bounds.size.width, 1.0));
 

@@ -17,9 +17,10 @@ The macOS surface uses a translucent sidebar material, grouped time sections,
 two-line agent rows, colored state indicators, and active-row highlighting.
 A working agent shows a turning arc in place of the state dot; the animation
 only runs while something is actually working. Drag the sidebar's right edge
-to change its width, or its bottom edge to change its height. Height changes
-keep the sidebar top-anchored, so the ``AGENTS`` header stays at the top while
-the bottom edge moves.
+to change its width; the sidebar always spans the full window height. The
+sidebar toggle is a floating native button on the titlebar's left side, after
+the traffic-light controls and before the window title. Its expanded and
+collapsed states use different background and chevron styles.
 
 The grouping strategy is configurable with :opt:`agents_sidebar_grouping`:
 
@@ -28,9 +29,10 @@ The grouping strategy is configurable with :opt:`agents_sidebar_grouping`:
 * ``tab``: group rows by kitty tab title;
 * ``path``: group rows by the full working directory.
 
-The sidebar is opened and closed manually with the persistent titlebar sidebar
-button or the :code:`toggle_agents_sidebar` action; it is not opened
-automatically when an agent starts.
+The sidebar is opened and closed manually with the persistent floating
+sidebar button at the upper-left of the window or the
+:code:`toggle_agents_sidebar` action; it is not opened automatically when an
+agent starts.
 
 
 The sidebar visibility is global for the kitty process. Toggling it in any tab

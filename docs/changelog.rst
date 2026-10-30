@@ -48,8 +48,8 @@ Recent major new features
 - Add :opt:`agents_sidebar_grouping` with ``time``, ``agent``, ``tab`` and
   ``path`` strategies. The sidebar now opens only through its persistent
   titlebar control or the toggle action; automatic-show has been removed.
-- Add a persistent ``Agents`` button to the macOS titlebar so the sidebar can
-  be opened again after it has been closed from its header.
+- Place the Agents expand/collapse control in the titlebar after the traffic
+  lights and before the window title, with distinct expanded/collapsed styles.
 - Add :opt:`window_title_watermark_template` to render the window title
   watermark via template, exposing :code:`layout_name` to identify zoom mode
   in single-visible-window layouts such as :code:`stack`. The default
