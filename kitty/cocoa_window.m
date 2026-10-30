@@ -75,6 +75,7 @@ static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
     unsigned cell_width_pixels;
     BOOL resizing;
     BOOL resizing_width;
+    NSTrackingArea *sidebar_tracking_area;
 }
 - (instancetype)initWithOSWindowID:(unsigned)window_id width:(CGFloat)width cellWidth:(unsigned)cell_width;
 - (void)setRows:(const char **)new_groups agents:(const char **)new_agents labels:(const char **)new_labels details:(const char **)new_details states:(const unsigned char *)new_states active:(const bool *)active count:(size_t)count;
@@ -92,6 +93,7 @@ static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
         cell_width_pixels = MAX(1u, cell_width);
         resizing = NO;
         resizing_width = NO;
+        groups = [[NSArray alloc] init];
         agents = [[NSArray alloc] init];
         labels = [[NSArray alloc] init];
         details = [[NSArray alloc] init];
@@ -107,12 +109,16 @@ static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
         // material as a subview here would hide every row we draw. Keep it in
         // a sibling layer underneath instead.
         NSVisualEffectView *effect = [[NSVisualEffectView alloc] initWithFrame:self.bounds];
-        effect.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        effect.autoresizingMask = NSViewNotSizable;
         effect.material = NSVisualEffectMaterialSidebar;
         effect.blendingMode = NSVisualEffectBlendingModeBehindWindow;
         effect.state = NSVisualEffectStateActive;
         background_view = effect;
+        NSTrackingAreaOptions options = NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingEnabledDuringMouseDrag | NSTrackingCursorUpdate | NSTrackingInVisibleRect;
+        sidebar_tracking_area = [[NSTrackingArea alloc] initWithRect:self.bounds options:options owner:self userInfo:nil];
+        [self addTrackingArea:sidebar_tracking_area];
         self.identifier = @"kitty-agents-sidebar";
+        self.autoresizingMask = NSViewHeightSizable;
     }
     return self;
 }
@@ -122,8 +128,21 @@ static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
 - (NSVisualEffectView *)backgroundView { return background_view; }
 
 - (NSView *)hitTest:(NSPoint)point {
-    if (point.x >= self.bounds.size.width - 8.0) return self;
-    return [super hitTest:point];
+    NSPoint local = [self convertPoint:point fromView:self.superview];
+    if (!NSPointInRect(local, self.bounds)) return nil;
+    return self;
+}
+
+- (BOOL)acceptsFirstMouse:(NSEvent *)event {
+    (void)event;
+    return YES;
+}
+
+- (void)setFrameSize:(NSSize)size {
+    [super setFrameSize:size];
+    [background_view setFrame:self.frame];
+    [self.window invalidateCursorRectsForView:self];
+    [self setNeedsDisplay:YES];
 }
 
 - (void)previewSizeWidth:(CGFloat)width {
@@ -174,6 +193,13 @@ static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
     if (p.x >= self.bounds.size.width - 8.0) [[NSCursor resizeLeftRightCursor] set];
     else [[NSCursor arrowCursor] set];
+}
+
+- (void)mouseEntered:(NSEvent *)event { [self mouseMoved:event]; }
+- (void)cursorUpdate:(NSEvent *)event { [self mouseMoved:event]; }
+- (void)mouseExited:(NSEvent *)event {
+    (void)event;
+    if (!resizing) [[NSCursor arrowCursor] set];
 }
 
 - (void)mouseDragged:(NSEvent *)event {
@@ -406,6 +432,8 @@ static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
 
 - (void)dealloc {
     [self stopAnimating];
+    [self removeTrackingArea:sidebar_tracking_area];
+    [sidebar_tracking_area release];
     [groups release];
     [agents release];
     [labels release];
