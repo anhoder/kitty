@@ -302,7 +302,7 @@ def session_group_for_window(window: Any) -> str:
     return 'Earlier'
 
 def group_sidebar_rows(rows: Sequence[AgentSidebarRow], strategy: str) -> tuple[AgentSidebarRow, ...]:
-    """Keep each group contiguous, preserving input order within the group."""
+    """Keep each configured group contiguous, preserving row order within it."""
     groups: dict[str, list[AgentSidebarRow]] = {}
     for row in rows:
         group = row.agent if strategy == 'agent' and row.agent else row.group

@@ -3579,11 +3579,12 @@ Note that when using :ref:`auto_color_scheme` this option is overridden by the c
 opt(
     'agents_sidebar_grouping',
     'time',
-    choices=('time', 'agent'),
+    choices=('time', 'agent', 'tab', 'path'),
     long_text="""
 Choose how agents are grouped in the native macOS Agents sidebar. :code:`time`
-groups by session age (Today, Yesterday, Earlier); :code:`agent` groups by agent
-name. The default is :code:`time`.
+groups by session age; :code:`agent` groups by agent name; :code:`tab` groups
+by kitty tab title; and :code:`path` groups by the full working directory.
+The default is :code:`time`.
 """,
 )
 

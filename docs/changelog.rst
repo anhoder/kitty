@@ -45,9 +45,9 @@ Recent major new features
   at the top while the bottom edge moves.
 - Make the Agents sidebar state text prominent and color-coded: working is
   orange, blocked is red, done is green, while idle and unknown remain neutral.
-- Add :opt:`agents_sidebar_grouping` with ``time`` and ``agent`` strategies.
-  The sidebar now opens only through its persistent titlebar control or the
-  toggle action; the old automatic-show option has been removed.
+- Add :opt:`agents_sidebar_grouping` with ``time``, ``agent``, ``tab`` and
+  ``path`` strategies. The sidebar now opens only through its persistent
+  titlebar control or the toggle action; automatic-show has been removed.
 - Add a persistent ``Agents`` button to the macOS titlebar so the sidebar can
   be opened again after it has been closed from its header.
 - Add :opt:`window_title_watermark_template` to render the window title

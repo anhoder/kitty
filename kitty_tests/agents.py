@@ -289,6 +289,17 @@ class TestAgents(BaseTest):
         self.ae([r.agent for r in by_agent], ['claude', 'omp', 'omp'])
         self.ae([r.group for r in by_agent], ['claude', 'omp', 'omp'])
 
+    def test_sidebar_grouping_tab_and_path(self):
+        rows = (
+            AgentSidebarRow(1, 'Project A', 'omp', 'omp', 'a', AgentState.idle, False),
+            AgentSidebarRow(2, 'Project B', 'claude', 'claude', 'b', AgentState.working, False),
+            AgentSidebarRow(3, '/tmp/project', 'omp', 'omp', 'c', AgentState.done, False),
+        )
+        by_tab = group_sidebar_rows(rows, 'tab')
+        self.ae([r.group for r in by_tab], ['/tmp/project', 'Project A', 'Project B'])
+        by_path = group_sidebar_rows(rows, 'path')
+        self.ae([r.group for r in by_path], ['/tmp/project', 'Project A', 'Project B'])
+
 
 class FakeWindow:
     id = 7

@@ -24,7 +24,9 @@ the bottom edge moves.
 The grouping strategy is configurable with :opt:`agents_sidebar_grouping`:
 
 * ``time`` (default): group by Today, Yesterday, and Earlier;
-* ``agent``: group rows by agent name.
+* ``agent``: group rows by agent name;
+* ``tab``: group rows by kitty tab title;
+* ``path``: group rows by the full working directory.
 
 The sidebar is opened and closed manually with the persistent titlebar sidebar
 button or the :code:`toggle_agents_sidebar` action; it is not opened

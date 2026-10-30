@@ -58,7 +58,7 @@ class Parser:
             raise ValueError(f"The value {val} is not a valid choice for agents_sidebar_grouping")
         ans['agents_sidebar_grouping'] = val
 
-    choices_for_agents_sidebar_grouping = frozenset(('time', 'agent'))
+    choices_for_agents_sidebar_grouping = frozenset(('time', 'agent', 'tab', 'path'))
 
     def allow_cloning(self, val: str, ans: dict[str, typing.Any]) -> None:
         if val not in self.choices_for_allow_cloning:

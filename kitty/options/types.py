@@ -44,7 +44,7 @@ choices_for_window_logo_position = choices_for_placement_strategy
 choices_for_window_title_bar = typing.Literal['top', 'bottom']
 choices_for_window_title_bar_align = typing.Literal['left', 'center', 'right']
 choices_for_window_title_watermark = typing.Literal['none', 'top-left', 'top', 'top-right', 'left', 'center', 'right', 'bottom-left', 'bottom', 'bottom-right']
-choices_for_agents_sidebar_grouping = typing.Literal['time', 'agent']
+choices_for_agents_sidebar_grouping = typing.Literal['time', 'agent', 'tab', 'path']
 
 option_names = (
     'action_alias',

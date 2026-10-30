@@ -1924,6 +1924,7 @@ class Boss:
 
     def _refresh_agent_sidebar_scope(self, scope: tuple[TabManager, ...]) -> None:
         active_window = self.active_window
+        strategy = get_options().agents_sidebar_grouping
         rows: list[AgentSidebarRow] = []
         for tm in scope:
             for tab in tm:
@@ -1933,10 +1934,18 @@ class Boss:
                         continue
                     cwd = os.path.basename(snapshot.cwd) or snapshot.cwd
                     detail = f'{cwd} · {snapshot.state.value}'
-                    rows.append(AgentSidebarRow(window.id, session_group_for_window(window), snapshot.agent, snapshot.agent, detail, snapshot.state, window is active_window))
+                    if strategy == 'agent':
+                        group = snapshot.agent
+                    elif strategy == 'tab':
+                        group = tab.effective_title or 'Untitled tab'
+                    elif strategy == 'path':
+                        group = snapshot.cwd or cwd
+                    else:
+                        group = session_group_for_window(window)
+                    rows.append(AgentSidebarRow(window.id, group, snapshot.agent, snapshot.agent, detail, snapshot.state, window is active_window))
         if not rows:
             rows.append(AgentSidebarRow(0, 'Today', '', 'No AI agents', '', AgentState.unknown, False))
-        rows = list(group_sidebar_rows(rows, get_options().agents_sidebar_grouping))
+        rows = list(group_sidebar_rows(rows, strategy))
         for tm in scope:
             if tuple(rows) != tm.agent_sidebar_rows:
                 tm.set_agent_sidebar_rows(rows)
