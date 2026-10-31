@@ -332,7 +332,9 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 
 - (void)drawDisclosureForGroup:(NSString *)group atPoint:(NSPoint)point expanded:(BOOL)expanded {
     CGFloat progress = [self groupExpansion:group];
-    CGFloat angle = (1.0 - progress) * M_PI_2;
+    // Flipped view: positive radians rotate clockwise, so a collapsed group
+    // needs a negative angle to turn the "v" into a right-pointing ">".
+    CGFloat angle = (progress - 1.0) * M_PI_2;
     NSBezierPath *chevron = [NSBezierPath bezierPath];
     chevron.lineWidth = 1.8;
     chevron.lineCapStyle = NSLineCapStyleRound;
