@@ -91,20 +91,21 @@ static void draw_agents_sidebar_icon(NSRect rect) {
     return YES;
 }
 
+// AppKit draws a blue focus ring around a keyboard-focusable titlebar button.
+// This control is mouse-only, so the ring is pure visual noise next to the
+// traffic lights.
+- (NSFocusRingType)focusRingType { return NSFocusRingTypeNone; }
+
+- (BOOL)canBecomeKeyView { return NO; }
+
 - (void)drawRect:(NSRect)dirtyRect {
     (void)dirtyRect;
     BOOL expanded = self.state == NSControlStateValueOn;
     NSRect rect = NSInsetRect(self.bounds, 0.5, 0.5);
     NSBezierPath *background = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:7.0 yRadius:7.0];
-    BOOL emphasized = expanded || self.highlighted;
-    if (emphasized) {
-        NSColor *fill = expanded ? [NSColor controlBackgroundColor] : [NSColor controlBackgroundColor];
-        CGFloat alpha = expanded ? 0.24 : 0.35;
-        [[fill colorWithAlphaComponent:alpha] setFill];
+    if (expanded || self.highlighted) {
+        [[[NSColor controlBackgroundColor] colorWithAlphaComponent:expanded ? 0.24 : 0.35] setFill];
         [background fill];
-        NSColor *border = expanded ? [NSColor selectedContentBackgroundColor] : [NSColor separatorColor];
-        [[border colorWithAlphaComponent:expanded ? 0.48 : 0.35] setStroke];
-        [background stroke];
     }
 
     NSColor *foreground = expanded ? [NSColor labelColor] : [NSColor secondaryLabelColor];
