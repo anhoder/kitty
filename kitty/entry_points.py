@@ -85,6 +85,12 @@ def shebang(args: list[str]) -> None:
     os.execvp(kitten_exe(), ['kitten', '__shebang__', 'confirm-if-needed'] + args[1:])
 
 
+def agent_integration(args: list[str]) -> None:
+    from kitty.agent_integration import main
+
+    main(args)
+
+
 def run_kitten(args: list[str]) -> None:
     try:
         kitten = args[1]
@@ -126,6 +132,7 @@ namespaced_entry_points['launch'] = launch
 namespaced_entry_points['open'] = open_urls
 namespaced_entry_points['kitten'] = run_kitten
 namespaced_entry_points['shebang'] = shebang
+namespaced_entry_points['agent-integration'] = agent_integration
 
 
 def setup_openssl_environment(ext_dir: str) -> None:

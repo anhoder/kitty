@@ -335,6 +335,7 @@ def _macos_login_shell_command(argv: Sequence[str], cwd: str, user: str, home: s
 
 class Child:
     child_fd: int | None = None
+    tty_name: str = ''
     pid: int | None = None
     initial_termios_state: list[Any] | None = None
     forked = False
@@ -394,6 +395,10 @@ class Child:
         env['COLORTERM'] = 'truecolor'
         env['KITTY_PID'] = getpid()
         env['KITTY_PUBLIC_KEY'] = boss.encryption_public_key
+        if self.tty_name:
+            # Lets a program report to kitty over an escape code even when it has no controlling terminal itself, which is the
+            # case for the hook subprocesses AI coding agents use to report their session id.
+            env['KITTY_WINDOW_TTY'] = self.tty_name
         if self.remote_control_fd > -1:
             env['KITTY_LISTEN_ON'] = f'fd:{self.remote_control_fd}'
         elif self.add_listen_on_env_var and boss.listening_on:
@@ -443,6 +448,9 @@ class Child:
         opts = fast_data_types.get_options()
         self.forked = True
         master, slave = openpty()
+        # Recorded before the slave is closed, so that the env can tell the child where its own terminal is
+        with suppress(OSError):
+            self.tty_name = os.ttyname(slave)
         stdin, self.stdin = self.stdin, None
         ready_read_fd, ready_write_fd = os.pipe()
         os.set_inheritable(ready_write_fd, False)

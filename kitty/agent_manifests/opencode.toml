@@ -8,6 +8,9 @@ aliases = ["open-code"]
 # so its own reports outrank these screen rules.
 state_authority = "full_lifecycle"
 
+[resume]
+argv = ["opencode", "--session", "{session}"]
+
 [[rules]]
 id = "permission_required"
 state = "blocked"

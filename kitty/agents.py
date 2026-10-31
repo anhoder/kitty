@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
-from .agent_manifest import ManifestState, Screen, StateAuthority, authority_for, detect
+from .agent_manifest import ManifestState, Screen, StateAuthority, authority_for, detect, is_valid_session_id, manifest_for
 from .fast_data_types import monotonic
 
 
@@ -30,6 +30,12 @@ STATE_MAP = {
 }
 
 
+AGENT_SOURCE_VAR = 'KITTY_AGENT_SOURCE'
+AGENT_ID_VAR = 'KITTY_AGENT_ID'
+AGENT_SESSION_VAR = 'KITTY_AGENT_SESSION'
+AGENT_SESSION_PATH_VAR = 'KITTY_AGENT_SESSION_PATH'
+
+
 @dataclass(frozen=True)
 class AgentSnapshot:
     window_id: int
@@ -37,6 +43,8 @@ class AgentSnapshot:
     state: AgentState
     title: str
     cwd: str
+    # The agent's own conversation id, empty unless the agent reported one
+    session_id: str = ''
 
 
 @dataclass(frozen=True)
@@ -169,6 +177,49 @@ def _reported_state(program_status: Sequence[Mapping[str, Any]]) -> AgentState |
     return None
 
 
+def session_ref_of_window(window: Any, agent: str) -> str:
+    """Return the Herdr-compatible id or absolute session path reported by an agent."""
+    from .agent_manifest import is_valid_session_path
+
+    user_vars = getattr(window, 'user_vars', None) or {}
+    reported_agent = user_vars.get(AGENT_ID_VAR, '')
+    if reported_agent:
+        manifest = manifest_for(reported_agent)
+        if manifest is None or manifest.id != agent:
+            return ''
+    reported_source = user_vars.get(AGENT_SOURCE_VAR, '')
+    if reported_source and reported_source not in {f'kitty:{agent}', f'herdr:{agent}'}:
+        return ''
+    session_path = user_vars.get('KITTY_AGENT_SESSION_PATH', '')
+    if session_path and agent in {'pi', 'omp'} and is_valid_session_path(session_path):
+        return session_path
+    session_id = user_vars.get(AGENT_SESSION_VAR, '')
+    if session_id and is_valid_session_id(session_id):
+        return session_id
+    return ''
+
+
+def session_id_of_window(window: Any, agent: str) -> str:
+    return session_ref_of_window(window, agent)
+
+
+def resume_argv_for(agent: str, session_ref: str) -> tuple[str, ...]:
+    """Build the manifest command from a Herdr-compatible id or path reference."""
+    from .agent_manifest import is_valid_session_path
+
+    if not session_ref:
+        return ()
+    if agent in {'pi', 'omp'}:
+        if not (is_valid_session_id(session_ref) or is_valid_session_path(session_ref)):
+            return ()
+    elif not is_valid_session_id(session_ref):
+        return ()
+    manifest = manifest_for(agent)
+    if manifest is None or manifest.resume is None:
+        return ()
+    return manifest.resume.command_for(session_ref)
+
+
 def snapshot_for_window(
     window: Any, screen: Screen | None = None, previous: AgentState | None = None
 ) -> tuple[AgentSnapshot | None, bool]:
@@ -182,6 +233,7 @@ def snapshot_for_window(
         state=state,
         title=window.title,
         cwd=window.cwd_of_child or window.child.cwd,
+        session_id=session_id_of_window(window, agent),
     )
     return snapshot, visible_idle
 

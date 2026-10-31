@@ -62,6 +62,7 @@ from .logout_session import (
     record_process_state,
     remove_all_snapshots,
     restore_snapshots,
+    session_persistence_enabled,
 )
 from .options.types import Options
 from .options.utils import DELETE_ENV_VAR
@@ -288,18 +289,20 @@ def list_monitors(json_output: bool = False) -> None:
             print()
 
 
-def logout_snapshot_to_restore(opts: Options, args: CLIOptions) -> RestoredSnapshot | None:
+def snapshot_to_restore(opts: Options, args: CLIOptions) -> RestoredSnapshot | None:
     if path := logout_session.snapshot_requested_by_parent:
         return load_or_discard_snapshot(path, opts)
-    if opts.restore_session_after_logout:
+    if session_persistence_enabled(opts):
         if not args.session and not args.args and not getattr(sys, 'cmdline_args_for_open', None):
-            return restore_snapshots(opts, tuple(sys.argv[1:]))
+            # At a logout every instance is restored, each by an instance started with its own command line. With persist_session
+            # kitty is started by the user, so this instance restores a session even if a differing command line saved it.
+            return restore_snapshots(opts, tuple(sys.argv[1:]), match_argv=opts.persist_session == 'no')
     elif not args.config and not args.override:
-        # The option is disabled in the default configuration, so the saved state will never be restored
+        # Both options are disabled in the default configuration, so the saved state will never be restored
         try:
             remove_all_snapshots()
         except OSError as e:
-            log_error(f'Failed to delete the sessions saved at logout. Error: {e}')
+            log_error(f'Failed to delete the saved sessions. Error: {e}')
     return None
 
 
@@ -324,7 +327,7 @@ def _run_app(opts: Options, args: CLIOptions, bad_lines: Sequence[BadLine] = (),
         grab_keyboard(True)
     with cached_values_for(run_app.cached_values_name) as cached_values:
         startup_session_error: tuple[Exception, str] | None = None
-        restored = None if _is_panel_kitten else logout_snapshot_to_restore(opts, args)
+        restored = None if _is_panel_kitten else snapshot_to_restore(opts, args)
         if restored is not None and restored.sessions:
             startup_sessions = restored.sessions
         else:

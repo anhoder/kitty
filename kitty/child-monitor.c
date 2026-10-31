@@ -1481,6 +1481,9 @@ static bool
 process_pending_closes(ChildMonitor *self) {
     if (global_state.quit_request == CONFIRMABLE_CLOSE_REQUESTED) { call_boss(quit, ""); }
     if (global_state.quit_request == IMPERATIVE_CLOSE_REQUESTED) {
+        // The OS windows are about to be closed, so this is the last chance to serialize the session state. A quit started by the
+        // quit action has already saved it, a quit caused by a signal has not, as no Python code runs for it.
+        call_boss(save_session_at_exit, "");
         for (size_t w = 0; w < global_state.num_os_windows; w++) global_state.os_windows[w].close_request = IMPERATIVE_CLOSE_REQUESTED;
     }
     bool has_open_windows = false;

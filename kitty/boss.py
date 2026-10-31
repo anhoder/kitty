@@ -449,6 +449,8 @@ class Boss:
         self.agent_sidebar_flush_timer = 0
         self.agent_sidebar_enabled = False
         self.agent_sidebar_cols = 30
+        self.session_autosave_timer = 0
+        self.session_snapshot_saved_at_exit = False
         self.misc_config_errors: list[str] = []
         # we dont allow reloading the config file to change
         # allow_remote_control
@@ -594,9 +596,12 @@ class Boss:
             ser_opts = default_save_as_session_opts()
         matched_windows = frozenset(self.match_windows(ser_opts.match)) if ser_opts.match else None
         s = {current_focused_os_window_id(): 2, last_focused_os_window_id(): 1}
-        for i, os_window_id in enumerate(sorted(self.os_window_map, key=lambda wid: s.get(wid, 0))):
-            tm = self.os_window_map[os_window_id]
-            yield from tm.serialize_state_as_session(session_path, matched_windows, is_first=i == 0, ser_opts=ser_opts)
+        # Serializing reads the foreground processes and working directory of every window, so the per process data the operating
+        # system has to be asked for is read once for the whole session rather than once per window
+        with cached_process_data():
+            for i, os_window_id in enumerate(sorted(self.os_window_map, key=lambda wid: s.get(wid, 0))):
+                tm = self.os_window_map[os_window_id]
+                yield from tm.serialize_state_as_session(session_path, matched_windows, is_first=i == 0, ser_opts=ser_opts)
 
     @property
     def all_tab_managers(self) -> Iterator[TabManager]:
@@ -1595,6 +1600,7 @@ class Boss:
             run_update_check(get_options().update_check_interval * 60 * 60)
             self.update_check_started = True
         self.monitor_desktop_session_if_needed()
+        self.start_session_autosave_if_needed()
         if opts.auto_reload_config >= 0 and not hasattr(self, 'config_reload_watcher_process') and opts.all_config_paths:
             self.config_reload_watcher_process = subprocess.Popen(
                 [kitten_exe(), '__watch_conf__', str(os.getpid()), str(int(opts.auto_reload_config * 1000))] + list(opts.all_config_paths),
@@ -1946,9 +1952,9 @@ class Boss:
                     else:
                         group = session_group_for_window(window)
                     rows.append(AgentSidebarRow(window.id, group, snapshot.agent, snapshot.agent, detail, snapshot.state, window is active_window))
-        if not rows:
-            rows.append(AgentSidebarRow(0, 'Today', '', 'No AI agents', '', AgentState.unknown, False))
         rows = list(group_sidebar_rows(rows, strategy))
+        if not rows:
+            rows.append(AgentSidebarRow(0, '', '', 'No AI agents', '', AgentState.unknown, False))
         for tm in scope:
             if tuple(rows) != tm.agent_sidebar_rows:
                 tm.set_agent_sidebar_rows(rows)
@@ -2692,6 +2698,10 @@ class Boss:
     def on_os_window_closed(
         self, os_window_id: int, x: int, y: int, viewport_width: int, viewport_height: int, was_maximized: bool, is_layer_shell: bool
     ) -> None:
+        if len(self.os_window_map) == 1 and os_window_id in self.os_window_map:
+            # kitty exits once the last OS window is gone and the state of its windows is unreachable after this, so it is
+            # serialized while it is still complete. A quit request saves the state before any OS window is closed.
+            self.save_session_at_exit()
         tm = self.os_window_map.pop(os_window_id, None)
         opts = get_options()
         if not is_layer_shell:
@@ -2747,7 +2757,7 @@ class Boss:
             if not self._call_on_quit_watchers({'confirmed': True}):
                 set_application_quit_request(NO_CLOSE_REQUESTED)
                 return
-            self.save_session_if_logging_out()
+            self.save_session_at_exit()
             set_application_quit_request(IMPERATIVE_CLOSE_REQUESTED)
             return
         if current_application_quit_request() == CLOSE_BEING_CONFIRMED:
@@ -2776,35 +2786,57 @@ class Boss:
             if not self._call_on_quit_watchers({'confirmed': True}):
                 set_application_quit_request(NO_CLOSE_REQUESTED)
                 return
-            self.save_session_if_logging_out()
+            self.save_session_at_exit()
         set_application_quit_request(IMPERATIVE_CLOSE_REQUESTED if confirmed else NO_CLOSE_REQUESTED)
 
-    def save_session_if_logging_out(self) -> None:
+    def save_session_at_exit(self) -> None:
+        # Both the quit action and destroy() lead here, so the state is serialized only once per exit
+        if self.session_snapshot_saved_at_exit:
+            return
         from .logout_session import is_logout_in_progress
 
-        if is_logout_in_progress():
-            self.save_session_at_logout()
+        if is_logout_in_progress() or get_options().persist_session != 'no':
+            self.session_snapshot_saved_at_exit = True
+            self.save_session_snapshot()
 
-    def save_session_at_logout(self) -> str:
-        from .logout_session import save_session_at_logout
+    def save_session_snapshot(self, with_scrollback: bool = True, only_if_changed: bool = False) -> str:
+        from .logout_session import save_session_snapshot, session_persistence_enabled
         from .main import is_panel_kitten
 
-        if get_options().restore_session_after_logout and not is_panel_kitten():
+        if session_persistence_enabled(get_options()) and not is_panel_kitten():
             try:
-                return save_session_at_logout(self)
+                return save_session_snapshot(self, with_scrollback, only_if_changed)
             except Exception:
                 import traceback
 
-                log_error('Failed to save the session at logout with error:\n' + traceback.format_exc())
+                log_error('Failed to save the session with error:\n' + traceback.format_exc())
         return ''
+
+    def start_session_autosave_if_needed(self) -> None:
+        # Periodic saves exist so that the session survives kitty being killed or crashing, when no exit hook runs.
+        from .main import is_panel_kitten
+
+        opts = get_options()
+        if self.session_autosave_timer:
+            remove_timer(self.session_autosave_timer)
+            self.session_autosave_timer = 0
+        if opts.persist_session == 'always' and not is_panel_kitten():
+            self.session_autosave_timer = add_timer(self.autosave_session, opts.persist_session_interval, True)
+
+    def autosave_session(self, timer_id: int | None = None) -> None:
+        if self.shutting_down:
+            return
+        # The scrollback is left out as serializing it for every window is expensive and these saves are frequent
+        self.save_session_snapshot(with_scrollback=False, only_if_changed=True)
 
     def monitor_desktop_session_if_needed(self) -> None:
         # On Linux, kitty is not asked to quit when the user logs out, so it uses the desktop portal to find out when the session is
         # about to end. Does nothing if already monitoring and tries again if monitoring failed, for example, because the portal was
         # not running.
+        from .logout_session import session_persistence_enabled
         from .main import is_panel_kitten
 
-        if is_macos or not get_options().restore_session_after_logout or is_panel_kitten():
+        if is_macos or not session_persistence_enabled(get_options()) or is_panel_kitten():
             return
         from .fast_data_types import dbus_monitor_session_state
 
@@ -2815,14 +2847,16 @@ class Boss:
 
         if state == DESKTOP_SESSION_QUERY_END:
             # The session will end once this returns, unless some other application cancels it
-            self.snapshot_saved_for_logout = self.save_session_at_logout()
+            self.snapshot_saved_for_logout = self.save_session_snapshot()
         elif state == DESKTOP_SESSION_RUNNING and self.snapshot_saved_for_logout:
-            # The logout was cancelled, so kitty keeps running and the snapshot must not be restored by another kitty instance
+            # The logout was cancelled, so kitty keeps running. With persist_session the snapshot is the state this instance keeps
+            # saving anyway, and its saver lock stops another instance restoring it, so it is kept. Otherwise it is deleted.
             path, self.snapshot_saved_for_logout = self.snapshot_saved_for_logout, ''
-            try:
-                delete_snapshot(path)
-            except OSError as e:
-                log_error(f'Failed to delete the session saved for a cancelled logout in {path}. Error: {e}')
+            if get_options().persist_session == 'no':
+                try:
+                    delete_snapshot(path)
+                except OSError as e:
+                    log_error(f'Failed to delete the session saved for a cancelled logout in {path}. Error: {e}')
 
     def notify_on_os_window_death(self, address: str) -> None:
         import socket
@@ -3350,7 +3384,12 @@ class Boss:
         add_timer(callback, 0, False)
 
     def destroy(self) -> None:
+        # The session state is not serialized here: every OS window has already been closed by the time this runs, so there is
+        # nothing left to serialize. It is saved when the quit is requested or the last OS window is closed.
         self.shutting_down = True
+        if self.session_autosave_timer:
+            remove_timer(self.session_autosave_timer)
+            self.session_autosave_timer = 0
         if self.agent_sidebar_timer:
             remove_timer(self.agent_sidebar_timer)
             self.agent_sidebar_timer = 0
@@ -3961,6 +4000,7 @@ class Boss:
             w.refresh(reload_all_gpu_data=True)
         load_shader_programs.recompile_if_needed()
         self.monitor_desktop_session_if_needed()
+        self.start_session_autosave_if_needed()
 
     @ac(
         'misc',

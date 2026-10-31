@@ -40,6 +40,24 @@ def get_os_window_sizing_data(opts: Options, session: Optional['Session'] = None
     )
 
 
+def agent_resume_argv(agent: Any, launch_vars: Sequence[str], enabled: bool) -> tuple[str, ...]:
+    """The command that resumes the agent a saved window was running, if any.
+
+    The agent's identity comes from the saved session and the session id from the window's user vars, which the agent set while it
+    was running. The command itself is built from the manifest kitty ships, so a session file cannot make kitty run a command of
+    its choosing.
+    """
+    from .agents import AGENT_SESSION_VAR, resume_argv_for
+
+    if not enabled or not isinstance(agent, str) or not agent:
+        return ()
+    for item in launch_vars:
+        key, sep, val = item.partition('=')
+        if sep and key == AGENT_SESSION_VAR:
+            return resume_argv_for(agent, val)
+    return ()
+
+
 ResizeSpec = tuple[str, int]
 
 
@@ -123,7 +141,7 @@ class Session:
     def set_layout_state(self, val: str) -> None:
         self.tabs[-1].layout_state = json.loads(val)
 
-    def add_window(self, cmd: None | str | list[str], expand: Callable[[str], str] = lambda x: x) -> None:
+    def add_window(self, cmd: None | str | list[str], expand: Callable[[str], str] = lambda x: x, resume_agents: bool = False) -> None:
         from .launch import parse_launch_args
 
         needs_expandvars = False
@@ -150,6 +168,13 @@ class Session:
         if t.next_title and not spec.opts.window_title:
             spec.opts.window_title = t.next_title
         spec.opts.cwd = spec.opts.cwd or t.cwd
+        resume_argv = agent_resume_argv(serialize_data.get('agent'), spec.opts.var, resume_agents)
+        if resume_argv:
+            # The agent is the program of the restored window rather than something run in its shell: a shell started by the macOS
+            # login wrapper does not source the shell integration, so a startup command is not reliably run. The window is held
+            # open when the agent exits, so its output and scrollback stay readable.
+            spec.opts.hold = True
+            spec = spec._replace(args=list(resume_argv))
         window_spec = WindowSpec(spec, serialized_id=serialize_data['id'], run_command_at_shell_startup=serialize_data.get('cmd_at_shell_startup', ()))
         window_spec.font_size_override = font_size_override
         t.windows.append(window_spec)
@@ -273,7 +298,7 @@ def parse_session(
             elif cmd == 'layout':
                 ans.set_layout(rest)
             elif cmd == 'launch':
-                ans.add_window(rest, expand)
+                ans.add_window(rest, expand, opts.resume_agents_on_restore)
             elif cmd == 'focus':
                 ans.focus()
             elif cmd == 'focus_tab':

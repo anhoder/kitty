@@ -8,6 +8,9 @@ aliases = ["cursor-agent"]
 # Hooks report session identity only, so state comes from the screen.
 state_authority = "identity_only"
 
+[resume]
+argv = ["cursor-agent", "--resume", "{session}"]
+
 [[rules]]
 id = "write_file_approval"
 state = "blocked"

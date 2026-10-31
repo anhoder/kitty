@@ -1474,7 +1474,6 @@ convert_from_opts_macos_titlebar_color(PyObject *py_opts, Options *opts) {
     Py_DECREF(ret);
 }
 
-
 static void
 convert_from_python_macos_native_tabs(PyObject *val, Options *opts) {
     opts->macos_native_tabs = PyObject_IsTrue(val);

@@ -13,8 +13,11 @@ aliases = ["qwen-code", "qwen code"]
 # only in terminals that advertise progress support.
 
 # Hooks report session identity only, so state comes from the screen.
+
 state_authority = "identity_only"
 
+[resume]
+argv = ["qwen", "--resume", "{session}"]
 [[rules]]
 id = "osc_title_blocked"
 state = "blocked"

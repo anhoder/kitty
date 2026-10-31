@@ -5,6 +5,9 @@ version = "2026.10.05.1"
 updated_at = "2026-10-05T00:00:00Z"
 aliases = ["grok-build"]
 
+[resume]
+argv = ["grok", "--resume", "{session}"]
+
 # Evidence: Grok Build 0.2.101 source and 1.0.34 live pane reads.
 #
 # Grok emits OSC 0 titles by default. Idle is "grok" or

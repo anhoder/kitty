@@ -392,7 +392,8 @@ class TestSessions(BaseTest):
         from kitty.boss import Boss
         from kitty.logout_session import DESKTOP_SESSION_ENDING, DESKTOP_SESSION_QUERY_END, DESKTOP_SESSION_RUNNING
 
-        boss = SimpleNamespace(snapshot_saved_for_logout='', save_session_at_logout=lambda: save_snapshot(base, 41, session, {}, state, None))
+        self.set_options()  # on_desktop_session_state_changed consults persist_session
+        boss = SimpleNamespace(snapshot_saved_for_logout='', save_session_snapshot=lambda: save_snapshot(base, 41, session, {}, state, None))
         for new_state, expected in (
             (DESKTOP_SESSION_QUERY_END, ['41']),
             (DESKTOP_SESSION_RUNNING, []),
@@ -422,3 +423,41 @@ class TestSessions(BaseTest):
                 patch('kitty.logout_session.monotonic', return_value=now),
             ):
                 self.ae(is_logout_in_progress(), expected)
+
+    def test_agent_resume_in_session(self) -> None:
+        encoded = unserialize_launch_flag + '{"id": 7, "agent": "claude"}'
+        session_var = '--var=KITTY_AGENT_SESSION=019a90db-05e8-7c50'
+
+        def window(line: str, **overrides: object) -> object:
+            opts = self.set_options({'resume_agents_on_restore': True, **overrides})
+            (session,) = parse_session(line, opts)
+            return session.tabs[0].windows[0]
+
+        # The command is built from the manifest and the reported session id, and the window is held open so that the output of an
+        # agent that exits stays readable
+        w = window(f'launch {shlex.join((encoded,))} {session_var}')
+        self.ae(w.launch_spec.args, ['claude', '--resume', '019a90db-05e8-7c50'])
+        self.assertTrue(w.launch_spec.opts.hold)
+
+        # Resuming is opt in: the window is restored as an ordinary one, keeping the vars so a later save does not lose them
+        w = window(f'launch {shlex.join((encoded,))} {session_var}', resume_agents_on_restore=False)
+        self.ae(w.launch_spec.args, [])
+        self.assertFalse(w.launch_spec.opts.hold)
+        self.assertIn('KITTY_AGENT_SESSION=019a90db-05e8-7c50', w.launch_spec.opts.var)
+
+        # A session id is reported by the agent, so a value that could be an option, a path or a shell command is never used
+        for bad in ('--dangerous-flag', '/etc/passwd', 'a;rm -rf /', '$(id)', 'a b', '', 'x' * 513):
+            w = window(f'launch {shlex.join((encoded, f"--var=KITTY_AGENT_SESSION={bad}"))}')
+            self.ae(w.launch_spec.args, [], f'session id {bad!r} was accepted')
+
+        # Without an id there is nothing to resume, and an agent kitty has no manifest for cannot be resumed
+        self.ae(window(f'launch {shlex.join((encoded,))}').launch_spec.args, [])
+        no_resume = unserialize_launch_flag + '{"id": 7, "agent": "gemini"}'
+        self.ae(window(f'launch {shlex.join((no_resume,))} {session_var}').launch_spec.args, [])
+        # The agent recorded in the session has to be one kitty knows
+        bogus = unserialize_launch_flag + '{"id": 7, "agent": "../../bin/sh"}'
+        self.ae(window(f'launch {shlex.join((bogus,))} {session_var}').launch_spec.args, [])
+
+        # Sessions saved before this feature have no agent field
+        old = unserialize_launch_flag + '{"id": 7}'
+        self.ae(window(f'launch {shlex.join((old,))} {session_var}').launch_spec.args, [])

@@ -8,6 +8,10 @@ updated_at = "2026-10-11T00:00:00Z"
 # screen.
 state_authority = "identity_only"
 
+# Verified against the installed codex 0.163.0: resume is a subcommand taking a session id, not an option.
+[resume]
+argv = ["codex", "resume", "{session}"]
+
 [[rules]]
 id = "osc_title_blocked"
 state = "blocked"

@@ -390,24 +390,38 @@ def save_snapshot(base: str, pid: int, session: str, scrollback: Mapping[int, by
 
 def remove_stale_snapshots(base: str, started_at: float, key_store: KeyStore | None) -> None:
     # Must be called with the lock held. All kitty instances running at a logout quit, so the running instances were all started
-    # after it. Snapshots older than this instance are therefore from an earlier logout, and were never restored.
+    # after it. Snapshots older than this instance are therefore from an earlier logout, and were never restored. With
+    # persist_session, instances save while other instances are still running, so the snapshot of an instance that still holds its
+    # saver lock is never stale, however old it is.
     try:
         with os.scandir(base) as entries:
             for entry in entries:
-                if entry.stat(follow_symlinks=False).st_mtime < started_at:
+                if entry.stat(follow_symlinks=False).st_mtime < started_at and not is_saver_running(entry.path):
                     remove_snapshot(entry.path, key_store)
     except FileNotFoundError:
         pass
     remove_orphaned_keys(base, key_store)
 
 
-def save_session_at_logout(boss: BossType) -> str:
-    # Returns the path to the saved snapshot or an empty string if there was nothing to save
+def session_persistence_enabled(opts: Options) -> bool:
+    return opts.persist_session != 'no' or opts.restore_session_after_logout
+
+
+# The session text of the snapshot last saved by this instance, used to skip periodic saves that would change nothing
+last_saved_session = ''
+
+
+def save_session_snapshot(boss: BossType, with_scrollback: bool = True, only_if_changed: bool = False) -> str:
+    # Saves the state of this kitty instance as a snapshot, returning the path to it or an empty string if nothing was saved. The
+    # scrollback is expensive to serialize, so periodic saves omit it, only the save at exit includes it.
+    global last_saved_session
     from .session import default_save_as_session_opts, parse_session
 
     ser_opts = default_save_as_session_opts()
     ser_opts.os_window_geometry = True
     session = '\n'.join(boss.serialize_state_as_session('', ser_opts))
+    if only_if_changed and session == last_saved_session:
+        return ''
     base = snapshots_dir()
     os.makedirs(os.path.dirname(base), exist_ok=True)
     key_store = get_key_store()
@@ -415,17 +429,19 @@ def save_session_at_logout(boss: BossType) -> str:
         remove_stale_snapshots(base, process_state.started_at, key_store)
         if not session:
             return ''
-        serialized_ids = {w.serialized_id for s in parse_session(session, get_options()) for t in s.tabs for w in t.windows}
         scrollback = {}
-        for window in boss.all_windows:
-            if window.id in serialized_ids and (data := scrollback_for_restore(window.screen)):
-                scrollback[window.id] = data
+        if with_scrollback:
+            serialized_ids = {w.serialized_id for s in parse_session(session, get_options()) for t in s.tabs for w in t.windows}
+            for window in boss.all_windows:
+                if window.id in serialized_ids and (data := scrollback_for_restore(window.screen)):
+                    scrollback[window.id] = data
         path = save_snapshot(base, os.getpid(), session, scrollback, process_state, key_store)
+        last_saved_session = session
         try:
             lock_snapshot_for_saver(path)
         except OSError as e:
             # The snapshot is still useful, but could be restored by another kitty instance while this one is running
-            log_error(f'Failed to lock the session saved at logout in {path}. Error: {e}')
+            log_error(f'Failed to lock the saved session in {path}. Error: {e}')
         return path
 
 
@@ -548,23 +564,27 @@ def load_or_discard_snapshot(path: str, opts: Options) -> RestoredSnapshot | Non
     return None
 
 
-def restore_snapshots(opts: Options, argv: tuple[str, ...]) -> RestoredSnapshot | None:
+def restore_snapshots(opts: Options, argv: tuple[str, ...], match_argv: bool = True) -> RestoredSnapshot | None:
     """
     Claims all snapshots, starting new kitty instances for the ones saved by kitty instances with a different command line and
     returns the one to restore in this kitty instance, if any. Errors are logged, so that they never prevent kitty from starting.
+    When match_argv is False, the snapshot restored in this instance is the oldest one, whatever command line saved it, as the user
+    started kitty expecting their state back in the instance they started, not in another one.
     """
     try:
         snapshots = claim_snapshots(snapshots_dir(), os.getpid(), get_key_store())
     except Exception as e:
-        log_error(f'Failed to restore the sessions saved at logout, ignoring. Error: {e}')
+        log_error(f'Failed to restore the saved sessions, ignoring. Error: {e}')
         return None
     own = next((s for s in snapshots if s.process_state.argv == argv), None)
+    if own is None and not match_argv and snapshots:
+        own = snapshots[0]
     for s in snapshots:
         if s is not own:
             try:
                 start_instance_for_snapshot(s)
             except Exception as e:
-                log_error(f'Failed to start kitty to restore the session saved at logout in {s.path}. Error: {e}')
+                log_error(f'Failed to start kitty to restore the saved session in {s.path}. Error: {e}')
     return None if own is None else load_or_discard_snapshot(own.path, opts)
 
 

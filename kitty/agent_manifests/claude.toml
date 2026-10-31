@@ -8,6 +8,10 @@ aliases = ["claude-code"]
 # working report, so state comes from the screen.
 state_authority = "identity_only"
 
+# Verified against the installed claude 2.1.199, which accepts --resume <id>.
+[resume]
+argv = ["claude", "--resume", "{session}"]
+
 [[rules]]
 id = "osc_title_working"
 state = "working"

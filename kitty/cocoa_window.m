@@ -82,9 +82,11 @@ static void draw_agents_sidebar_icon(NSRect rect) {
 }
 
 
-@interface KittyAgentsSidebarToggleButton : NSButton
+@interface KittyAgentsSidebarToggleButton : NSButton {
+    NSTrackingArea *hover_tracking_area;
+    BOOL hovered;
+}
 @end
-
 @implementation KittyAgentsSidebarToggleButton
 - (BOOL)acceptsFirstMouse:(NSEvent *)event {
     (void)event;
@@ -98,13 +100,37 @@ static void draw_agents_sidebar_icon(NSRect rect) {
 
 - (BOOL)canBecomeKeyView { return NO; }
 
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (hover_tracking_area) {
+        [self removeTrackingArea:hover_tracking_area];
+        [hover_tracking_area release];
+    }
+    NSTrackingAreaOptions options = NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect;
+    hover_tracking_area = [[NSTrackingArea alloc] initWithRect:self.bounds options:options owner:self userInfo:nil];
+    [self addTrackingArea:hover_tracking_area];
+}
+
+- (void)mouseEntered:(NSEvent *)event {
+    (void)event;
+    hovered = YES;
+    [self setNeedsDisplay:YES];
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    (void)event;
+    hovered = NO;
+    [self setNeedsDisplay:YES];
+}
+
 - (void)drawRect:(NSRect)dirtyRect {
     (void)dirtyRect;
     BOOL expanded = self.state == NSControlStateValueOn;
     NSRect rect = NSInsetRect(self.bounds, 0.5, 0.5);
     NSBezierPath *background = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:7.0 yRadius:7.0];
-    if (expanded || self.highlighted) {
-        [[[NSColor controlBackgroundColor] colorWithAlphaComponent:expanded ? 0.24 : 0.35] setFill];
+    if (expanded || hovered || self.highlighted) {
+        CGFloat alpha = expanded ? (hovered ? 0.32 : 0.24) : (hovered ? 0.24 : 0.35);
+        [[[NSColor controlBackgroundColor] colorWithAlphaComponent:alpha] setFill];
         [background fill];
     }
 
@@ -122,6 +148,11 @@ static void draw_agents_sidebar_icon(NSRect rect) {
     [chevron lineToPoint:NSMakePoint(center_x + direction * 2.0, center_y)];
     [chevron lineToPoint:NSMakePoint(center_x - direction * 2.0, center_y + 3.5)];
     [chevron stroke];
+}
+
+- (void)dealloc {
+    [hover_tracking_area release];
+    [super dealloc];
 }
 @end
 
@@ -203,6 +234,8 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     NSTrackingArea *sidebar_tracking_area;
     NSMutableSet<NSString *> *collapsed_groups;
     NSMutableDictionary<NSString *, NSNumber *> *group_animation;
+    NSInteger hovered_row;
+    NSString *hovered_group;
 }
 @property (copy) NSString *grouping;
 - (instancetype)initWithOSWindowID:(unsigned)window_id width:(CGFloat)width cellWidth:(unsigned)cell_width;
@@ -219,7 +252,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 - (void)advanceSpinner:(NSTimer *)timer;
 - (void)advanceGroupAnimation:(NSTimer *)timer;
 - (CGFloat)groupExpansion:(NSString *)group;
-- (void)drawDisclosureForGroup:(NSString *)group atPoint:(NSPoint)point expanded:(BOOL)expanded;
+- (void)drawDisclosureForGroup:(NSString *)group atPoint:(NSPoint)point hovered:(BOOL)hovered;
 - (BOOL)isAnimating;
 - (NSString *)groupHeaderAtPoint:(NSPoint)p;
 - (NSInteger)rowAtPoint:(NSPoint)p;
@@ -246,6 +279,8 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         spinner_timer = nil;
         group_animation_timer = nil;
         spinner_phase = 0.0;
+        hovered_row = -1;
+        hovered_group = nil;
         collapsed_groups = [[NSMutableSet alloc] init];
         group_animation = [[NSMutableDictionary alloc] init];
         // The translucent sidebar material has to sit behind the rows, but a
@@ -331,10 +366,8 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     }
 }
 
-- (void)drawDisclosureForGroup:(NSString *)group atPoint:(NSPoint)point expanded:(BOOL)expanded {
+- (void)drawDisclosureForGroup:(NSString *)group atPoint:(NSPoint)point hovered:(BOOL)hovered {
     CGFloat progress = [self groupExpansion:group];
-    // Flipped view: positive radians rotate clockwise, so a collapsed group
-    // needs a negative angle to turn the "v" into a right-pointing ">".
     CGFloat angle = (progress - 1.0) * M_PI_2;
     NSBezierPath *chevron = [NSBezierPath bezierPath];
     chevron.lineWidth = 1.8;
@@ -348,7 +381,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     [transform rotateByRadians:angle];
     [transform translateXBy:-point.x yBy:-point.y];
     [transform concat];
-    [[NSColor labelColor] setStroke];
+    [(hovered ? [NSColor labelColor] : [NSColor secondaryLabelColor]) setStroke];
     [chevron stroke];
     [transform invert];
     [transform concat];
@@ -359,8 +392,8 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     CGFloat y = header_height;
     for (NSUInteger i = 0; i < labels.count; i++) {
         NSString *group = groups[i];
-        CGFloat expansion = [self groupExpansion:group];
-        if (!last_group || ![last_group isEqualToString:group]) {
+        CGFloat expansion = group.length ? [self groupExpansion:group] : 1.0;
+        if (group.length && (!last_group || ![last_group isEqualToString:group])) {
             if (p.y >= y && p.y < y + group_height) return group;
             y += group_height;
             last_group = group;
@@ -375,8 +408,8 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     CGFloat y = header_height;
     for (NSUInteger i = 0; i < labels.count; i++) {
         NSString *group = groups[i];
-        CGFloat expansion = [self groupExpansion:group];
-        if (!last_group || ![last_group isEqualToString:group]) {
+        CGFloat expansion = group.length ? [self groupExpansion:group] : 1.0;
+        if (group.length && (!last_group || ![last_group isEqualToString:group])) {
             y += group_height;
             last_group = group;
         }
@@ -457,8 +490,26 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     set_cocoa_pending_action(AGENTS_SIDEBAR_MENU, data);
 }
 
+- (void)updateHoverAtPoint:(NSPoint)p {
+    NSInteger next_row = -1;
+    NSString *next_group = nil;
+    if (p.x < self.bounds.size.width - 8.0) {
+        next_group = [self groupHeaderAtPoint:p];
+        if (!next_group) next_row = [self rowAtPoint:p];
+    }
+    BOOL group_changed = (hovered_group == nil) != (next_group == nil) || (hovered_group && ![hovered_group isEqualToString:next_group]);
+    if (group_changed) {
+        [hovered_group release];
+        hovered_group = [next_group copy];
+    }
+    BOOL row_changed = hovered_row != next_row;
+    hovered_row = next_row;
+    if (group_changed || row_changed) [self setNeedsDisplay:YES];
+}
+
 - (void)mouseMoved:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    [self updateHoverAtPoint:p];
     if (p.x >= self.bounds.size.width - 8.0) [[NSCursor resizeLeftRightCursor] set];
     else [[NSCursor arrowCursor] set];
 }
@@ -467,6 +518,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 - (void)cursorUpdate:(NSEvent *)event { [self mouseMoved:event]; }
 - (void)mouseExited:(NSEvent *)event {
     (void)event;
+    [self updateHoverAtPoint:NSMakePoint(-1.0, -1.0)];
     if (!resizing) [[NSCursor arrowCursor] set];
 }
 
@@ -628,7 +680,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     NSUInteger group_count = 0;
     NSString *last_group = nil;
     for (NSString *group in groups) {
-        if (!last_group || ![last_group isEqualToString:group]) {
+        if (group.length && (!last_group || ![last_group isEqualToString:group])) {
             group_count++;
             last_group = group;
         }
@@ -637,8 +689,13 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         NSFontAttributeName: [NSFont boldSystemFontOfSize:11.0],
         NSForegroundColorAttributeName: [NSColor secondaryLabelColor],
     };
-    NSString *header = [NSString stringWithFormat:@"Grouping: %@ · %lu agent%@ · %lu group%@", self.grouping, (unsigned long)visible_count,
-        visible_count == 1 ? @"" : @"s", (unsigned long)group_count, group_count == 1 ? @"" : @"s"];
+    NSString *header;
+    if (visible_count == 0) {
+        header = @"Grouping: none · 0 agents";
+    } else {
+        header = [NSString stringWithFormat:@"Grouping: %@ · %lu agent%@ · %lu group%@", self.grouping, (unsigned long)visible_count,
+            visible_count == 1 ? @"" : @"s", (unsigned long)group_count, group_count == 1 ? @"" : @"s"];
+    }
     NSRect header_rect = NSMakeRect(12.0, 13.0, MAX(0.0, self.bounds.size.width - 24.0), 18.0);
     [header drawWithRect:header_rect options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine attributes:header_attrs context:nil];
     [[NSColor separatorColor] setFill];
@@ -648,22 +705,24 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     CGFloat y = header_height;
     for (NSUInteger i = 0; i < labels.count; i++) {
         NSString *group = groups[i];
-        if (!last_group || ![last_group isEqualToString:group]) {
-            BOOL expanded = [self groupExpansion:group] > 0.5;
+        BOOL grouped = group.length > 0;
+        if (grouped && (!last_group || ![last_group isEqualToString:group])) {
+            BOOL hovered = hovered_group && [hovered_group isEqualToString:group];
             NSRect group_rect = NSMakeRect(0, y, self.bounds.size.width, group_height);
-            [[[NSColor controlBackgroundColor] colorWithAlphaComponent:0.34] setFill];
+            [[[NSColor controlBackgroundColor] colorWithAlphaComponent:hovered ? 0.52 : 0.34] setFill];
             NSRectFill(group_rect);
             NSDictionary *group_attrs = @{
                 NSFontAttributeName: [NSFont boldSystemFontOfSize:11.0],
                 NSForegroundColorAttributeName: [NSColor labelColor],
             };
-            [self drawDisclosureForGroup:group atPoint:NSMakePoint(16.0, y + 12.0) expanded:expanded];
+            [self drawDisclosureForGroup:group atPoint:NSMakePoint(16.0, y + 12.0) hovered:hovered];
             [group drawAtPoint:NSMakePoint(24.0, y + 5.0) withAttributes:group_attrs];
             y += group_height;
             last_group = group;
         }
-        CGFloat expansion = [self groupExpansion:group];
+        CGFloat expansion = grouped ? [self groupExpansion:group] : 1.0;
         if (expansion <= 0.001) continue;
+        BOOL row_hovered = hovered_row == (NSInteger)i;
         BOOL active = [active_rows[i] boolValue];
         NSRect row = NSMakeRect(0, y, self.bounds.size.width, row_height * expansion);
         [NSGraphicsContext saveGraphicsState];
@@ -672,6 +731,10 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
             // selected row, instead of a full-bleed rectangle.
             NSRect pill = NSInsetRect(row, 6.0, 2.0);
             [[NSColor selectedContentBackgroundColor] setFill];
+            [[NSBezierPath bezierPathWithRoundedRect:pill xRadius:6.0 yRadius:6.0] fill];
+        } else if (row_hovered) {
+            NSRect pill = NSInsetRect(row, 6.0, 2.0);
+            [[[NSColor controlBackgroundColor] colorWithAlphaComponent:0.26] setFill];
             [[NSBezierPath bezierPathWithRoundedRect:pill xRadius:6.0 yRadius:6.0] fill];
         }
         NSColor *primary_color = active ? [NSColor alternateSelectedControlTextColor] : [NSColor controlTextColor];
@@ -745,7 +808,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     [active_rows release];
     [collapsed_groups release];
     [group_animation release];
-    [background_view release];
+    [hovered_group release];
     [_grouping release];
     [super dealloc];
 }

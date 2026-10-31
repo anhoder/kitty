@@ -14,6 +14,7 @@
 # Its prompt box header carries the same distinction, and adds elapsed time
 # while a turn runs. This is the fallback when titles are turned off:
 #
+
 #   idle     "╭── π > ⟳ Opus 5 > 📁 ~/Desktop/www/aireach > ..."
 #   working  "╭── ⠧ 2m > ◒ Opus 5 > 📁 ~/Desktop/kitty > ..."
 #
@@ -28,6 +29,8 @@ aliases = ["oh-my-pi"]
 # flip this to full_lifecycle.
 state_authority = "identity_only"
 
+[resume]
+argv = ["omp", "--resume={session}"]
 [[rules]]
 id = "osc_title_working"
 state = "working"

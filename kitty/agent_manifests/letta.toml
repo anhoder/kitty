@@ -11,6 +11,9 @@ aliases = ["letta-code", "letta code"]
 # Hooks report session identity only, so state comes from the screen.
 state_authority = "identity_only"
 
+[resume]
+argv = ["letta", "--conversation", "{session}"]
+
 [[rules]]
 id = "osc_progress_blocked"
 state = "blocked"

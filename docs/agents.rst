@@ -109,3 +109,98 @@ The sidebar is scoped to the current kitty tab group. With macOS native tabs,
 all tabs in the native tab group share one Agents list and each tab displays the
 same sidebar. Without native tabs, it covers all kitty tabs in the current OS
 window. It does not keep agent processes alive after kitty exits.
+
+.. _agent_resume:
+
+Resuming agent conversations after a restart
+-----------------------------------------------
+
+When kitty restores a session saved by :opt:`persist_session`, it can restart
+an agent on the conversation it was in, rather than leaving you with a shell.
+To enable this, set in :file:`kitty.conf`::
+
+    resume_agents_on_restore yes
+
+This is off by default, because resuming an agent starts it running again,
+which can consume API credits.
+
+An agent's conversation lives in the agent's own storage, not in kitty, so
+kitty needs two things to resume one: the conversation's id, and the command
+that reopens it. The command comes from the agent's manifest, which ships with
+kitty, so a saved session can never make kitty run a command of its own
+choosing. Only the id comes from the agent, and an id that does not look like
+an id is discarded rather than used.
+
+The id reaches kitty from a hook that the agent runs when a conversation
+starts. Install it with::
+
+    kitty +agent-integration install claude
+    kitty +agent-integration install codex
+
+and check or remove it with::
+
+    kitty +agent-integration status
+    kitty +agent-integration uninstall claude
+
+Installing adds a ``SessionStart`` hook to the agent's own configuration,
+leaving your other hooks untouched, and writes the hook script to
+:file:`agent-integration/` in your kitty config directory.
+
+The hook reports the id by setting the ``KITTY_AGENT_SESSION`` user variable
+with an OSC 1337 escape code. It writes to the
+device named by the ``KITTY_WINDOW_TTY`` environment variable, which kitty sets
+for every program it runs, rather than to :file:`/dev/tty`: Claude Code runs
+its hooks without a controlling terminal, so :file:`/dev/tty` is not available
+to them.
+
+Any agent can report itself the same way, without a hook kitty ships, by
+setting those user vars itself::
+
+    printf '\033]1337;SetUserVar=KITTY_AGENT_SESSION=%s\007' "$(printf %s "$ID" | base64)"
+
+Resuming works for any agent whose official integration or native adapter
+reports a session reference. Agents without a kitty reporter are restored as
+ordinary shell windows in their saved working directory, with their scrollback.
+
+Herdr-native resume coverage
+-----------------------------
+
+kitty ships resume commands for the same native-resume agent set documented
+by Herdr:
+
+* ``pi --session <id>``
+* ``omp --resume=<id>``
+* ``claude --resume <id>``
+* ``codex resume <id>``
+* ``copilot --resume=<id>``
+* ``devin --resume <id>``
+* ``droid --resume <id>``
+* ``kimi --session <id>``
+* ``opencode --session <id>``
+* ``kilo --session <id>``
+* ``hermes --resume <id>``
+* ``qodercli --resume <id>``
+* ``qwen --resume <id>``
+* ``letta --conversation <id>``
+* ``cursor-agent --resume <id>``
+* ``mastracode --thread <id>``
+* ``agy --conversation <id>``
+* ``grok --resume <id>``
+
+The command alone is not enough to restore a conversation. The agent must
+report its session reference to kitty. Herdr's official integrations use a
+mixture of command hooks and agent plugins. Pi and OMP are native integration
+cases: either the agent itself or its existing integration can report an
+id/path reference, and kitty accepts both. Other agents are reported as
+``plugin-required`` or ``adapter-required`` by
+``kitty +agent-integration status`` until a native kitty reporter is available.
+
+For Pi and OMP, Herdr accepts either a session id or an absolute session
+path. kitty accepts the same two forms through ``KITTY_AGENT_SESSION`` and
+``KITTY_AGENT_SESSION_PATH``; paths are only accepted for those two agents.
+This is why an OMP integration can work without installing a second Herdr
+extension when OMP itself already reports its native session reference.
+
+kitty does not speak Herdr's server socket protocol. It preserves the same
+source/agent/session-reference semantics but transports the reference through
+the kitty window's OSC 1337 user variables.

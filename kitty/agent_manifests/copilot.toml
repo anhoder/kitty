@@ -8,6 +8,9 @@ aliases = ["github-copilot", "ghcs"]
 # Hooks report session identity only, so state comes from the screen.
 state_authority = "identity_only"
 
+[resume]
+argv = ["copilot", "--resume={session}"]
+
 [[rules]]
 id = "selection_blocker"
 state = "blocked"

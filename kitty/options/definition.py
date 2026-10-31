@@ -3293,6 +3293,65 @@ session state. See :ref:`restore_after_logout` for details.
 )
 
 opt(
+    'persist_session',
+    'no',
+    choices=('no', 'on-exit', 'always'),
+    long_text="""
+Automatically save the state of kitty as a :ref:`session <sessions>` and restore it the next
+time kitty is started. Unlike :opt:`restore_session_after_logout`, which saves state only when
+the computer is logged out of, restarted or shut down, this saves state whenever kitty exits.
+The possible values are:
+
+:code:`no`
+    Do not save state automatically. State is still saved at logout if
+    :opt:`restore_session_after_logout` is enabled.
+
+:code:`on-exit`
+    Save state when kitty exits, including when it is terminated by a signal.
+    State is not saved if kitty is killed or crashes.
+
+:code:`always`
+    In addition to saving on exit, save state periodically, see
+    :opt:`persist_session_interval`, so that it survives kitty being killed or crashing.
+    The periodic saves do not include the scrollback, as saving it repeatedly is expensive,
+    only the save on exit does.
+
+The saved state includes the size, position and state of every :term:`OS Window <os_window>`,
+the layout of every tab, the working directory of every window and the scrollback. Programs
+that were running in windows, other than the shell, are not started again, since they could
+have been run for their effects. The saved state is used only once, and only when kitty is
+started without :option:`kitty --session` or a command to run. See :ref:`persist_session` for
+details.
+""",
+)
+
+opt(
+    'persist_session_interval',
+    '60',
+    option_type='positive_int',
+    long_text="""
+The number of seconds between periodic saves of the session state when
+:opt:`persist_session` is set to :code:`always`. State is saved only when it has actually
+changed since the last save.
+""",
+)
+
+opt(
+    'resume_agents_on_restore',
+    'no',
+    option_type='to_bool',
+    long_text="""
+When restoring a session saved by :opt:`persist_session`, restart AI coding agents by
+running their resume command, so that they continue the conversation they were in. This
+works only for agents that report their session id to kitty, see :ref:`agent_resume`.
+The command that is run is built by kitty from the agent's manifest, only the session id
+comes from the agent itself. Agents that did not report a session id, or whose manifest has
+no resume command, are restored as ordinary shell windows. This is disabled by default as
+resuming an agent starts it running again, which can consume API credits.
+""",
+)
+
+opt(
     'clipboard_control',
     'write-clipboard write-primary read-clipboard-ask read-primary-ask',
     option_type='clipboard_control',

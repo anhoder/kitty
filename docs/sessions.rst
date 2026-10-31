@@ -263,6 +263,45 @@ When you run the session file in another kitty instance you will see both
 windows re-created, as expected with the correct working directories and
 running programs.
 
+.. _persist_session:
+
+Saving and restoring the session automatically
+-------------------------------------------------
+
+kitty can save its state whenever it exits and restore it the next time it is
+started, so that your windows, tabs, layouts, working directories and
+scrollback come back as you left them. To enable this, set
+:opt:`persist_session` in :file:`kitty.conf`::
+
+    persist_session on-exit
+
+This covers quitting kitty, closing its last window and kitty being terminated
+by a signal. It does not cover kitty being killed outright or crashing, as no
+code of kitty's runs then. To survive those as well, use::
+
+    persist_session always
+
+which also saves the state periodically, see :opt:`persist_session_interval`.
+The periodic saves leave out the scrollback, as serializing it repeatedly is
+expensive; only the save when kitty exits includes it.
+
+The saved state is used only once, and only when kitty is started without
+:option:`kitty --session` or a command to run, and it is deleted once it has
+been restored. Programs that were running in windows, other than the shell and
+:ref:`resumable AI agents <agent_resume>`, are not started again, since they
+could have been run for their effects, like :file:`rm`.
+
+If several kitty instances were running, the instance you start restores one of
+them and a separate kitty instance is started for each of the others, with the
+command line arguments, working directory and environment variables it
+originally had.
+
+The state is saved in the same place, and with the same protections, as the
+state saved at logout, described below. On macOS it is encrypted with a key in
+your login keychain; on Linux it is protected only by its file permissions.
+Treat it like your shell history: it contains the scrollback and the
+environment variables of every window.
+
 .. _restore_after_logout:
 
 Restoring kitty after logging out

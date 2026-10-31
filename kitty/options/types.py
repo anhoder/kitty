@@ -18,6 +18,7 @@ import kitty.options.utils
 from kitty.types import FloatEdges
 import kitty.types
 
+choices_for_agents_sidebar_grouping = typing.Literal['time', 'agent', 'tab', 'path']
 choices_for_allow_cloning = typing.Literal['yes', 'y', 'true', 'no', 'n', 'false', 'ask']
 choices_for_allow_remote_control = typing.Literal['password', 'socket-only', 'socket', 'no', 'n', 'false', 'yes', 'y', 'true']
 choices_for_background_image_layout = typing.Literal['mirror-tiled', 'scaled', 'tiled', 'clamped', 'centered', 'cscaled']
@@ -28,6 +29,7 @@ choices_for_macos_colorspace = typing.Literal['srgb', 'default', 'displayp3']
 choices_for_macos_show_window_title_in = typing.Literal['all', 'menubar', 'none', 'window']
 choices_for_padding_fill_strategy = typing.Literal['background', 'neighboring_cell']
 choices_for_palette_generate = typing.Literal['fixed', 'semantic', 'legacy']
+choices_for_persist_session = typing.Literal['no', 'on-exit', 'always']
 choices_for_placement_strategy = typing.Literal['top-left', 'top', 'top-right', 'left', 'center', 'right', 'bottom-left', 'bottom', 'bottom-right']
 choices_for_pointer_shape_when_grabbed = choices_for_default_pointer_shape
 choices_for_progress_bar = typing.Literal['left', 'right', 'top', 'bottom', 'hidden']
@@ -44,7 +46,6 @@ choices_for_window_logo_position = choices_for_placement_strategy
 choices_for_window_title_bar = typing.Literal['top', 'bottom']
 choices_for_window_title_bar_align = typing.Literal['left', 'center', 'right']
 choices_for_window_title_watermark = typing.Literal['none', 'top-left', 'top', 'top-right', 'left', 'center', 'right', 'bottom-left', 'bottom', 'bottom-right']
-choices_for_agents_sidebar_grouping = typing.Literal['time', 'agent', 'tab', 'path']
 
 option_names = (
     'action_alias',
@@ -427,6 +428,8 @@ option_names = (
     'padding_fill_strategy',
     'palette_generate',
     'paste_actions',
+    'persist_session',
+    'persist_session_interval',
     'pixel_scroll',
     'placement_strategy',
     'pointer_shape_when_dragging',
@@ -440,6 +443,7 @@ option_names = (
     'resize_debounce_time',
     'resize_in_steps',
     'restore_session_after_logout',
+    'resume_agents_on_restore',
     'scrollback_fill_enlarged_window',
     'scrollback_lines',
     'scrollback_pager',
@@ -655,6 +659,8 @@ class Options:
     padding_fill_strategy: choices_for_padding_fill_strategy = 'background'
     palette_generate: choices_for_palette_generate = 'fixed'
     paste_actions: frozenset[str] = frozenset({'confirm', 'quote-urls-at-prompt'})
+    persist_session: choices_for_persist_session = 'no'
+    persist_session_interval: int = 60
     pixel_scroll: bool = True
     placement_strategy: choices_for_placement_strategy = 'center'
     pointer_shape_when_dragging: tuple[str, str] = ('beam', 'crosshair')
@@ -667,6 +673,7 @@ class Options:
     resize_debounce_time: tuple[float, float] = (0.1, 0.5)
     resize_in_steps: bool = False
     restore_session_after_logout: bool = False
+    resume_agents_on_restore: bool = False
     scrollback_fill_enlarged_window: bool = False
     scrollback_lines: int = 2000
     scrollback_pager: list[str] = ['less', '--chop-long-lines', '--RAW-CONTROL-CHARS', '+INPUT_LINE_NUMBER']

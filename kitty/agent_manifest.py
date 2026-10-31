@@ -35,6 +35,21 @@ from .constants import kitty_base_dir
 from .utils import log_error
 
 MANIFEST_DIR = os.path.join(kitty_base_dir, 'kitty', 'agent_manifests')
+SESSION_PLACEHOLDER = '{session}'
+session_id_pat = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,511}')
+
+
+def is_valid_session_id(session_id: str) -> bool:
+    return session_id_pat.fullmatch(session_id) is not None
+
+
+def is_valid_session_path(session_path: str) -> bool:
+    return (
+        bool(session_path)
+        and len(session_path) <= 4096
+        and os.path.isabs(session_path)
+        and not any(ord(c) < 32 or ord(c) == 127 for c in session_path)
+    )
 
 
 class ManifestState(Enum):
@@ -361,12 +376,27 @@ class Rule(NamedTuple):
         return self.visible_idle or self.visible_working or self.visible_blocker
 
 
+class ResumeSpec(NamedTuple):
+    """How to restart an agent so that it continues an existing conversation.
+
+    The argv comes from the manifest, which ships with kitty, so the command
+    that is run is never chosen by the agent. Only the session id is supplied
+    by the agent and it is substituted for the single ``{session}`` argument.
+    """
+
+    argv: tuple[str, ...]
+
+    def command_for(self, session_id: str) -> tuple[str, ...]:
+        return tuple(arg.replace(SESSION_PLACEHOLDER, session_id) for arg in self.argv)
+
+
 class Manifest(NamedTuple):
     id: str
     version: str
     authority: StateAuthority
     aliases: tuple[str, ...]
     rules: tuple[Rule, ...]
+    resume: ResumeSpec | None = None
 
 
 class Match(NamedTuple):
@@ -411,7 +441,24 @@ def parse_manifest(data: Mapping[str, Any], where: str) -> Manifest:
         rules.append(rule)
     # Descending priority, so evaluation can stop at the first match.
     rules.sort(key=lambda r: -r.priority)
-    return Manifest(ident, version, authority, aliases, tuple(rules))
+    resume = _parse_resume(data.get('resume'), where)
+    return Manifest(ident, version, authority, aliases, tuple(rules), resume)
+
+
+def _parse_resume(raw: Any, where: str) -> ResumeSpec | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError(f'{where}: resume must be a table')
+    argv = tuple(_as_list(raw.get('argv'), str, where, 'resume.argv'))
+    if not argv:
+        raise ValueError(f'{where}: resume.argv must not be empty')
+    if sum(arg.count(SESSION_PLACEHOLDER) for arg in argv) != 1:
+        raise ValueError(f'{where}: resume.argv must use {SESSION_PLACEHOLDER} exactly once')
+    # The first argument is run as a program, so it must be a plain command name looked up on PATH
+    if os.sep in argv[0] or argv[0] == SESSION_PLACEHOLDER:
+        raise ValueError(f'{where}: resume.argv must start with a command name')
+    return ResumeSpec(argv)
 
 
 def _parse_rule(raw: Mapping[str, Any], where: str) -> Rule:

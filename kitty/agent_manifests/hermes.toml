@@ -9,6 +9,9 @@ aliases = ["hermes-agent"]
 # outrank these screen rules.
 state_authority = "full_lifecycle"
 
+[resume]
+argv = ["hermes", "--resume", "{session}"]
+
 [[rules]]
 id = "osc_title_blocked"
 state = "blocked"

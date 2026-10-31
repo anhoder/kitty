@@ -342,6 +342,27 @@ class TestAgents(BaseTest):
             self.ae(len({r.group for r in rows}), 9)
 
 
+    def test_empty_sidebar_has_no_group(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from kitty.boss import Boss
+
+        class TabManager(list):
+            agent_sidebar_rows = ()
+
+            def set_agent_sidebar_rows(self, rows):
+                self.agent_sidebar_rows = tuple(rows)
+
+        window = SimpleNamespace(id=1)
+        scope = (TabManager([[window]]),)
+        boss = SimpleNamespace(active_window=window, agent_tracker=AgentTracker())
+        with patch('kitty.boss.get_options', return_value=SimpleNamespace(agents_sidebar_grouping='time')):
+            Boss._refresh_agent_sidebar_scope(boss, scope)
+        rows = scope[0].agent_sidebar_rows
+        self.ae(len(rows), 1)
+        self.ae((rows[0].group, rows[0].agent, rows[0].title), ('', '', 'No AI agents'))
+
 class FakeWindow:
     id = 7
     title = 'Claude'
@@ -442,3 +463,131 @@ class TestAgentTracker(BaseTest):
         tracker.refresh_window(busy, now=100.2)
         self.ae(tracker.snapshot_for(7).state, AgentState.working)
         self.assertNotIn(7, tracker.unseen_done)
+
+
+class TestAgentResume(BaseTest):
+    SESSION_ID = '019a90db-05e8-7c50-af14-8425b9d1c3a9'
+
+    def window(self, **user_vars: str) -> FakeWindow:
+        w = FakeWindow('idle text')
+        w.user_vars = user_vars
+        return w
+
+    def test_reported_session_id_is_used_only_when_it_is_usable(self):
+        from kitty.agents import AGENT_ID_VAR, AGENT_SESSION_VAR, session_id_of_window
+
+        # An agent that reports which agent it is must agree with the agent actually running, including by alias
+        self.ae(session_id_of_window(self.window(**{AGENT_SESSION_VAR: self.SESSION_ID}), 'claude'), self.SESSION_ID)
+        for reported in ('claude', 'claude-code'):
+            w = self.window(**{AGENT_SESSION_VAR: self.SESSION_ID, AGENT_ID_VAR: reported})
+            self.ae(session_id_of_window(w, 'claude'), self.SESSION_ID)
+        for reported in ('codex', 'nonexistent-agent'):
+            w = self.window(**{AGENT_SESSION_VAR: self.SESSION_ID, AGENT_ID_VAR: reported})
+            self.ae(session_id_of_window(w, 'claude'), '')
+        # A window with no agent reporting has nothing to resume
+        self.ae(session_id_of_window(self.window(), 'claude'), '')
+
+    def test_untrusted_session_ids_are_rejected(self):
+        from kitty.agents import AGENT_SESSION_VAR, session_id_of_window
+
+        # The id arrives over an escape code from the window, so anything that could act as an option, a path or shell syntax when
+        # it reaches a command line is discarded rather than sanitized
+        for bad in ('--resume', '-r', '/etc/passwd', '../../etc/passwd', 'a;id', 'a b', '$(id)', '`id`', 'a|b', '.hidden', 'x' * 129):
+            self.ae(session_id_of_window(self.window(**{AGENT_SESSION_VAR: bad}), 'claude'), '', f'accepted {bad!r}')
+        for good in ('abc', 'A1', self.SESSION_ID, 'name_with.dots-and_dashes', 'x' * 128):
+            self.ae(session_id_of_window(self.window(**{AGENT_SESSION_VAR: good}), 'claude'), good, f'rejected {good!r}')
+
+    def test_resume_command_comes_from_the_manifest(self):
+        from kitty.agents import resume_argv_for
+
+        # Each argument but the id is manifest data, so the agent chooses the conversation, never the command
+        self.ae(resume_argv_for('claude', self.SESSION_ID), ('claude', '--resume', self.SESSION_ID))
+        self.ae(resume_argv_for('codex', self.SESSION_ID), ('codex', 'resume', self.SESSION_ID))
+        # Agents whose manifest has no resume command, and unknown agents, cannot be resumed
+        self.ae(resume_argv_for('gemini', self.SESSION_ID), ())
+        self.ae(resume_argv_for('nonexistent-agent', self.SESSION_ID), ())
+        self.ae(resume_argv_for('claude', ''), ())
+
+    def test_manifest_resume_specs_are_validated(self):
+
+        from kitty.agent_manifest import parse_manifest
+
+        def manifest(resume: dict) -> object:
+            return parse_manifest({'id': 'x', 'version': '1', 'resume': resume, 'rules': []}, 'test')
+
+        self.ae(manifest({'argv': ['x', '--resume', '{session}']}).resume.argv, ('x', '--resume', '{session}'))
+        # A spec that cannot produce exactly one session id, or that runs something other than a command name, is a broken
+        # manifest rather than something to work around at restore time
+        for bad in ({'argv': []}, {'argv': ['x']}, {'argv': ['x', '{session}', '{session}']}, {'argv': ['{session}']}, {'argv': ['./x', '{session}']}):
+            with self.assertRaises(ValueError):
+                manifest(bad)
+
+    def test_herdr_native_resume_matrix(self):
+        from kitty.agent_manifest import manifest_for
+
+        expected = {
+            'pi': ('pi', '--session', '{session}'),
+            'omp': ('omp', '--resume={session}'),
+            'claude': ('claude', '--resume', '{session}'),
+            'codex': ('codex', 'resume', '{session}'),
+            'copilot': ('copilot', '--resume={session}'),
+            'devin': ('devin', '--resume', '{session}'),
+            'droid': ('droid', '--resume', '{session}'),
+            'kimi': ('kimi', '--session', '{session}'),
+            'opencode': ('opencode', '--session', '{session}'),
+            'kilo': ('kilo', '--session', '{session}'),
+            'hermes': ('hermes', '--resume', '{session}'),
+            'qodercli': ('qodercli', '--resume', '{session}'),
+            'qwen': ('qwen', '--resume', '{session}'),
+            'letta': ('letta', '--conversation', '{session}'),
+            'cursor': ('cursor-agent', '--resume', '{session}'),
+            'mastracode': ('mastracode', '--thread', '{session}'),
+            'agy': ('agy', '--conversation', '{session}'),
+            'grok': ('grok', '--resume', '{session}'),
+        }
+        for agent, argv in expected.items():
+            manifest = manifest_for(agent)
+            self.assertIsNotNone(manifest, agent)
+            self.ae(manifest.resume.argv, argv, agent)
+
+    def test_snapshot_carries_the_session_id(self):
+        from kitty.agents import AGENT_SESSION_VAR, snapshot_for_window
+
+        snapshot, _ = snapshot_for_window(self.window(**{AGENT_SESSION_VAR: self.SESSION_ID}))
+        self.ae((snapshot.agent, snapshot.session_id), ('claude', self.SESSION_ID))
+        snapshot, _ = snapshot_for_window(self.window())
+        self.ae(snapshot.session_id, '')
+    def test_pi_omp_accept_session_paths(self):
+        from kitty.agents import AGENT_ID_VAR, AGENT_SESSION_PATH_VAR, resume_argv_for, session_ref_of_window
+
+        path = '/Users/test/.omp/sessions/abc.jsonl'
+        w = self.window(**{AGENT_ID_VAR: 'omp', AGENT_SESSION_PATH_VAR: path})
+        self.ae(session_ref_of_window(w, 'omp'), path)
+        self.ae(resume_argv_for('omp', path), ('omp', f'--resume={path}'))
+        self.ae(resume_argv_for('pi', path), ('pi', '--session', path))
+        self.ae(resume_argv_for('claude', path), ())
+        self.ae(session_ref_of_window(self.window(**{AGENT_SESSION_PATH_VAR: 'relative/path'}), 'omp'), '')
+
+
+    def test_herdr_integration_capabilities(self):
+        from kitty.agent_integration import AGENTS
+
+        agents = {agent.id: agent for agent in AGENTS}
+        self.ae(agents['claude'].integration_kind, 'hook')
+        self.ae(agents['codex'].integration_kind, 'hook')
+        for agent in ('pi', 'omp'):
+            self.ae(agents[agent].integration_kind, 'native')
+        for agent in ('opencode', 'kilo', 'hermes'):
+            self.ae(agents[agent].integration_kind, 'plugin-required')
+        for agent in ('kimi',):
+            self.ae(agents[agent].integration_kind, 'adapter-required')
+        for agent in ('copilot', 'devin', 'droid', 'qodercli', 'qwen', 'letta', 'cursor', 'grok', 'agy', 'mastracode'):
+            self.ae(agents[agent].integration_kind, 'adapter-required')
+    def test_herdr_source_identity(self):
+        from kitty.agents import AGENT_SOURCE_VAR, session_ref_of_window
+
+        sid = self.SESSION_ID
+        self.ae(session_ref_of_window(self.window(KITTY_AGENT_SESSION=sid), 'claude'), sid)
+        self.ae(session_ref_of_window(self.window(**{AGENT_SOURCE_VAR: 'kitty:claude', 'KITTY_AGENT_SESSION': sid}), 'claude'), sid)
+        self.ae(session_ref_of_window(self.window(**{AGENT_SOURCE_VAR: 'herdr:claude', 'KITTY_AGENT_SESSION': sid}), 'claude'), sid)
+        self.ae(session_ref_of_window(self.window(**{AGENT_SOURCE_VAR: 'herdr:codex', 'KITTY_AGENT_SESSION': sid}), 'claude'), '')

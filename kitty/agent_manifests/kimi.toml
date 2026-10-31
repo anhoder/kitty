@@ -8,6 +8,9 @@ aliases = ["kimi-code", "kimi code"]
 # Hooks report session identity only, so state comes from the screen.
 state_authority = "identity_only"
 
+[resume]
+argv = ["kimi", "--session", "{session}"]
+
 [[rules]]
 id = "current_approval_panel"
 state = "blocked"

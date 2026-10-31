@@ -9,6 +9,9 @@ aliases = ["kilo-code", "kilo code"]
 # outrank these screen rules.
 state_authority = "full_lifecycle"
 
+[resume]
+argv = ["kilo", "--session", "{session}"]
+
 [[rules]]
 id = "opencode_permission"
 state = "blocked"

@@ -8,6 +8,9 @@ updated_at = "2026-10-01T00:00:00Z"
 # outrank these screen rules.
 state_authority = "full_lifecycle"
 
+[resume]
+argv = ["pi", "--session", "{session}"]
+
 [[rules]]
 id = "working_literal"
 state = "working"

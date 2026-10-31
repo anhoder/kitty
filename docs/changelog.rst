@@ -10,6 +10,24 @@ Recent major new features
 ---------------------------
 
 
+- A new option :opt:`persist_session` to save the state of kitty whenever it
+  exits and restore it the next time kitty is started, including the layout of
+  every tab, the working directory of every window and the scrollback. Set it
+  to :code:`always` to also save periodically, so that the state survives
+  kitty being killed or crashing. See :ref:`persist_session`.
+- A new option :opt:`resume_agents_on_restore` to restart AI coding agents on
+  the conversation they were in when a saved session is restored. The agent
+  reports its conversation id to kitty from a hook installed with
+  :code:`kitty +agent-integration install <agent>`, currently for Claude Code
+  and Codex, and the command that resumes it comes from the agent's manifest.
+  See :ref:`agent_resume`.
+- macOS: Do not render a ``Today`` group when the Agents sidebar has no agents;
+  the empty state now has no grouping header or disclosure control.
+- macOS: Add hover feedback to the Agents sidebar toggle, group headers,
+  disclosure controls and agent rows.
+- Expand native agent resume metadata to the full Herdr-supported set of 18
+  agents. Official plugin-only or vendor-specific integrations are reported
+  explicitly instead of being overwritten by an unsafe generic hook installer.
 - macOS: Replace Agents sidebar group glyphs with animated disclosure chevrons; expanding and collapsing now animates the group rows.
 - macOS: Simplify the Agents sidebar header by removing its redundant title while retaining grouping and count information.
 - macOS: Distinguish Agents sidebar groups for tabs with identical titles by including each tab's sequence number.

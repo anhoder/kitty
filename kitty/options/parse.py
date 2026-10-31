@@ -52,15 +52,17 @@ class Parser:
 
     def active_window_title_template(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['active_window_title_template'] = tab_title_template(val)
+
     def agents_sidebar_grouping(self, val: str, ans: dict[str, typing.Any]) -> None:
         val = val.lower()
         if val not in self.choices_for_agents_sidebar_grouping:
             raise ValueError(f"The value {val} is not a valid choice for agents_sidebar_grouping")
-        ans['agents_sidebar_grouping'] = val
+        ans["agents_sidebar_grouping"] = val
 
     choices_for_agents_sidebar_grouping = frozenset(('time', 'agent', 'tab', 'path'))
 
     def allow_cloning(self, val: str, ans: dict[str, typing.Any]) -> None:
+        val = val.lower()
         if val not in self.choices_for_allow_cloning:
             raise ValueError(f"The value {val} is not a valid choice for allow_cloning")
         ans["allow_cloning"] = val
@@ -1228,6 +1230,17 @@ class Parser:
     def paste_actions(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['paste_actions'] = paste_actions(val)
 
+    def persist_session(self, val: str, ans: dict[str, typing.Any]) -> None:
+        val = val.lower()
+        if val not in self.choices_for_persist_session:
+            raise ValueError(f"The value {val} is not a valid choice for persist_session")
+        ans["persist_session"] = val
+
+    choices_for_persist_session = frozenset(('no', 'on-exit', 'always'))
+
+    def persist_session_interval(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['persist_session_interval'] = positive_int(val)
+
     def pixel_scroll(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['pixel_scroll'] = to_bool(val)
 
@@ -1282,6 +1295,9 @@ class Parser:
 
     def restore_session_after_logout(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['restore_session_after_logout'] = to_bool(val)
+
+    def resume_agents_on_restore(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['resume_agents_on_restore'] = to_bool(val)
 
     def scrollback_fill_enlarged_window(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['scrollback_fill_enlarged_window'] = to_bool(val)

@@ -1,0 +1,9 @@
+# Native session restore for MastraCode, which reports thread identity through its hook.
+# Resume command from Herdr's official agent_resume plan.
+id = "mastracode"
+version = "2026.10.01.1"
+updated_at = "2026-10-01T00:00:00Z"
+state_authority = "full_lifecycle"
+
+[resume]
+argv = ["mastracode", "--thread", "{session}"]

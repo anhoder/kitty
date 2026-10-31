@@ -5,6 +5,9 @@ version = "2026.10.05.1"
 updated_at = "2026-10-05T00:00:00Z"
 aliases = ["antigravity", "antigravity-cli"]
 
+[resume]
+argv = ["agy", "--conversation", "{session}"]
+
 # Evidence: Antigravity CLI 1.2.17 live pane reads, plus reporter captures
 # from 1.1.28 through 1.2.16.
 #

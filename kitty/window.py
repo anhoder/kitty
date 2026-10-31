@@ -2538,6 +2538,19 @@ class Window:
             cwd = path_from_osc7_url(self.screen.last_reported_cwd) or cwd
         return cwd
 
+    def agent_for_resume(self) -> str:
+        """The id of the agent running in this window, if its conversation can be resumed.
+
+        Empty unless an agent is running, it reported a session id and its
+        manifest says how to resume it.
+        """
+        from .agents import detect_agent, resume_argv_for, session_ref_of_window
+
+        agent = detect_agent(self.child.foreground_processes)
+        if not agent:
+            return ''
+        return agent if resume_argv_for(agent, session_ref_of_window(self, agent)) else ''
+
     def as_launch_command(self, ser_opts: SaveAsSessionOptions, cwd: str, is_overlay: bool = False, extra_launch_args: Sequence[str] = ()) -> list[str]:
         "Return a launch command that can be used to serialize this window. Empty list indicates not serializable."
         if self.actions_on_close or self.actions_on_focus_change or self.actions_on_removal:
@@ -2634,6 +2647,10 @@ class Window:
                             unserialize_data['cmd_at_shell_startup'] = fcmd
         if self.font_size_override is not None:
             unserialize_data['font_size_override'] = self.font_size_override
+        if agent := self.agent_for_resume():
+            # Only the agent's identity is saved. The command that resumes it is built from the manifest when the session is
+            # restored, so a saved session never carries a command chosen by an agent. The session id travels in --var.
+            unserialize_data['agent'] = agent
         ans.insert(1, unserialize_launch_flag + json.dumps(unserialize_data))
         ans.extend(cmd)
         return ans
